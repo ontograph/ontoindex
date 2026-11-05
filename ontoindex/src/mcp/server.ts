@@ -294,7 +294,8 @@ export function getNextStepHint(
         args?.consume_enrichment_facts !== true &&
         (args?.retrieval_policy === undefined || args?.retrieval_policy === 'graph-only')
       ) {
-        return `\n\n---\n**Next:** To include opt-in sidecar context, rerun search({action: "semantic", query: "...", retrieval_policy: "graph-with-passive-docs"${repoParam}}), then inspect({action: "context", target: "<symbol>"${repoParam}}) for a result.`;
+        const cap = typeof args?.max_tokens === 'number' ? args.max_tokens : 2000;
+        return `\n\n---\n**Next:** To include opt-in sidecar context, rerun search({action: "semantic", query: "...", retrieval_policy: "graph-with-passive-docs", max_tokens: ${cap}${repoParam}}), then inspect({action: "context", target: "<symbol>"${repoParam}}) for a result.`;
       }
       if (args?.action === 'semantic' && args?.include_markdown_context === true) {
         return `\n\n---\n**Next:** Use inspect({action: "context", target: "<symbol>", consume_enrichment_facts: true${repoParam}}) for code refs, or rerun search with include_markdown_ppr: true to include bounded Markdown document PPR metadata.`;

@@ -4,7 +4,7 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
-- `search` (`action: "semantic"`) and `inspect` (`action: "evidence"`) accept an optional `max_tokens` cap (1 to 200000). Search results are trimmed in rank order with a `budget` report; evidence entries past the cap keep file and line range and omit the snippet. `ontoindex query --max-tokens <n>` forwards it. Enrichment and docs payloads are not counted, and `@group` search rejects the option.
+- `search` (`action: "semantic"`) and `inspect` (`action: "evidence"`) accept `max_tokens` (1 to 200000). Semantic search trims results in rank order, stripping `content` from the lowest-ranked results before dropping any, then trims docs and enrichment payloads (related docs, related chunks, visible records, facts, mention targets) to the remaining budget, and reports it in `budget` and `enrichment.budget`. Evidence snippets are clipped to whole lines or omitted, and every entry keeps its file and line range. `ontoindex query --max-tokens <n>` forwards it. `@group` search rejects the option.
 - `gn_diagnose` reports `processMemory` (RSS, heap, native memory, open repository pools, buffer size and idle-exit setting) and recommends `ONTOINDEX_MCP_IDLE_EXIT_MS` when a server holds 400 MB or more of native memory with no open pool.
 - `ONTOINDEX_MCP_IDLE_EXIT_MS` no longer exits the MCP server while a repository connection pool is still open.
 - Impact analysis binds traversal node ids as a query parameter instead of building them into Cypher text, and reports `UNKNOWN` risk (never `LOW`) when a depth query fails.

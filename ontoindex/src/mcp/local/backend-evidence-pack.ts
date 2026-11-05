@@ -31,6 +31,8 @@ interface EvidenceEntry {
   end_line?: number;
   snippet?: string;
   snippet_omitted?: boolean;
+  snippet_truncated?: boolean;
+  snippet_end_line?: number;
   symbol_name?: string;
   symbol_type?: string;
 }
@@ -48,6 +50,7 @@ interface EvidencePackResult {
     max_tokens: number;
     estimated_tokens: number;
     snippets_omitted: number;
+    snippets_clipped: number;
     over_budget: boolean;
   };
   error?: string;
@@ -308,31 +311,109 @@ export async function runEvidencePack(
       });
     }
 
-    let budget: EvidencePackResult['budget'];
     if (typeof params?.max_tokens === 'number') {
       const maxTokens = params.max_tokens;
-      let used = 0;
-      let omitted = 0;
-      evidence.forEach((entry, index) => {
-        const cost = estimateTokens(JSON.stringify(entry));
-        if (index === 0 || used + cost <= maxTokens) {
-          used += cost;
-          return;
-        }
-        if (entry.snippet !== undefined) {
-          delete entry.snippet;
-          entry.snippet_omitted = true;
-          omitted += 1;
-        }
-        used += estimateTokens(JSON.stringify(entry));
-      });
-      const estimated = estimateTokens(JSON.stringify(evidence));
-      budget = {
+      const snippets = evidence.map((entry) => entry.snippet);
+      for (const entry of evidence) delete entry.snippet;
+
+      const budget: NonNullable<EvidencePackResult['budget']> = {
         max_tokens: maxTokens,
-        estimated_tokens: estimated,
-        snippets_omitted: omitted,
-        over_budget: estimated > maxTokens,
+        estimated_tokens: 0,
+        snippets_omitted: 0,
+        snippets_clipped: 0,
+        over_budget: false,
       };
+      const result: EvidencePackResult = {
+        status: 'success',
+        tool: 'evidence_pack',
+        repo: repo.name,
+        target_count: targets.length,
+        resolved_count: evidence.length,
+        unresolved_count: unresolved.length,
+        evidence,
+        unresolved,
+        budget,
+      };
+      const wrapper = {
+        status: result.status,
+        tool: result.tool,
+        repo: result.repo,
+        target_count: result.target_count,
+        resolved_count: result.resolved_count,
+        unresolved_count: result.unresolved_count,
+        unresolved: result.unresolved,
+        budget: result.budget,
+      };
+      const metadata = evidence.map((entry) => ({
+        ...entry,
+        snippet: '',
+        snippet_truncated: true,
+        snippet_end_line: entry.end_line,
+      }));
+      const metadataTokens = metadata.reduce(
+        (total, entry) => total + estimateTokens(JSON.stringify(entry)),
+        0,
+      );
+      const reserved = Math.max(
+        estimateTokens(JSON.stringify(wrapper)) + metadataTokens,
+        estimateTokens(JSON.stringify({ ...wrapper, evidence: metadata })),
+      );
+      let pool = maxTokens - reserved;
+      let pending = snippets.filter((snippet) => snippet !== undefined).length;
+      let omitted = 0;
+      let clipped = 0;
+
+      for (const [index, entry] of evidence.entries()) {
+        const snippet = snippets[index];
+        if (snippet === undefined) continue;
+
+        const share = pool > 0 ? pool / pending : 0;
+        pending -= 1;
+        const snippetCost = estimateTokens(JSON.stringify(snippet));
+        if (snippetCost <= share) {
+          entry.snippet = snippet;
+          pool -= snippetCost;
+          continue;
+        }
+
+        if (share > 0) {
+          const lines = snippet.split('\n');
+          let low = 1;
+          let high = lines.length;
+          let best = 0;
+          while (low <= high) {
+            const middle = Math.floor((low + high) / 2);
+            const candidate = lines.slice(0, middle).join('\n');
+            if (estimateTokens(JSON.stringify(candidate)) <= share) {
+              best = middle;
+              low = middle + 1;
+            } else {
+              high = middle - 1;
+            }
+          }
+          if (best >= 1) {
+            entry.snippet = lines.slice(0, best).join('\n');
+            entry.snippet_truncated = true;
+            entry.snippet_end_line = entry.start_line! + best - 1;
+            clipped += 1;
+            pool -= estimateTokens(JSON.stringify(entry.snippet));
+            continue;
+          }
+        }
+
+        entry.snippet_omitted = true;
+        omitted += 1;
+      }
+      budget.snippets_omitted = omitted;
+      budget.snippets_clipped = clipped;
+      while (true) {
+        const estimated = estimateTokens(JSON.stringify(result));
+        if (budget.estimated_tokens === estimated) break;
+        budget.estimated_tokens = estimated;
+        budget.over_budget = estimated > maxTokens;
+      }
+      budget.over_budget = budget.estimated_tokens > maxTokens;
+      return result;
     }
 
     return {
@@ -344,7 +425,6 @@ export async function runEvidencePack(
       unresolved_count: unresolved.length,
       evidence,
       unresolved,
-      ...(budget && { budget }),
     };
   } catch (err: unknown) {
     return {

@@ -25,6 +25,12 @@ describe('evidence_pack', () => {
       ].join('\n'),
       'utf8',
     );
+
+    await fs.writeFile(
+      path.join(tmpDir, 'src', 'big.ts'),
+      Array.from({ length: 200 }, (_, index) => `const v${index + 1} = ${index + 1};`).join('\n'),
+      'utf8',
+    );
   });
 
   afterAll(async () => {
@@ -164,18 +170,72 @@ describe('evidence_pack', () => {
     expect(result.evidence[0].end_line).toBe(3);
   });
 
-  it('omits snippets past max_tokens and keeps line ranges', async () => {
+  it('shares the budget so every target keeps some text', async () => {
     const repo: any = { id: 'not-initialized', name: 't', repoPath: tmpDir };
     const result = await runEvidencePack(repo, {
-      targets: ['src/auth.ts:2', 'src/auth.ts:7'],
+      targets: ['src/big.ts:20', 'src/big.ts:100', 'src/big.ts:180'],
+      context_lines: 40,
+      max_tokens: 400,
+    });
+    expect(result.evidence.every((entry) => entry.snippet !== undefined)).toBe(true);
+    expect(
+      result.evidence.filter((entry) => entry.snippet_truncated === true).length,
+    ).toBeGreaterThanOrEqual(2);
+    expect(result.budget?.snippets_omitted).toBe(0);
+    expect(result.budget?.over_budget).toBe(false);
+  });
+
+  it('gives unused budget to later entries', async () => {
+    const repo: any = { id: 'not-initialized', name: 't', repoPath: tmpDir };
+    const combined = await runEvidencePack(repo, {
+      targets: ['src/auth.ts:2', 'src/big.ts:100'],
+      context_lines: 80,
+      max_tokens: 500,
+    });
+    const single = await runEvidencePack(repo, {
+      targets: ['src/big.ts:100'],
+      context_lines: 80,
+      max_tokens: 250,
+    });
+    const combinedLines =
+      combined.evidence[1].snippet_end_line! - combined.evidence[1].start_line! + 1;
+    const singleLines = single.evidence[0].snippet_end_line! - single.evidence[0].start_line! + 1;
+    expect(combinedLines).toBeGreaterThan(singleLines);
+  });
+
+  it('keeps the complete response under the cap', async () => {
+    const repo: any = { id: 'not-initialized', name: 't', repoPath: tmpDir };
+    const result = await runEvidencePack(repo, {
+      targets: ['src/big.ts:20', 'src/big.ts:100', 'src/big.ts:180'],
+      context_lines: 40,
+      max_tokens: 600,
+    });
+    expect(Math.ceil(JSON.stringify(result).length / 4)).toBeLessThanOrEqual(600);
+    expect(result.budget?.over_budget).toBe(false);
+  });
+
+  it('clips an oversized first snippet instead of exceeding the cap', async () => {
+    const repo: any = { id: 'not-initialized', name: 't', repoPath: tmpDir };
+    const result = await runEvidencePack(repo, {
+      targets: ['src/big.ts:100'],
+      context_lines: 80,
+      max_tokens: 150,
+    });
+    expect(result.evidence[0].snippet_truncated).toBe(true);
+    expect(result.evidence[0].snippet_end_line).toBeLessThan(result.evidence[0].end_line!);
+    expect(result.budget?.snippets_clipped).toBe(1);
+    expect(result.budget?.over_budget).toBe(false);
+  });
+
+  it('omits the snippet when not even one line fits', async () => {
+    const repo: any = { id: 'not-initialized', name: 't', repoPath: tmpDir };
+    const result = await runEvidencePack(repo, {
+      targets: ['src/auth.ts:2'],
       context_lines: 1,
       max_tokens: 1,
     });
-    expect(result.evidence[0].snippet).toBeDefined();
-    expect(result.evidence[1].snippet).toBeUndefined();
-    expect(result.evidence[1].snippet_omitted).toBe(true);
-    expect(result.evidence[1].start_line).toBeDefined();
-    expect(result.budget?.snippets_omitted).toBe(1);
+    expect(result.evidence[0].snippet).toBeUndefined();
+    expect(result.evidence[0].snippet_omitted).toBe(true);
     expect(result.budget?.over_budget).toBe(true);
   });
 
@@ -196,5 +256,9 @@ describe('evidence_pack', () => {
     const repo: any = { id: 'not-initialized', name: 't', repoPath: tmpDir };
     const result = await runEvidencePack(repo, { targets: ['src/auth.ts:1'] });
     expect(result.budget).toBeUndefined();
+    expect(result.evidence[0].snippet).toBeDefined();
+    expect(result.evidence[0].snippet_omitted).toBeUndefined();
+    expect(result.evidence[0].snippet_truncated).toBeUndefined();
+    expect(result.evidence[0].snippet_end_line).toBeUndefined();
   });
 });

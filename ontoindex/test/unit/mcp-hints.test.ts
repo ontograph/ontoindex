@@ -29,6 +29,20 @@ describe('MCP Next-Step Hints', () => {
     expect(hint).toContain('repo: "my-repo"');
   });
 
+  it('recommends a max_tokens cap with the docs policy', () => {
+    const hint = getNextStepHint('search', { action: 'semantic', repo: 'my-repo' });
+
+    expect(hint).toContain(
+      'retrieval_policy: "graph-with-passive-docs", max_tokens: 2000, repo: "my-repo"',
+    );
+  });
+
+  it('echoes the caller max_tokens in the docs hint', () => {
+    const hint = getNextStepHint('search', { action: 'semantic', max_tokens: 800 });
+
+    expect(hint).toContain('retrieval_policy: "graph-with-passive-docs", max_tokens: 800');
+  });
+
   it('does not re-suggest docs when a docs retrieval policy is set', () => {
     const hint = getNextStepHint('search', {
       action: 'semantic',

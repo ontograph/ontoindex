@@ -24,6 +24,15 @@ const configs = [
 ];
 
 const argv = process.argv.slice(2);
+const evidenceConfigs = [
+  { label: 'evidence uncapped', options: {} },
+  { label: 'evidence max_tokens: 600', options: { max_tokens: 600 } },
+];
+const evidenceTargets = [
+  'processFileMatches',
+  'ontoindex/src/mcp/local/backend-evidence-pack.ts:100',
+  'ontoindex/src/core/search/bm25-index.ts:222',
+];
 let projectPath;
 let outputPath;
 let assertResults = false;
@@ -87,6 +96,30 @@ for (const config of configs) {
   console.log(`| ${meanTokens.toFixed(1)} | ${(hitRate * 100).toFixed(1)}% |`);
 }
 
+for (const config of evidenceConfigs) {
+  const result = await backend.callTool('evidence_pack', {
+    targets: evidenceTargets,
+    context_lines: 10,
+    ...config.options,
+  });
+  const bytes = Buffer.byteLength(JSON.stringify(result ?? ''), 'utf8');
+  const row = {
+    kind: 'evidence',
+    config: config.label,
+    status: result?.status,
+    response_bytes: bytes,
+    tokens: Math.ceil(bytes / 4),
+    snippets: Array.isArray(result?.evidence)
+      ? result.evidence.filter((entry) => typeof entry.snippet === 'string').length
+      : 0,
+  };
+  rows.push(row);
+  console.log(`\n### ${config.label}`);
+  console.log('| Tokens | Entries with snippet |');
+  console.log('| ---: | ---: |');
+  console.log(`| ${row.tokens} | ${row.snippets} |`);
+}
+
 if (outputPath) {
   await fs.writeFile(path.resolve(outputPath), `${JSON.stringify(rows, null, 2)}\n`);
 }
@@ -108,6 +141,17 @@ if (assertResults) {
       console.log(`ASSERT FAIL: ${config.label}: ${reasons.join('; ')}`);
       for (const row of configRows.filter((row) => row.hit === false))
         console.log(JSON.stringify(row));
+    }
+  }
+  for (const config of evidenceConfigs.filter(({ options }) => options.max_tokens)) {
+    const row = rows.find((row) => row.kind === 'evidence' && row.config === config.label);
+    const ceiling = 1.25 * config.options.max_tokens;
+    const reasons = [];
+    if (row.tokens > ceiling) reasons.push(`tokens ${row.tokens} exceeds ceiling ${ceiling}`);
+    if (row.status !== 'success') reasons.push(`status ${row.status} is not success`);
+    if (reasons.length > 0) {
+      failed = true;
+      console.log(`ASSERT FAIL: ${config.label}: ${reasons.join('; ')}`);
     }
   }
   if (failed) process.exit(1);

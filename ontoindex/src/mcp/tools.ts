@@ -1139,7 +1139,7 @@ AFTER THIS: Review the snippets to understand implementation details or to verif
         max_tokens: {
           type: 'number',
           description:
-            'Approximate token cap for evidence snippets. Entries past the cap keep file and line range and omit the snippet. Omit for no cap.',
+            'Approximate token cap for evidence snippets. Snippets that do not fit are clipped to whole lines (snippet_truncated, snippet_end_line) or omitted (snippet_omitted). Every entry keeps its file and line range. Omit for no cap.',
           minimum: 1,
           maximum: 200000,
         },

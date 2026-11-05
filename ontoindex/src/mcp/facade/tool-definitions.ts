@@ -260,7 +260,7 @@ export const ONTOINDEX_FACADE_TOOLS: ToolDefinition[] = [
         max_tokens: {
           type: 'number',
           description:
-            'For action="evidence", approximate token cap for evidence snippets. Entries past the cap keep file and line range and omit the snippet. Omit for no cap.',
+            'For action="evidence", approximate token cap for evidence snippets. Snippets that do not fit are clipped to whole lines (snippet_truncated, snippet_end_line) or omitted (snippet_omitted). Every entry keeps its file and line range. Omit for no cap.',
           minimum: 1,
           maximum: 200000,
         },

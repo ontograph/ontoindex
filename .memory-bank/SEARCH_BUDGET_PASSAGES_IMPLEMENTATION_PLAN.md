@@ -757,3 +757,218 @@ and hit rate:
 | 2 | T11 (`sol` low) | `local-backend.ts`, schemas, one test file |
 | 3 | T12 (`sol` low) and T13 (`luna` xhigh) in parallel, then coordinator build and benchmark | disjoint |
 | 4 | Coordinator: tests, `gn_verify_diff`, local commit | none |
+
+## Phase 3: review of Phase 2 and next tasks
+
+### Review findings
+
+Measured on the Phase 2 build (`7bf4c34`), repository `ontoindex`.
+
+| # | Finding | Evidence |
+|---|---|---|
+| G1 | `inspect` evidence never caps its first entry. The budget loop skips the cap for `index === 0`, so one large symbol defeats the cap. | `processFileMatches` (861 lines) with `max_tokens: 400` returns 9,167 tokens (`over_budget: true`). Uncapped it returns 9,252. |
+| G2 | The MCP hint for semantic search recommends `retrieval_policy: "graph-with-passive-docs"` without a cap. An agent that follows it receives the uncapped docs payload. | 19,000 tokens measured. The hint is identical with and without `max_tokens` in the request. |
+| G3 | `CHANGELOG.md` still says "Enrichment and docs payloads are not counted". Phase 2 made that false. | `ontoindex/CHANGELOG.md` line 7. |
+| G4 | The benchmark covers search only. Nothing exercises the evidence cap, so G1 passed every check. | `scripts/search-budget-benchmark.mjs`. |
+| G5 | Push and PR are blocked. `gh auth status` still reports an invalid token for `er77`. `hosts.yml` is unchanged since 2026-10-10. The checkout has no SSH key and no credential helper, and `git push --dry-run` asks for a username. | `gh auth status`, `ls -la ~/.config/gh/hosts.yml`. |
+| G6 | Performance needs no work. The trim helpers cost 0.03 ms (enrichment), 0.04 ms (9 items) and 0.29 ms (100 items of 2 KB) against 164-237 ms per query. | `performance.now()` over 200 runs. |
+| G7 | The facade path is correct end to end. `search` and `inspect` through `dispatchFacade` both return their `budget` reports. | Direct calls. |
+
+### Options considered
+
+| Topic | Option | Verdict |
+|---|---|---|
+| Evidence overshoot (G1) | A. Omit the first snippet too when it does not fit. | Rejected. A single-target call returns nothing but the range. |
+| | B. Clip each snippet to whole lines from the head until the budget is used. Report `snippet_truncated` and `snippet_end_line`. Omit only when no line fits. | **Chosen.** Keeps verifiable text, bounded cost, no schema change beyond two optional fields. |
+| | C. Clip around the requested line for `path:line` targets. | Rejected. Two clipping rules, no measured need. |
+| Hint (G2) | A. Add `max_tokens` to the recommended call, echoing the caller's value when set. | **Chosen.** One string change in one owner. |
+| | B. Apply a default cap when `retrieval_policy` is set. | Rejected. Changes an existing contract silently. |
+| | C. Remove the hint. | Rejected. The hint is how agents discover the docs mode. |
+| Coverage (G4) | A. Add evidence cases and an assertion to the benchmark. | **Chosen.** Runs against the real index and would have caught G1. |
+| | B. Unit tests only. | Kept as well, inside T14. Unit tests alone do not exercise the real index. |
+| Docs (G3) | Rewrite the changelog line and the evidence parameter descriptions to the current behavior. | **Chosen.** |
+| Performance (G6) | Cache the sidecar store, tokenizer micro-optimizations. | Rejected again. Measured gain is under 10 ms of 237 ms. |
+| Delivery (G5) | `git bundle` of the branch as an off-worktree backup. | **Chosen** as a safe interim step. Push and PR need the user's `gh auth login`. |
+
+### Consolidated tasks
+
+Models: T14 on `gpt-6-luna` (xhigh). T15, T16 and T17 on `gpt-6.1-sol` (low).
+Workers are leaf workers, run in `/opt/d1/_wrk/ontoindex-max-tokens`, from
+`ontoindex/`, and follow "Execution rules for every task".
+
+#### T14. Clip evidence snippets to the budget
+
+Files: `src/mcp/local/backend-evidence-pack.ts`,
+`test/unit/evidence-pack.test.ts`.
+
+Replace the `let budget ...` block in `runEvidencePack` with a loop over
+`evidence`, in order, with `used = 0`:
+
+1. Take `snippet = entry.snippet` and delete it from the entry.
+2. `meta = estimateTokens(JSON.stringify({ ...entry, snippet: '', snippet_truncated: true, snippet_end_line: entry.end_line }))`.
+   Add `meta` to `used`. If `snippet === undefined`, continue.
+3. `room = maxTokens - used`. If
+   `estimateTokens(JSON.stringify(snippet)) <= room`, restore the snippet and add
+   its cost to `used`.
+4. Otherwise, if `room > 0`, split on `'\n'` and find by binary search the
+   largest `k` such that
+   `estimateTokens(JSON.stringify(lines.slice(0, k).join('\n'))) <= room`. If
+   `k >= 1`: set the snippet to those lines, `snippet_truncated = true` and
+   `snippet_end_line = entry.start_line + k - 1`, count it in `snippets_clipped`,
+   and add its cost to `used`.
+5. If `room <= 0` or `k === 0`: set `snippet_omitted = true` and count it in
+   `snippets_omitted`.
+
+`entry.start_line` and `entry.end_line` keep describing the full range. Add
+`snippet_truncated?: boolean` and `snippet_end_line?: number` to `EvidenceEntry`
+and `snippets_clipped: number` to the `budget` type. `estimated_tokens` and
+`over_budget` stay as they are.
+
+Tests (reuse the `describe('evidence_pack', ...)` fixture; create a 200-line
+file `src/big.ts` in `beforeAll`, one `const vN = N;` per line):
+
+- Update `omits snippets past max_tokens and keeps line ranges`: run once without
+  `max_tokens`, then set `max_tokens` to
+  `Math.ceil(JSON.stringify(first.evidence[0]).length / 4) + 5`. Expect
+  `evidence[0].snippet` defined and `evidence[1].snippet_omitted === true`.
+- `clips an oversized first snippet instead of exceeding the cap`: target
+  `src/big.ts:100`, `context_lines: 80`, `max_tokens: 150`. Expect
+  `snippet_truncated === true`, `snippet_end_line < end_line`,
+  `budget.snippets_clipped === 1` and `budget.over_budget === false`.
+- `omits the snippet when not even one line fits`: `max_tokens: 1`. Expect
+  `snippet_omitted === true` and `budget.over_budget === true`.
+- Keep `keeps all snippets under a large max_tokens` and `adds no budget without
+  max_tokens`.
+
+Commands: `npx vitest run test/unit/evidence-pack.test.ts` and
+`npx tsc --noEmit -p tsconfig.json`. Run `npx prettier --write` on both files.
+
+#### T15. Cap in the docs hint
+
+Files: `src/mcp/server.ts`, `test/unit/mcp-hints.test.ts`.
+
+In `getNextStepHint`, `case 'search':`, first branch, change the recommended call
+to `retrieval_policy: "graph-with-passive-docs", max_tokens: ${cap}${repoParam}`,
+with `const cap = typeof args?.max_tokens === 'number' ? args.max_tokens : 2000;`.
+Leave the other branches and the branch condition unchanged.
+
+Tests: in `mcp-hints.test.ts` add `recommends a max_tokens cap with the docs
+policy` (expect `max_tokens: 2000`) and `echoes the caller max_tokens in the docs
+hint` (args `max_tokens: 800`, expect `max_tokens: 800`). Existing expectations
+stay.
+
+Commands: `npx vitest run test/unit/mcp-hints.test.ts` and
+`npx tsc --noEmit -p tsconfig.json`. Run `npx prettier --write` on both files.
+
+#### T16. Current-state text
+
+Files: `ontoindex/CHANGELOG.md`, `src/mcp/tools.ts`,
+`src/mcp/facade/tool-definitions.ts`.
+
+1. `CHANGELOG.md`, line 7: replace the whole bullet with one that states the
+   current behavior: `search` (`action: "semantic"`) and `inspect`
+   (`action: "evidence"`) accept `max_tokens` (1 to 200000). Semantic search trims
+   results in rank order, stripping `content` from the lowest-ranked results
+   before dropping any, then trims docs and enrichment payloads (related docs,
+   related chunks, visible records, facts, mention targets) to the remaining
+   budget, and reports it in `budget` and `enrichment.budget`. Evidence snippets
+   are clipped to whole lines or omitted, and every entry keeps its file and line
+   range. `ontoindex query --max-tokens <n>` forwards it. `@group` search rejects
+   the option.
+2. `tools.ts` (`evidence_pack` tool) and `tool-definitions.ts` (`inspect` tool):
+   set the `max_tokens` description to `Approximate token cap for evidence
+   snippets. Snippets that do not fit are clipped to whole lines (snippet_truncated,
+   snippet_end_line) or omitted (snippet_omitted). Every entry keeps its file and
+   line range. Omit for no cap.` In `tool-definitions.ts` keep the prefix
+   `For action="evidence", `.
+
+Commands: `npx vitest run test/unit/tools.test.ts
+test/unit/tool-params-validation.test.ts test/unit/facade-completeness.test.ts`
+and `npx tsc --noEmit -p tsconfig.json`. The coordinator updates the contract
+snapshot afterwards.
+
+#### T17. Evidence cases in the benchmark (after T14 and a rebuild)
+
+Files: `scripts/search-budget-benchmark.mjs`.
+
+Add `evidenceConfigs` (`{ label: 'evidence uncapped', options: {} }` and
+`{ label: 'evidence max_tokens: 600', options: { max_tokens: 600 } }`) and
+`evidenceTargets = ['processFileMatches', 'ontoindex/src/mcp/local/backend-evidence-pack.ts:100', 'ontoindex/src/core/search/bm25-index.ts:222']`.
+For each config call `backend.callTool('evidence_pack', { targets: evidenceTargets, context_lines: 10, ...options })`.
+Print one table per config with tokens (`ceil(bytes / 4)`) and entries that kept
+a snippet. Append the rows to the `--out` JSON with a `kind: 'evidence'` field.
+With `--assert`, fail the capped evidence config when its tokens exceed
+`1.25 * max_tokens`, or when `status !== 'success'`. Without the flag, behavior
+for the existing search configs is unchanged.
+
+Commands: `node --check scripts/search-budget-benchmark.mjs` and
+`npx prettier --check scripts/search-budget-benchmark.mjs` (use `--write` if
+needed). The coordinator runs the build and the benchmark.
+
+#### T18. Reserve metadata and share the budget across evidence entries
+
+Found by the T17 benchmark: with three targets and `max_tokens: 600`, the T14
+loop returned 770 tokens (`over_budget: true`) and gave the whole budget to the
+first entry. Two defects: the wrapper (`status`, `tool`, `repo`, counts,
+`unresolved`, `budget`, about 77 tokens) and the metadata of later entries are
+not reserved before snippets are placed, and the first entry takes everything.
+
+Files: `src/mcp/local/backend-evidence-pack.ts`,
+`test/unit/evidence-pack.test.ts`.
+
+Rewrite the budget block in `runEvidencePack`:
+
+1. Strip every snippet from `evidence` into a parallel array `snippets`.
+2. `reserved` = the estimate of the wrapper (the success result without
+   `evidence`, with a placeholder
+   `budget: { max_tokens, estimated_tokens: 0, snippets_omitted: 0, snippets_clipped: 0, over_budget: false }`)
+   plus, for every entry, the estimate of
+   `{ ...entry, snippet: '', snippet_truncated: true, snippet_end_line: entry.end_line }`.
+   `pool = maxTokens - reserved`.
+3. Let `pending` be the number of entries that had a snippet. Walk the entries in
+   order. For an entry with a snippet: `share = pool / pending` (zero when
+   `pool <= 0`), then `pending -= 1`.
+   - If the snippet cost fits `share`, restore it and subtract its cost from
+     `pool`.
+   - Otherwise clip to whole lines with the existing binary search against
+     `share`. If at least one line fits, set `snippet_truncated` and
+     `snippet_end_line`, count it in `snippets_clipped`, and subtract its cost
+     from `pool`.
+   - Otherwise set `snippet_omitted = true` and count it in `snippets_omitted`.
+   Budget unused by an entry stays in `pool`, so later entries get more.
+4. `estimated_tokens` is the estimate of the complete final result including
+   `budget`. `over_budget` is `estimated_tokens > maxTokens`.
+
+Tests (same `describe` block and `src/big.ts` fixture):
+
+- Keep `keeps all snippets under a large max_tokens`, `adds no budget without
+  max_tokens` and `omits the snippet when not even one line fits`.
+- Replace the T14 test `omits snippets past max_tokens and keeps line ranges`
+  with `shares the budget so every target keeps some text`: targets
+  `['src/big.ts:20', 'src/big.ts:100', 'src/big.ts:180']`, `context_lines: 40`,
+  `max_tokens: 400`. Expect all three entries to have a snippet, at least two with
+  `snippet_truncated === true`, `snippets_omitted === 0` and `over_budget === false`.
+- `gives unused budget to later entries`: first target `src/auth.ts:2`
+  (`context_lines: 1`, small), second `src/big.ts:100` (`context_lines: 80`),
+  `max_tokens: 500`. Expect the second snippet to hold more lines than it would
+  with an equal split, that is `snippet_end_line - start_line + 1` greater than
+  the line count of the same call with the first target removed and
+  `max_tokens` halved.
+- `keeps the complete response under the cap`: three targets, `max_tokens: 600`.
+  Expect `JSON.stringify(result).length / 4 <= 600` rounded up and
+  `over_budget === false`.
+- Keep `clips an oversized first snippet instead of exceeding the cap`.
+
+Commands: `npx vitest run test/unit/evidence-pack.test.ts` and
+`npx tsc --noEmit -p tsconfig.json`. Run `npx prettier --write` on both files.
+The coordinator rebuilds and reruns the benchmark with `--assert`.
+
+### Order
+
+| Wave | Tasks | Write sets |
+|---|---|---|
+| 1 | T14 (`luna` xhigh), T15 (`sol` low), T16 (`sol` low) in parallel | disjoint |
+| 2 | Coordinator: rebuild, update the contract snapshot | none |
+| 3 | T17 (`sol` low), then coordinator benchmark with `--assert`; it failed on the evidence cap | one script |
+| 3b | T18 (`luna` xhigh), then coordinator rebuild and benchmark | `backend-evidence-pack.ts`, one test |
+| 4 | Coordinator: full `test:unit`, `gn_verify_diff`, commit, `git bundle` backup | none |
