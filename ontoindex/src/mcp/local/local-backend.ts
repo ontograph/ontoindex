@@ -1286,6 +1286,10 @@ const COMMITTED_FALLBACK_CODES = new Set([
 ]);
 const UNCOVERED_DIRTY_SAMPLE = 10;
 
+function truncatePathSample(file: string): string {
+  return file.length > 256 ? `${file.slice(0, 255)}…` : file;
+}
+
 /** Name the dirty source files a committed-index answer cannot see; never throws. */
 async function describeUncoveredDirtyPaths(repo: RepoHandle): Promise<string> {
   try {
@@ -1294,7 +1298,7 @@ async function describeUncoveredDirtyPaths(repo: RepoHandle): Promise<string> {
       ...new Set([...plan.includePaths, ...plan.uncoveredPaths, ...plan.tombstones]),
     ].sort();
     if (paths.length === 0) return '';
-    const sample = paths.slice(0, UNCOVERED_DIRTY_SAMPLE).join(', ');
+    const sample = paths.slice(0, UNCOVERED_DIRTY_SAMPLE).map(truncatePathSample).join(', ');
     const more =
       paths.length > UNCOVERED_DIRTY_SAMPLE
         ? ` and ${paths.length - UNCOVERED_DIRTY_SAMPLE} more`
@@ -2450,7 +2454,8 @@ export class LocalBackend implements BackendPort {
               : validParserEvidence
                 ? [...new Set(parserEvidence!.parseErrorFiles)]
                 : [];
-            const parseErrorPathSample = parseErrorPaths.sort().slice(0, 10);
+            const sampledParseErrorPaths = parseErrorPaths.sort().slice(0, 10);
+            const parseErrorPathSample = sampledParseErrorPaths.map(truncatePathSample);
             const partial =
               parseErrorPathCount === null ||
               parseErrorPathCount > 0 ||
@@ -2478,6 +2483,9 @@ export class LocalBackend implements BackendPort {
                   parseErrorPathCount === null
                     ? null
                     : parseErrorPathCount > parseErrorPathSample.length ||
+                      sampledParseErrorPaths.some(
+                        (file, index) => file !== parseErrorPathSample[index],
+                      ) ||
                       (!snapshot.usable && parserEvidence?.truncated === true),
               },
               ...(partial
@@ -2608,9 +2616,7 @@ export class LocalBackend implements BackendPort {
                   return overlayResult;
                 }
                 const uncoveredPaths = [...(snapshot?.uncoveredPaths ?? [])].sort();
-                const uncoveredPathSample = uncoveredPaths
-                  .slice(0, 10)
-                  .map((file) => (file.length > 256 ? `${file.slice(0, 255)}…` : file));
+                const uncoveredPathSample = uncoveredPaths.slice(0, 10).map(truncatePathSample);
                 return {
                   ...overlayResult,
                   readContext: {

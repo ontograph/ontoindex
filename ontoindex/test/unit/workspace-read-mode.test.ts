@@ -244,6 +244,18 @@ describe('explicit read contexts', () => {
   );
   it.each([
     [undefined, null, [], null, 'partial'],
+    ...[256, 257].map((length) => [
+      {
+        version: 1,
+        parseErrorCount: 2,
+        parseErrorFiles: ['x'.repeat(length), 'short.ts'],
+        truncated: false,
+      },
+      2,
+      ['short.ts', length === 256 ? 'x'.repeat(256) : `${'x'.repeat(255)}…`],
+      length > 256,
+      'partial',
+    ]),
     [
       { version: 1, parseErrorCount: 0, parseErrorFiles: [], truncated: false },
       0,
@@ -330,6 +342,42 @@ describe('explicit read contexts', () => {
       }
     },
   );
+
+  it.each([0, 256, 257])('bounds live parse-error samples of length %i', async (length) => {
+    vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
+    const paths = length ? ['x'.repeat(length), 'short.ts'] : [];
+    vi.mocked(runtime.prepareWorkspaceRead).mockResolvedValue({
+      ...snapshot('commit'),
+      usable: true,
+      capability: 'workspace-graph',
+      coverage: 'complete',
+      parseErrorPaths: new Set(paths),
+    });
+    vi.mocked(storage.readActiveGenerationMeta).mockResolvedValue({
+      meta: null,
+      authority: 'missing',
+    } as any);
+    const backend = new LocalBackend();
+    try {
+      const result = await backend.withPreparedRepoRead(
+        repo as any,
+        { needsRelationships: true, readMode: 'workspace' },
+        async () => ({}),
+      );
+      expect(result).toMatchObject({
+        readContext: {
+          source: 'workspace-graph',
+          parseErrorPathCount: paths.length,
+          parseErrorPathSample: length
+            ? ['short.ts', length === 256 ? 'x'.repeat(256) : `${'x'.repeat(255)}…`]
+            : [],
+          parseErrorPathSampleTruncated: length > 256,
+        },
+      });
+    } finally {
+      await backend.dispose();
+    }
+  });
 
   it.each([
     ['commit', false],

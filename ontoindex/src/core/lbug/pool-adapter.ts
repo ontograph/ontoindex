@@ -795,10 +795,16 @@ export function isUnavailableExtension(error: unknown): boolean {
  * timer doesn't prematurely restore stdout while loads are in flight.
  */
 async function loadExtensionsSilenced(conn: lbug.Connection, shared: SharedDB): Promise<void> {
+  const rethrowLoadFailure = (error: unknown, localFailure?: { error: unknown }): void => {
+    if (!isUnavailableExtension(error)) throw error;
+    // Absence in a fallback must not hide a corrupt or incompatible local file.
+    if (localFailure && !isUnavailableExtension(localFailure.error)) throw localFailure.error;
+  };
   silenceStdout();
   activeQueryCount++;
   try {
     if (!shared.ftsLoaded) {
+      let localFailure: { error: unknown } | undefined;
       try {
         const localFtsPath = await resolveLocalLbugExtensionPath('fts');
         if (localFtsPath) {
@@ -806,9 +812,8 @@ async function loadExtensionsSilenced(conn: lbug.Connection, shared: SharedDB): 
             const loadQuery = `LOAD EXTENSION '${quoteLbugString(localFtsPath)}'`;
             await runStatement(conn, loadQuery);
             shared.ftsLoaded = true;
-          } catch {
-            // A failed explicit-path load falls through to the bare LOAD below, which
-            // applies the strict classifier to the final error.
+          } catch (error) {
+            localFailure = { error };
           }
         }
         if (!shared.ftsLoaded) {
@@ -816,19 +821,20 @@ async function loadExtensionsSilenced(conn: lbug.Connection, shared: SharedDB): 
           shared.ftsLoaded = true;
         }
       } catch (err) {
-        if (!isUnavailableExtension(err)) throw err;
+        rethrowLoadFailure(err, localFailure);
         // FTS extension may not be installed — FTS queries will fail gracefully
       }
     }
     if (!shared.vectorLoaded) {
+      let localFailure: { error: unknown } | undefined;
       try {
         const localVectorPath = await resolveLocalLbugExtensionPath('vector');
         if (localVectorPath) {
           try {
             await runStatement(conn, `LOAD EXTENSION '${quoteLbugString(localVectorPath)}'`);
             shared.vectorLoaded = true;
-          } catch {
-            // A failed explicit-path load falls through to the bare LOAD below.
+          } catch (error) {
+            localFailure = { error };
           }
         }
         if (!shared.vectorLoaded) {
@@ -842,7 +848,7 @@ async function loadExtensionsSilenced(conn: lbug.Connection, shared: SharedDB): 
           shared.vectorLoaded = true;
         }
       } catch (err) {
-        if (!isUnavailableExtension(err)) throw err;
+        rethrowLoadFailure(err, localFailure);
         // VECTOR extension may not be available
       }
     }

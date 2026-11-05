@@ -70,6 +70,12 @@ export function isNameShadowed(node: SyntaxNode, name: string): boolean {
       const pending = [...current.namedChildren];
       while (pending.length) {
         const descendant = pending.pop()!;
+        // Conservatively include Annex B block-function bindings before skipping their bodies.
+        if (
+          ['function_declaration', 'generator_function_declaration'].includes(descendant.type) &&
+          binds(descendant.childForFieldName('name'))
+        )
+          return true;
         if (
           [
             'function_declaration',
@@ -117,7 +123,11 @@ export function isNameShadowed(node: SyntaxNode, name: string): boolean {
         )
       ) {
         if (binds(statement.childForFieldName('name'))) return true;
-      } else if (['lexical_declaration', 'variable_declaration'].includes(statement.type)) {
+      } else if (
+        ['lexical_declaration', 'variable_declaration', 'using_declaration'].includes(
+          statement.type,
+        )
+      ) {
         for (const declaration of statement.namedChildren) {
           if (
             declaration.type === 'variable_declarator' &&

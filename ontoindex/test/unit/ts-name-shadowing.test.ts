@@ -35,6 +35,22 @@ describe.each([
     ['sibling switch default', 'switch (value) { case 1: probe(); default: let User; }', true],
     ['block const', '{ const User = factory(); probe(); }', true],
     ['hoisted block var', 'function f() { probe(); if (true) { var User; } }', true],
+    ['hoisted block function', 'function f() { if (true) { function User() {} } probe(); }', true],
+    [
+      'hoisted block generator',
+      'function f() { if (true) { function* User() {} } probe(); }',
+      true,
+    ],
+    [
+      'block function in a nested function',
+      'function f() { function inner() { { function User() {} } } probe(); }',
+      false,
+    ],
+    [
+      'block generator in a nested function',
+      'function f() { function inner() { { function* User() {} } } probe(); }',
+      false,
+    ],
     ['hoisted for-of var', 'function f() { for (var User of []) {} probe(); }', true],
     ['hoisted static block var', 'class Holder { static { probe(); { var User; } } }', true],
     ['static block sibling let', 'class Holder { static { { let User; } probe(); } }', false],
@@ -116,8 +132,50 @@ describe.each([
   });
 });
 
+describe('JavaScript using declaration shadowing', () => {
+  const parser = new Parser();
+  parser.setLanguage(JavaScript);
+
+  it.each([
+    ['enclosing block', 'function f() { using User = getRes(); return new User(); }', true],
+    ['sibling block', 'function f() { { using User = getRes(); } return new User(); }', false],
+  ] as const)('%s', (_label, source, expected) => {
+    const tree = parser.parse(source);
+    expect(tree.rootNode.hasError).toBe(false);
+    expect(tree.rootNode.descendantsOfType('using_declaration')).toHaveLength(1);
+    const constructor = tree.rootNode
+      .descendantsOfType('new_expression')[0]
+      .childForFieldName('constructor')!;
+    expect(isNameShadowed(constructor, 'User')).toBe(expected);
+  });
+});
+
 describe('scope-aware constructor and factory call inference', () => {
   it.each([
+    [
+      'block function shadows factory return',
+      'js',
+      'function factory(){if(true){function User(){}} return new User()} function probe(){const u=factory();u.save()}',
+      false,
+    ],
+    [
+      'block function in another function does not shadow factory return',
+      'js',
+      'function other(){if(true){function User(){}}} function factory(){return new User()} function probe(){const u=factory();u.save()}',
+      true,
+    ],
+    [
+      'using binding shadows factory return',
+      'js',
+      'function factory(){using User=getRes();return new User()} function probe(){const u=factory();u.save()}',
+      false,
+    ],
+    [
+      'sibling using binding does not shadow factory return',
+      'js',
+      'function factory(){{using User=getRes();}return new User()} function probe(){const u=factory();u.save()}',
+      true,
+    ],
     [
       'catch binding ends before factory return',
       'js',
