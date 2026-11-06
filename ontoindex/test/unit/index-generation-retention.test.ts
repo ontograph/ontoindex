@@ -71,6 +71,51 @@ describe('committed index generation retention', () => {
       fs.stat(path.join(storage, 'generations', 'orphan', '.retention-managed')),
     ).rejects.toMatchObject({ code: 'ENOENT' });
   });
+  it.each(['missing', 'directory', 'symlink'])(
+    'leaves an active generation with a %s snapshot unmanaged through pinning and publication',
+    async (kind) => {
+      vi.spyOn(Date, 'now').mockReturnValue(1000);
+      await activateUnmanaged('1-orphan');
+      const directory = path.join(storage, 'generations', '1-orphan');
+      const snapshot = path.join(directory, 'snapshot.json');
+      await fs.unlink(snapshot);
+      if (kind === 'directory') await fs.mkdir(snapshot);
+      if (kind === 'symlink') await fs.symlink('meta.json', snapshot);
+      const marker = path.join(directory, '.retention-managed');
+
+      const pin = await acquireIndexGenerationPin(path.join(storage, 'lbug'));
+      await expect(fs.lstat(marker)).rejects.toMatchObject({ code: 'ENOENT' });
+      await pin.release();
+
+      await publish('a');
+      await expect(fs.lstat(marker)).rejects.toMatchObject({ code: 'ENOENT' });
+      await publish('b');
+      await publish('c');
+      await publish('d');
+
+      expect(await names()).toEqual(['1-orphan', 'b', 'c', 'd']);
+      await expect(fs.lstat(marker)).rejects.toMatchObject({ code: 'ENOENT' });
+    },
+  );
+  it.each(['missing', 'directory', 'symlink'])(
+    'preserves a managed generation with a later %s snapshot while pruning complete siblings',
+    async (kind) => {
+      await publish('damaged');
+      await publish('complete');
+      const directory = path.join(storage, 'generations', 'damaged');
+      const snapshot = path.join(directory, 'snapshot.json');
+      await fs.unlink(snapshot);
+      if (kind === 'directory') await fs.mkdir(snapshot);
+      if (kind === 'symlink') await fs.symlink('meta.json', snapshot);
+
+      await publish('a');
+      await publish('b');
+      await publish('c');
+
+      expect(await names()).toEqual(['a', 'b', 'c', 'damaged']);
+      expect((await fs.lstat(path.join(directory, '.retention-managed'))).isFile()).toBe(true);
+    },
+  );
   it('leaves a legacy root-layout database unmanaged', async () => {
     await fs.writeFile(path.join(storage, 'lbug'), 'legacy database');
     await fs.writeFile(path.join(storage, 'meta.json'), JSON.stringify({ generationId: 'legacy' }));

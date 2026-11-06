@@ -37,6 +37,81 @@ describe.each([
     ['hoisted block var', 'function f() { probe(); if (true) { var User; } }', true],
     ['hoisted block function', 'function f() { if (true) { function User() {} } probe(); }', true],
     [
+      'intervening block let prevents promotion',
+      'function f() { { let User; { function User() {} } } probe(); }',
+      false,
+    ],
+    [
+      'intervening destructured const prevents promotion',
+      'function f() { { const { User } = other; { function User() {} } } probe(); }',
+      false,
+    ],
+    [
+      'intervening class prevents promotion',
+      'function f() { { class User {} { function User() {} } } probe(); }',
+      false,
+    ],
+    [
+      'intervening async block function prevents promotion',
+      'function f() { { async function User() {} { function User() {} } } probe(); }',
+      false,
+    ],
+    [
+      'destructured catch parameter prevents promotion',
+      'function f() { try {} catch ({ User }) { { function User() {} } } probe(); }',
+      false,
+    ],
+    [
+      'simple catch parameter permits promotion',
+      'function f() { try {} catch (User) { { function User() {} } } probe(); }',
+      true,
+    ],
+    [
+      'for initializer lexical binding prevents promotion',
+      'function f() { for (let User = 0; User < 1; User++) { { function User() {} } } probe(); }',
+      false,
+    ],
+    [
+      'for-of lexical binding prevents promotion',
+      'function f() { for (const User of []) { { function User() {} } } probe(); }',
+      false,
+    ],
+    [
+      'for-of var permits promotion',
+      'function f() { for (var other of []) { { function User() {} } } probe(); }',
+      true,
+    ],
+    [
+      'for-of assignment permits promotion',
+      'function f() { for (User of []) { { function User() {} } } probe(); }',
+      true,
+    ],
+    [
+      'sibling switch clause lexical binding prevents promotion',
+      'function f() { switch (value) { case 1: let User; break; default: { function User() {} } } probe(); }',
+      false,
+    ],
+    [
+      'unrelated sibling lexical binding permits promotion',
+      'function f() { { let User; } { function User() {} } probe(); }',
+      true,
+    ],
+    [
+      'nested function lexical binding permits promotion',
+      'function f() { { function inner() { let User; } { function User() {} } } probe(); }',
+      true,
+    ],
+    [
+      'blocked candidate does not suppress eligible sibling',
+      'function f() { { let User; { function User() {} } } { function User() {} } probe(); }',
+      true,
+    ],
+    [
+      'block function still binds inside its block when promotion is blocked',
+      'function f() { { let User; { function User() {} probe(); } } }',
+      true,
+    ],
+    [
       'hoisted block generator',
       'function f() { if (true) { function* User() {} } probe(); }',
       false,
@@ -85,6 +160,26 @@ describe.each([
       'module block function',
       'import x from "y"; function f() { if (true) { function User() {} } probe(); }',
       false,
+    ],
+    [
+      'nested import.meta makes program a module',
+      'function f() { import.meta; { function User() {} } probe(); }',
+      false,
+    ],
+    [
+      'new.target does not make program a module',
+      'function f() { new.target; { function User() {} } probe(); }',
+      true,
+    ],
+    [
+      'dynamic import does not make program a module',
+      'function f() { import("other"); { function User() {} } probe(); }',
+      true,
+    ],
+    [
+      'import.meta text does not make program a module',
+      'function f() { "import.meta"; /* import.meta */ { function User() {} } probe(); }',
+      true,
     ],
     [
       'exported block function',
@@ -187,6 +282,59 @@ describe.each([
   });
 });
 
+describe('JavaScript retained Annex B qualification fixtures', () => {
+  const parser = new Parser();
+  parser.setLanguage(JavaScript as Parser.Language);
+
+  it.each([
+    [
+      'strict-html-comment',
+      '<!-- legacy comment\n"use strict"; const User="outer"; function f(){ {function User(){}} return User; } f()',
+    ],
+    [
+      'intervening-lexical-binding',
+      'const User="outer"; function f(){ {let User; {function User(){}}} return User; } f()',
+    ],
+    [
+      'module-import-meta',
+      'import.meta; const User="outer"; function f(){ {function User(){}} return User; } globalThis.__ontoindex254Oracle=f();',
+    ],
+  ])('%s resolves the outer binding', (_label, source) => {
+    const tree = parser.parse(source);
+    expect(tree.rootNode.hasError).toBe(false);
+    const reference = tree.rootNode.descendantsOfType('return_statement')[0].firstNamedChild!;
+    expect(isNameShadowed(reference, 'User')).toBe(false);
+  });
+
+  it.each([
+    [
+      'function directive after HTML comment',
+      'function f() { <!-- legacy\n"use strict"; { function User() {} } probe(); }',
+      false,
+    ],
+    [
+      'closing HTML comment before directive',
+      '--> legacy\n"use strict"; function f() { { function User() {} } probe(); }',
+      false,
+    ],
+    [
+      'HTML comment without strict directive',
+      '<!-- legacy\nfunction f() { { function User() {} } probe(); }',
+      true,
+    ],
+    [
+      'HTML comment after directive prologue ended',
+      '0; <!-- legacy\n"use strict"; function f() { { function User() {} } probe(); }',
+      true,
+    ],
+  ] as const)('%s', (_label, source, expected) => {
+    const tree = parser.parse(source);
+    expect(tree.rootNode.hasError).toBe(false);
+    const call = tree.rootNode.descendantsOfType('call_expression')[0];
+    expect(isNameShadowed(call, 'User')).toBe(expected);
+  });
+});
+
 describe('JavaScript using declaration shadowing', () => {
   const parser = new Parser();
   parser.setLanguage(JavaScript as Parser.Language);
@@ -217,6 +365,24 @@ describe('scope-aware constructor and factory call inference', () => {
       'block function in another function does not shadow factory return',
       'js',
       'function other(){if(true){function User(){}}} function factory(){return new User()} function probe(){const u=factory();u.save()}',
+      true,
+    ],
+    [
+      'HTML comment preserves strict factory return inference',
+      'js',
+      'function factory(){<!-- legacy\n"use strict"; {function User(){}} return new User()} function probe(){const u=factory();u.save()}',
+      true,
+    ],
+    [
+      'intervening lexical binding preserves factory return inference',
+      'js',
+      'function factory(){{let User;{function User(){}}} return new User()} function probe(){const u=factory();u.save()}',
+      true,
+    ],
+    [
+      'import.meta preserves module factory return inference',
+      'js',
+      'import.meta; function factory(){{function User(){}} return new User()} function probe(){const u=factory();u.save()}',
       true,
     ],
     [

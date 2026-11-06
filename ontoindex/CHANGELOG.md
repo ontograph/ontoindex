@@ -4,6 +4,13 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.5.5] - 2026-11-06
+
+- The pre-commit hook preserves compiler exit status and rejects infrastructure failures; test-source type checking rejects every compiler failure.
+- TS/JS Annex B shadowing handles HTML comments in directive prologues, actual `import.meta` syntax, and intervening lexical bindings while preserving the simple-catch exception.
+- Generation adoption requires regular, nonsymlink snapshot and database files. Retention verifies every obsolete generation before removing it.
+- Coupling and boundary analysis return types no longer hide incompatible summary shapes behind type assertions.
+
 ## [2.5.4] - 2026-11-06
 
 - TS/JS shadowing checks promote a nested block function only when Annex B allows it: generators, async functions, and code in modules, class bodies, or under a `"use strict"` directive no longer count as shadowing the outer class, so their constructor and factory return inference is restored.
