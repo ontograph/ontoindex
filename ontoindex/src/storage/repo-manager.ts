@@ -1031,8 +1031,10 @@ async function adoptActiveGenerationLocked(storagePath: string): Promise<void> {
       (metadata as { generationId?: unknown }).generationId !== active.generationId
     )
       return;
-    const lbugStat = await fs.lstat(active.lbugPath);
-    if (lbugStat.isSymbolicLink() || (!lbugStat.isFile() && !lbugStat.isDirectory())) return;
+    for (const filename of [active.snapshotPath, active.lbugPath]) {
+      const stat = await fs.lstat(filename);
+      if (!stat.isFile() || stat.isSymbolicLink()) return;
+    }
 
     await markManagedGenerationLocked(storagePath, active.generationPath);
     adoptedActiveGenerations.add(key);
@@ -1157,11 +1159,7 @@ async function pruneIndexGenerationsLocked(storagePath: string): Promise<void> {
       await fs.unlink(pinPath);
     }
     if (!pinned && !retained.has(generation.name)) {
-      if (
-        legacy.includes(generation) &&
-        (await generationCleanupReason(directory)) === 'unverified'
-      )
-        continue;
+      if ((await generationCleanupReason(directory)) !== null) continue;
       await fs.rm(directory, { recursive: true, force: true });
     }
   }

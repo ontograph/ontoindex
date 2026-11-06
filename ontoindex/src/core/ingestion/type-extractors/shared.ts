@@ -36,20 +36,37 @@ export function forEachPatternName(
   return false;
 }
 
-// Parsed tree -> whether its program is ES module code, so wide files scan top-level once.
+// Parsed tree -> whether its program is ES module code, so wide files scan once.
 const moduleByProgram = new WeakMap<object, boolean>();
 
 /** Whether a nearer TS/JS value binding hides a program-level name. */
 export function isNameShadowed(node: SyntaxNode, name: string): boolean {
   const binds = (pattern: SyntaxNode | null): boolean =>
     forEachPatternName(pattern, (binding) => binding === name);
+  const scopeStatements = (scope: SyntaxNode): SyntaxNode[] => {
+    const initializer =
+      scope.type === 'for_statement' ? scope.childForFieldName('initializer') : null;
+    return initializer
+      ? [initializer]
+      : scope.type === 'switch_body'
+        ? scope.namedChildren.flatMap((clause) => clause.namedChildren)
+        : ['statement_block', 'class_static_block', 'switch_case', 'switch_default'].includes(
+              scope.type,
+            )
+          ? scope.namedChildren
+          : [];
+  };
   let root = node;
   while (root.parent) root = root.parent;
   let isModule = moduleByProgram.get(root.tree);
   if (isModule === undefined) {
-    isModule = root.namedChildren.some((child) =>
-      ['import_statement', 'export_statement'].includes(child.type),
-    );
+    isModule =
+      root.namedChildren.some((child) =>
+        ['import_statement', 'export_statement'].includes(child.type),
+      ) ||
+      root
+        .descendantsOfType('meta_property')
+        .some((property) => property.children.some((child) => child.type === 'import'));
     moduleByProgram.set(root.tree, isModule);
   }
 
@@ -99,7 +116,7 @@ export function isNameShadowed(node: SyntaxNode, name: string): boolean {
         ) {
           // Only program and function bodies have directive prologues; an escaped spelling is not "use strict".
           for (const statement of ancestor.namedChildren) {
-            if (statement.type === 'comment' || statement.type === 'hash_bang_line') continue;
+            if (['comment', 'html_comment', 'hash_bang_line'].includes(statement.type)) continue;
             const directive =
               statement.type === 'expression_statement' && statement.firstNamedChild;
             if (!directive || directive.type !== 'string') break;
@@ -118,8 +135,40 @@ export function isNameShadowed(node: SyntaxNode, name: string): boolean {
           descendant.type === 'function_declaration' &&
           !descendant.children.some((child) => child.type === 'async') &&
           binds(descendant.childForFieldName('name'))
-        )
-          return true;
+        ) {
+          // Replacing the block function with var must not cross a lexical binding.
+          let eligible = true;
+          for (let scope = descendant.parent; scope; scope = scope.parent) {
+            const catchParameter =
+              scope.type === 'catch_clause' ? scope.childForFieldName('parameter') : null;
+            if (
+              (catchParameter?.type !== 'identifier' && binds(catchParameter)) ||
+              (scope.type === 'for_in_statement' &&
+                scope.children.some((child) => ['let', 'const', 'using'].includes(child.type)) &&
+                binds(scope.childForFieldName('left'))) ||
+              scopeStatements(scope).some((statement) =>
+                statement.type === 'class_declaration' ||
+                (scope.id !== current.id &&
+                  statement.id !== descendant.id &&
+                  ['function_declaration', 'generator_function_declaration'].includes(
+                    statement.type,
+                  ))
+                  ? binds(statement.childForFieldName('name'))
+                  : ['lexical_declaration', 'using_declaration'].includes(statement.type) &&
+                    statement.namedChildren.some(
+                      (declaration) =>
+                        declaration.type === 'variable_declarator' &&
+                        binds(declaration.childForFieldName('name')),
+                    ),
+              )
+            ) {
+              eligible = false;
+              break;
+            }
+            if (scope.id === current.id) break;
+          }
+          if (eligible) return true;
+        }
         if (
           [
             'function_declaration',
@@ -149,18 +198,7 @@ export function isNameShadowed(node: SyntaxNode, name: string): boolean {
         pending.push(...descendant.namedChildren);
       }
     }
-    const initializer =
-      current.type === 'for_statement' ? current.childForFieldName('initializer') : null;
-    const statements = initializer
-      ? [initializer]
-      : current.type === 'switch_body'
-        ? current.namedChildren.flatMap((clause) => clause.namedChildren)
-        : ['statement_block', 'class_static_block', 'switch_case', 'switch_default'].includes(
-              current.type,
-            )
-          ? current.namedChildren
-          : [];
-    for (const statement of statements) {
+    for (const statement of scopeStatements(current)) {
       if (
         ['class_declaration', 'function_declaration', 'generator_function_declaration'].includes(
           statement.type,

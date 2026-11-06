@@ -231,7 +231,7 @@ export async function runBoundaryViolations(
         rulesViolated: violatedRulesCount,
       },
       warnings: cleanRules.length > 0 ? [`Rules passed: ${cleanRules.join(', ')}`] : [],
-    } as unknown as AnalysisResult & BoundaryViolationsResult;
+    };
   } catch (err: unknown) {
     return markInvocationError({
       status: 'error',
@@ -250,6 +250,6 @@ export async function runBoundaryViolations(
       findings: [],
       stats: { totalFindings: 0, durationMs: Date.now() - start },
       errors: [`Boundary violation analysis failed: ${formatCaughtError(err)}`],
-    } as unknown as AnalysisResult & BoundaryViolationsResult);
+    });
   }
 }

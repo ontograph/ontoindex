@@ -263,7 +263,7 @@ export async function runCouplingMatrix(
             ]
           : []),
       ],
-    } as unknown as AnalysisResult & CouplingMatrixResult;
+    };
   } catch (err: unknown) {
     return markInvocationError({
       status: 'error',
@@ -282,6 +282,6 @@ export async function runCouplingMatrix(
       findings: [],
       stats: { totalFindings: 0, durationMs: Date.now() - start },
       errors: [`Coupling matrix failed: ${caughtErrorMessageOperand(err)}`],
-    } as unknown as AnalysisResult & CouplingMatrixResult);
+    });
   }
 }

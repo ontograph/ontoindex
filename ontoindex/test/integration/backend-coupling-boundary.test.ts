@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 
 const { executeParameterized, isLbugReady } = vi.hoisted(() => ({
   executeParameterized: vi.fn(),
@@ -14,6 +14,14 @@ import { runCouplingMatrix } from '../../src/mcp/local/backend-coupling-matrix.j
 import { runBoundaryViolations } from '../../src/mcp/local/backend-boundary-violations.js';
 
 describe('backend coupling/boundary tools', () => {
+  it('exposes structured summaries without claiming string compatibility', () => {
+    type Coupling = Awaited<ReturnType<typeof runCouplingMatrix>>;
+    type Boundary = Awaited<ReturnType<typeof runBoundaryViolations>>;
+    expectTypeOf<Coupling['summary']['module_count']>().toEqualTypeOf<number>();
+    expectTypeOf<Boundary['summary']['rules_checked']>().toEqualTypeOf<number>();
+    expectTypeOf<Coupling['summary']>().not.toMatchTypeOf<string>();
+    expectTypeOf<Boundary['summary']>().not.toMatchTypeOf<string>();
+  });
   afterEach(() => vi.unstubAllEnvs());
   beforeEach(() => {
     executeParameterized.mockReset();

@@ -13,15 +13,36 @@ echo "pre-commit: formatting staged files..."
 WEB_CHANGED=$(git diff --cached --name-only -- 'ontoindex-web/' | head -1)
 CLI_CHANGED=$(git diff --cached --name-only -- 'ontoindex/' | head -1)
 
+# Only normal TypeScript diagnostic exits may use the production baseline.
+check_tsc_status() {
+  local status="$1" output="$2"
+  [ "$status" -eq 0 ] && return 0
+  if { [ "$status" -eq 1 ] || [ "$status" -eq 2 ]; } &&
+    printf '%s\n' "$output" | awk '
+      /^(.*\([0-9]+,[0-9]+\): )?error TS[0-9]+:/ { diagnostic = 1; next }
+      /^[[:space:]]*$/ { next }
+      /^[[:space:]]/ && diagnostic { next }
+      { unexpected = 1 }
+      END { exit !(diagnostic && !unexpected) }
+    '; then
+    return 0
+  fi
+  echo "pre-commit: TypeScript compiler failed (exit $status):"
+  printf '%s\n' "$output"
+  return 1
+}
+
 if [ -n "$WEB_CHANGED" ]; then
   echo "pre-commit: typechecking ontoindex-web (tsc -b)..."
-  TSC_OUT=$(cd "$ROOT/ontoindex-web" && ./node_modules/.bin/tsc -b --noEmit 2>&1 || true)
+  TSC_STATUS=0
+  TSC_OUT=$(cd "$ROOT/ontoindex-web" && ./node_modules/.bin/tsc -b --noEmit --pretty false 2>&1) || TSC_STATUS=$?
+  check_tsc_status "$TSC_STATUS" "$TSC_OUT" || exit 1
   CURRENT=$(echo "$TSC_OUT" | grep -c "error TS" || true)
   BASELINE=$(cat "$ROOT/.husky/tsc-baseline.ontoindex-web.txt" 2>/dev/null || echo 0)
   if [ "$CURRENT" -gt "$BASELINE" ]; then
     echo "pre-commit: tsc regression in ontoindex-web — $CURRENT errors (baseline: $BASELINE)"
     echo "New errors introduced by this commit:"
-    echo "$TSC_OUT" | grep "error TS" | head -20
+    printf '%s\n' "$TSC_OUT"
     echo "Fix the errors above, or if the baseline is stale update .husky/tsc-baseline.ontoindex-web.txt to $CURRENT."
     exit 1
   elif [ "$CURRENT" -lt "$BASELINE" ]; then
@@ -31,13 +52,15 @@ fi
 
 if [ -n "$CLI_CHANGED" ]; then
   echo "pre-commit: typechecking ontoindex..."
-  TSC_OUT=$(cd "$ROOT/ontoindex" && ./node_modules/.bin/tsc --noEmit 2>&1 || true)
+  TSC_STATUS=0
+  TSC_OUT=$(cd "$ROOT/ontoindex" && ./node_modules/.bin/tsc --noEmit --pretty false 2>&1) || TSC_STATUS=$?
+  check_tsc_status "$TSC_STATUS" "$TSC_OUT" || exit 1
   CURRENT=$(echo "$TSC_OUT" | grep -c "error TS" || true)
   BASELINE=$(cat "$ROOT/.husky/tsc-baseline.ontoindex.txt" 2>/dev/null || echo 0)
   if [ "$CURRENT" -gt "$BASELINE" ]; then
     echo "pre-commit: tsc regression in ontoindex — $CURRENT errors (baseline: $BASELINE)"
     echo "New errors introduced by this commit:"
-    echo "$TSC_OUT" | grep "error TS" | head -20
+    printf '%s\n' "$TSC_OUT"
     echo "Fix the errors above, or if the baseline is stale update .husky/tsc-baseline.ontoindex.txt to $CURRENT."
     exit 1
   elif [ "$CURRENT" -lt "$BASELINE" ]; then
@@ -45,10 +68,11 @@ if [ -n "$CLI_CHANGED" ]; then
   fi
 
   echo "pre-commit: typechecking ontoindex tests..."
-  TEST_TSC_OUT=$(cd "$ROOT/ontoindex" && ./node_modules/.bin/tsc -p tsconfig.test.json --noEmit 2>&1 || true)
-  if echo "$TEST_TSC_OUT" | grep -q "error TS"; then
-    echo "pre-commit: test sources have type errors:"
-    echo "$TEST_TSC_OUT" | grep "error TS" | head -20
+  TEST_TSC_STATUS=0
+  TEST_TSC_OUT=$(cd "$ROOT/ontoindex" && ./node_modules/.bin/tsc -p tsconfig.test.json --noEmit --pretty false 2>&1) || TEST_TSC_STATUS=$?
+  if [ "$TEST_TSC_STATUS" -ne 0 ]; then
+    echo "pre-commit: test source typecheck failed (exit $TEST_TSC_STATUS):"
+    printf '%s\n' "$TEST_TSC_OUT"
     exit 1
   fi
 fi
