@@ -224,11 +224,8 @@ async function makeLookupSymbol(repoId: string): Promise<LookupSymbol> {
         rows = (await executeParameterized(
           repoId,
           `MATCH (s) WHERE s.id = $id
-           OPTIONAL MATCH (caller)-[r:CodeRelation]->(s) WHERE r.type IN ['CALLS', 'REFERENCES', 'IMPORTS']
-           OPTIONAL MATCH (s)-[ri:CodeRelation]->(callee) WHERE ri.type IN ['CALLS', 'REFERENCES', 'IMPORTS']
            RETURN s.id AS id, s.name AS name, s.filePath AS filePath,
-                  s.startLine AS startLine, label(s) AS kind,
-                  COLLECT(DISTINCT {filePath: caller.filePath, type: ri.type}) AS incoming
+                  s.startLine AS startLine, label(s) AS kind
            LIMIT 1`,
           { id: uid },
         )) as GraphRow[];
@@ -313,7 +310,18 @@ async function dispatchDryRun(
     if (result.status === 'ambiguous' || result.status === 'failed') {
       throw new Error(`Rename preview ${result.status}: ${resolved.nodeId}`);
     }
-    if (result.warnings) warnings.push(...result.warnings);
+    if (result.warnings) {
+      for (const warning of result.warnings.slice(0, 5)) {
+        if (warning.length > 240) {
+          const prefix = warning.slice(0, 237).replace(/[\uD800-\uDBFF]$/, '');
+          warnings.push(`${prefix}...`);
+        } else {
+          warnings.push(warning);
+        }
+      }
+      const omitted = result.warnings.length - 5;
+      if (omitted > 0) warnings.push(`Rename preview: ${omitted} additional warning(s) omitted.`);
+    }
     const affectedFiles = renameAffectedFiles(result);
     return {
       affectedFiles,

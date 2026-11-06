@@ -18,6 +18,7 @@ vi.mock('../../src/mcp/local/query-log.js', () => ({
 
 import { bm25Search, semanticSearch } from '../../src/mcp/local/backend-query.js';
 import { query } from '../../src/mcp/local/backend-search.js';
+import { gnSafeRefactor } from '../../src/mcp/super/safe-refactor.js';
 import * as poolAdapter from '../../src/core/lbug/pool-adapter.js';
 import type { EnrichedSymbolRow } from '../../src/core/search/symbol-merge.js';
 
@@ -82,6 +83,37 @@ withTestLbugDB(
         intent_ensemble: false,
       }) as Promise<Extract<Awaited<ReturnType<typeof query>>, { query_intent: unknown }>>;
     }
+
+    it('rejects ambiguous refactor names before writes and previews each exact UID', async () => {
+      const backend = { repoPath: db.tmpHandle.dbPath, callTool: vi.fn() };
+      const params = {
+        intent: 'modify-body' as const,
+        params: { newBody: 'return 42;' },
+        preChecks: false,
+      };
+
+      await expect(
+        gnSafeRefactor(
+          db.repoId,
+          { ...params, symbol: 'singleton', dryRun: false, confirm: true },
+          backend,
+        ),
+      ).rejects.toThrow('Ambiguous symbol "singleton"; provide a canonical symbol UID.');
+      expect(backend.callTool).not.toHaveBeenCalled();
+
+      for (const [nodeId, filePath] of [
+        ['Function:singleton', 'src/singleton.ts'],
+        ['Function:sameName', 'src/other.ts'],
+      ]) {
+        const report = await gnSafeRefactor(db.repoId, { ...params, symbol: nodeId }, backend);
+        expect(report).toMatchObject({
+          symbol: { nodeId, name: 'singleton', filePath, kind: 'Function' },
+          preview: { affectedFiles: [filePath] },
+          applied: false,
+        });
+      }
+      expect(backend.callTool).not.toHaveBeenCalled();
+    });
 
     it('enriches a singleton edge through the production search and real adapter', async () => {
       vi.mocked(semanticSearch).mockResolvedValue([symbols[0]]);

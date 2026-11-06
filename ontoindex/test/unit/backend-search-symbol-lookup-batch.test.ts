@@ -339,6 +339,7 @@ describe('batched search symbol lookup', () => {
   it.each([
     ['STEP_IN_PROCESS', 'Process'],
     ['MEMBER_OF', 'Community'],
+    ['n.content AS content', 'Content'],
     ['callerPath', 'Citation'],
   ])('reports bounded %s failures through all warning channels', async (kind, label) => {
     vi.mocked(executeParameterized).mockImplementation(async (_repo, cypher, params) => {

@@ -244,6 +244,40 @@ describe('gnSafeRefactor', () => {
     expect(mockRenameSymbol.mock.calls[0][1]).toMatchObject({ symbol_uid: NODE_ID });
   });
 
+  it('looks up the resolved rename UID using only symbol metadata', async () => {
+    mockResolve();
+    mockRenameSymbol.mockResolvedValueOnce({ total_edits: 0, changes: [] });
+    await gnSafeRefactor(REPO_ID, {
+      intent: 'rename',
+      symbol: SYMBOL_NAME,
+      params: { newName: 'validateToken' },
+      preChecks: false,
+    });
+    const symbol = {
+      id: NODE_ID,
+      name: SYMBOL_NAME,
+      filePath: 'src/auth/token.ts',
+      startLine: 12,
+      kind: 'Function',
+    };
+    mockExecuteParameterized.mockResolvedValueOnce([symbol]);
+    const lookup = mockRenameSymbol.mock.calls[0][2] as (
+      name?: string,
+      uid?: string,
+    ) => Promise<unknown>;
+
+    expect(await lookup(SYMBOL_NAME, NODE_ID)).toEqual({
+      symbol,
+      incoming: { calls: [], imports: [], extends: [], implements: [] },
+    });
+    const [repo, query, parameters] = mockExecuteParameterized.mock.calls[1];
+    expect(repo).toBe(REPO_ID);
+    expect(parameters).toEqual({ id: NODE_ID });
+    expect(query.replace(/\s+/g, ' ').trim()).toBe(
+      'MATCH (s) WHERE s.id = $id RETURN s.id AS id, s.name AS name, s.filePath AS filePath, s.startLine AS startLine, label(s) AS kind LIMIT 1',
+    );
+  });
+
   describe('real facade and super dispatch parity', () => {
     const args = {
       intent: 'modify-body',
@@ -526,8 +560,81 @@ describe('gnSafeRefactor', () => {
       refactorBackend,
     );
     expect(report.applied).toBe(false);
-    expect(report.warnings).toContain('Could not read rename candidate: src/auth/token.ts');
+    expect(report.warnings).toEqual(['Could not read rename candidate: src/auth/token.ts']);
   });
+
+  it.each([
+    { count: 0, length: 0 },
+    { count: 5, length: 240 },
+    { count: 6, length: 20 },
+    { count: 1, length: 241 },
+    { count: 20, length: 1000 },
+  ])(
+    'bounds rename warnings with $count entries of $length characters',
+    async ({ count, length }) => {
+      mockResolve();
+      const renameWarnings = Array.from({ length: count }, (_, i) => `${i}:`.padEnd(length, 'x'));
+      mockRenameSymbol.mockResolvedValueOnce({
+        total_edits: 0,
+        changes: [],
+        warnings: renameWarnings,
+      });
+      const report = await gnSafeRefactor(REPO_ID, {
+        intent: 'rename',
+        symbol: SYMBOL_NAME,
+        params: { newName: 'verifyToken' },
+        preChecks: false,
+      });
+
+      const samples = report.warnings.slice(0, Math.min(count, 5));
+      samples.forEach((sample, i) => {
+        if (length > 240) {
+          expect(sample.endsWith('...')).toBe(true);
+          expect(sample.length).toBe(240);
+          expect(renameWarnings[i].startsWith(sample.slice(0, -3))).toBe(true);
+        } else {
+          expect(sample).toBe(renameWarnings[i]);
+        }
+      });
+      expect(samples.every((warning) => warning.length <= 240)).toBe(true);
+      expect(JSON.stringify(report.warnings).length).toBeLessThanOrEqual(5 * 240 + 100);
+      if (count > 5) {
+        expect(report.warnings).toHaveLength(6);
+        expect(report.warnings[5]).toBe(
+          `Rename preview: ${count - 5} additional warning(s) omitted.`,
+        );
+      } else {
+        expect(report.warnings).toHaveLength(count);
+      }
+      expect(renameWarnings).toHaveLength(count);
+      expect(renameWarnings.every((warning) => warning.length === length)).toBe(true);
+    },
+  );
+
+  it.each([
+    { prefixLength: 235, expectedPrefix: `${'x'.repeat(235)}😀` },
+    { prefixLength: 236, expectedPrefix: 'x'.repeat(236) },
+  ])(
+    'preserves Unicode at truncation boundary $prefixLength',
+    async ({ prefixLength, expectedPrefix }) => {
+      mockResolve();
+      mockRenameSymbol.mockResolvedValueOnce({
+        total_edits: 0,
+        changes: [],
+        warnings: [`${'x'.repeat(prefixLength)}😀${'y'.repeat(20)}`],
+      });
+      const report = await gnSafeRefactor(REPO_ID, {
+        intent: 'rename',
+        symbol: SYMBOL_NAME,
+        params: { newName: 'verifyToken' },
+        preChecks: false,
+      });
+
+      expect(report.warnings).toEqual([`${expectedPrefix}...`]);
+      expect(report.warnings[0].length).toBeLessThanOrEqual(240);
+      expect(JSON.stringify(report.warnings).length).toBeLessThanOrEqual(244);
+    },
+  );
 
   it('returns preview-only when dryRun defaults to true', async () => {
     mockResolve();
