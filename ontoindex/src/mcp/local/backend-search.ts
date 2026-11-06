@@ -9,6 +9,7 @@ import type {
   QueryTokenCostSnapshotInput,
 } from '../../core/runtime/query-budget.js';
 import { executeParameterized } from '../../core/lbug/pool-adapter.js';
+import { classifyLbugOpenError } from '../../core/lbug/open-error.js';
 import { PhaseTimer } from '../../core/search/phase-timer.js';
 import { computeGraphPathWithDiagnostics } from '../../core/search/graph-path.js';
 import type { GraphPathEdge, GraphPathReport } from '../../core/search/graph-path.js';
@@ -2099,6 +2100,13 @@ export async function query(
   timer.start('symbol_lookup');
   const processMap = new Map<string, ProcessBucket>();
   const definitions: Array<DefinitionEntry | SymbolEntry> = [];
+  const enrichmentWarnings = new Set<string>();
+  const enrichmentWarningByContext: Record<string, string> = {
+    'query:process-lookup': 'Process enrichment unavailable; search results may be partial.',
+    'query:cluster-info': 'Community enrichment unavailable; search results may be partial.',
+    'query:content-fetch': 'Content enrichment unavailable; search results may be partial.',
+    'query:citation-lookup': 'Citation enrichment unavailable; search results may be partial.',
+  };
 
   const nodeIds = [
     ...new Set(
@@ -2125,7 +2133,10 @@ export async function query(
         else grouped.set(nodeId, [row as T]);
       }
     } catch (e) {
-      if (errorContext) logSearchQueryError(errorContext, e);
+      if (errorContext) {
+        logSearchQueryError(errorContext, e);
+        enrichmentWarnings.add(enrichmentWarningByContext[errorContext]);
+      }
     }
     return grouped;
   }
@@ -2149,9 +2160,11 @@ export async function query(
       if (errorContext) logSearchQueryError(errorContext, e);
       // Optional enrichment must not multiply a saturated query into N retries.
       if (
-        e instanceof Error &&
-        (e.name === 'QueryTimeoutError' || e.name === 'CheckoutTimeoutError')
+        classifyLbugOpenError(e) === 'resource' ||
+        (e instanceof Error &&
+          (e.name === 'QueryTimeoutError' || e.name === 'CheckoutTimeoutError'))
       ) {
+        if (errorContext) enrichmentWarnings.add(enrichmentWarningByContext[errorContext]);
         return grouped;
       }
     }
@@ -2160,10 +2173,14 @@ export async function query(
         const rows = await executeParameterized(graphId, cypher, { nodeId });
         if (rows.length > 0) grouped.set(nodeId, [rows[0] as T]);
       } catch (e) {
-        if (errorContext) logSearchQueryError(errorContext, e);
+        if (errorContext) {
+          logSearchQueryError(errorContext, e);
+          enrichmentWarnings.add(enrichmentWarningByContext[errorContext]);
+        }
         if (
-          e instanceof Error &&
-          (e.name === 'QueryTimeoutError' || e.name === 'CheckoutTimeoutError')
+          classifyLbugOpenError(e) === 'resource' ||
+          (e instanceof Error &&
+            (e.name === 'QueryTimeoutError' || e.name === 'CheckoutTimeoutError'))
         ) {
           break;
         }
@@ -2209,12 +2226,13 @@ export async function query(
       includeContent,
     ),
     lookupFirstByNode<CitationLookupRow>(
+      // Repeat the target filter on the rematch so its hash-build branch stays scoped.
       `
       MATCH (m)-[r:CodeRelation]->(n)
       WHERE n.id IN $nodeIds AND r.type IN ['CALLS', 'IMPORTS']
       WITH n.id AS nodeId, min(m.id) AS callerId
       MATCH (m {id: callerId})-[r:CodeRelation]->(n {id: nodeId})
-      WHERE r.type IN ['CALLS', 'IMPORTS']
+      WHERE n.id IN $nodeIds AND r.type IN ['CALLS', 'IMPORTS']
       RETURN m.name AS caller, min(r.type) AS type, m.filePath AS callerPath, n.id AS nodeId
     `,
       `
@@ -2224,6 +2242,7 @@ export async function query(
       ORDER BY m.id, r.type
       LIMIT 1
     `,
+      'query:citation-lookup',
     ),
   ]);
 
@@ -2378,6 +2397,7 @@ export async function query(
   timer.stop();
 
   const structuredWarnings = uniqueStrings([
+    ...enrichmentWarnings,
     !ftsUsed
       ? 'FTS extension unavailable - keyword search degraded. Run: ontoindex analyze --force to rebuild indexes.'
       : undefined,
@@ -2541,6 +2561,7 @@ export async function query(
   }
 
   const warning = combineWarnings(
+    ...enrichmentWarnings,
     !ftsUsed
       ? 'FTS extension unavailable - keyword search degraded. Run: ontoindex analyze --force to rebuild indexes.'
       : undefined,
@@ -2627,6 +2648,7 @@ export async function query(
                 : []),
             ],
             uniqueStrings([
+              ...enrichmentWarnings,
               ...typedWarnings,
               ...(frontierResult?.warnings ?? []),
               ...(frontierResult?.diagnostics?.warnings ?? []),

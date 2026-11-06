@@ -6,6 +6,25 @@ vi.mock('../../src/mcp/local/backend-query.js', () => ({
   semanticSearch: vi.fn(),
 }));
 vi.mock('../../src/core/search/symbol-merge.js', () => ({ mergeSymbolsWithRRF: vi.fn() }));
+vi.mock('../../src/core/search/semantic-cache.js', () => ({
+  SemanticRetrievalCache: class {
+    static computeKey() {
+      return 'batch-test';
+    }
+    async lookup() {
+      return { status: 'miss' };
+    }
+    async set() {
+      return { evicted: 0 };
+    }
+  },
+}));
+vi.mock('../../src/mcp/shared/target-context.js', () => ({
+  resolveTargetContext: async () => ({ warnings: [], embeddings: { status: 'available' } }),
+}));
+vi.mock('../../src/mcp/shared/response-envelope.js', () => ({
+  deriveEnvelopeFreshness: () => ({ status: 'unknown', actionable: false, reason: 'unit-test' }),
+}));
 vi.mock('../../src/mcp/local/backend-overlay.js', () => ({
   isAutomaticWorkspaceEnabled: () => false,
   getOverlaySnapshot: vi.fn(),
@@ -36,6 +55,10 @@ const symbols = ['alpha', 'beta'].map((name, index) => ({
   endLine: index + 10,
 }));
 const nodeIds = symbols.map((symbol) => symbol.nodeId!);
+const resourceErrors = [
+  new Error('Unable to allocate memory! The buffer pool is full and no memory could be freed!'),
+  Object.assign(new Error('query failed: private diagnostic'), { code: 'ENOMEM' }),
+];
 const options = {
   query: 'batch lookup',
   include_content: true,
@@ -115,6 +138,8 @@ describe('batched search symbol lookup', () => {
     for (const kind of ['STEP_IN_PROCESS', 'MEMBER_OF', 'n.content AS content', 'callerPath']) {
       expect(calls.filter(([, cypher]) => cypher.includes(kind))).toHaveLength(1);
     }
+    const citationQuery = calls.find(([, cypher]) => cypher.includes('callerPath'))![1];
+    expect(citationQuery.match(/n\.id IN \$nodeIds/g)).toHaveLength(2);
     const perNodeCalls = vi
       .mocked(executeParameterized)
       .mock.calls.filter(([, , params]) => 'nodeId' in params);
@@ -271,6 +296,76 @@ describe('batched search symbol lookup', () => {
     },
   );
 
+  it.each(resourceErrors)('does not retry resource-exhausted batches: %s', async (error) => {
+    vi.mocked(executeParameterized).mockImplementation(async (_repo, cypher, params) => {
+      if (cypher.includes('MEMBER_OF') || cypher.includes('callerPath')) throw error;
+      return lookupRows(cypher, params.nodeId as string);
+    });
+
+    const result = (await query(repo, options)) as Record<string, any>;
+
+    expect(result.process_symbols).toHaveLength(symbols.length);
+    expect(enrichmentCalls()).toHaveLength(4);
+    expect(
+      vi.mocked(executeParameterized).mock.calls.filter(([, , params]) => 'nodeId' in params),
+    ).toHaveLength(0);
+    expect(result.warning).toContain('Community enrichment unavailable');
+    expect(result.warning).toContain('Citation enrichment unavailable');
+    expect(result.warning).not.toContain(error.message);
+  });
+
+  it.each(['MEMBER_OF', 'callerPath'])(
+    'stops %s compatibility fallback at resource exhaustion',
+    async (failedKind) => {
+      vi.mocked(executeParameterized).mockImplementation(async (_repo, cypher, params) => {
+        if (cypher.includes(failedKind)) {
+          if ('nodeIds' in params) throw new Error('unsupported batch');
+          throw resourceErrors[0];
+        }
+        return lookupRows(cypher, params.nodeId as string);
+      });
+
+      const result = (await query(repo, options)) as Record<string, any>;
+
+      expect(result.process_symbols).toHaveLength(symbols.length);
+      const retries = vi
+        .mocked(executeParameterized)
+        .mock.calls.filter(([, , params]) => 'nodeId' in params);
+      expect(retries.map(([, , params]) => params)).toEqual([{ nodeId: nodeIds[0] }]);
+      expect(result.warning).toContain('enrichment unavailable');
+    },
+  );
+
+  it.each([
+    ['STEP_IN_PROCESS', 'Process'],
+    ['MEMBER_OF', 'Community'],
+    ['callerPath', 'Citation'],
+  ])('reports bounded %s failures through all warning channels', async (kind, label) => {
+    vi.mocked(executeParameterized).mockImplementation(async (_repo, cypher, params) => {
+      if (cypher.includes(kind)) throw resourceErrors[0];
+      return lookupRows(cypher, params.nodeId as string);
+    });
+
+    const result = (await query(repo, {
+      ...options,
+      structured_output: true,
+      retrieval_diagnostics: true,
+    })) as Record<string, any>;
+    const warning = `${label} enrichment unavailable; search results may be partial.`;
+
+    expect([...result.process_symbols, ...result.definitions]).toHaveLength(symbols.length);
+    expect(result.warning).toBe(warning);
+    expect(
+      result.structured_retrieval.capabilityState.warnings.filter(
+        (message: string) => message === warning,
+      ),
+    ).toEqual([warning]);
+    expect(
+      result.retrieval_diagnostics.warnings.filter((message: string) => message === warning),
+    ).toEqual([warning]);
+    expect(result.warning).not.toContain(resourceErrors[0].message);
+  });
+
   it.each([
     ['MEMBER_OF', 'QueryTimeoutError'],
     ['MEMBER_OF', 'CheckoutTimeoutError'],
@@ -311,6 +406,7 @@ describe('batched search symbol lookup', () => {
     const result = await query(repo, options);
     expect(executeParameterized).toHaveBeenCalledTimes(4);
     expect(enrichmentCalls()).toHaveLength(4);
+    expect((result as unknown as Record<string, any>).process_symbols).toHaveLength(symbols.length);
     for (const symbol of (result as unknown as Record<string, any>).process_symbols!) {
       expect(symbol).not.toHaveProperty('module');
       expect(symbol).not.toHaveProperty('citation_path');

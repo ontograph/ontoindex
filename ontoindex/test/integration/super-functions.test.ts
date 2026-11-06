@@ -14,20 +14,23 @@
  * and ONTOINDEX_CITATIONS to their pre-call values (or delete them if absent).
  */
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
-import { existsSync } from 'node:fs';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createTempDir } from '../helpers/test-db.js';
 import { initLbug, closeLbug } from '../../src/mcp/core/lbug-adapter.js';
 import { gnExplore } from '../../src/mcp/super/explore.js';
+import { withCommittedRead } from '../../src/mcp/local/backend-overlay.js';
+import { listRegisteredRepos, readActiveGenerationMeta } from '../../src/storage/repo-manager.js';
+import { registryRepoIds, resolveRegistryEntry } from '../../src/mcp/shared/target-context.js';
 import { gnExplainModule } from '../../src/mcp/super/explain-module.js';
 import { gnFindRelated } from '../../src/mcp/super/find-related.js';
 import { gnSafeEditCheck } from '../../src/mcp/super/safe-edit-check.js';
 import { gnCanDelete } from '../../src/mcp/super/can-delete.js';
 import { gnPreCommitAudit } from '../../src/mcp/super/pre-commit-audit.js';
-import { gnSafeRefactor } from '../../src/mcp/super/safe-refactor.js';
+import { gnSafeRefactor, type RefactorBackend } from '../../src/mcp/super/safe-refactor.js';
 import { gnEnsureFresh } from '../../src/mcp/super/ensure-fresh.js';
 import { gnQualityMode } from '../../src/mcp/super/quality-mode.js';
 import { gnDiffImpact } from '../../src/mcp/super/diff-impact.js';
@@ -39,10 +42,8 @@ import { gnProposeLocation } from '../../src/mcp/super/propose-location.js';
 // ---------------------------------------------------------------------------
 
 const REPO_ID = 'OntoIndex';
-const LBUG_PATH = path.join(
-  path.dirname(new URL(import.meta.url).pathname),
-  '../../../.ontoindex/lbug',
-);
+const CHECKOUT_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
+const LBUG_PATH = path.join(CHECKOUT_ROOT, '.ontoindex/lbug');
 const SLOW_SUPER_FUNCTION_TIMEOUT_MS = 60_000;
 const SLOW_PROPOSE_LOCATION_TIMEOUT_MS = 90_000;
 
@@ -53,17 +54,48 @@ const SLOW_PROPOSE_LOCATION_TIMEOUT_MS = 90_000;
 // The self-index is produced by `ontoindex analyze` and is not committed, so a fresh
 // checkout has none. Without it the whole file is skipped instead of failing.
 const HAS_SELF_INDEX = existsSync(LBUG_PATH);
+let committedRepoId: string;
+let committedGeneration: string;
+let fixtureMetadata: Awaited<ReturnType<typeof readActiveGenerationMeta>> | undefined;
 
 beforeAll(async () => {
   if (!HAS_SELF_INDEX) return;
+  const repos = await listRegisteredRepos();
+  const selection = resolveRegistryEntry(repos, REPO_ID);
+  if (selection.status !== 'ok') throw new Error('Self-index repository must resolve uniquely');
+  expect(realpathSync(selection.entry.path)).toBe(realpathSync(CHECKOUT_ROOT));
+  expect(realpathSync(selection.entry.storagePath)).toBe(
+    realpathSync(path.join(CHECKOUT_ROOT, '.ontoindex')),
+  );
+  const selected = await readActiveGenerationMeta(selection.entry.storagePath);
+  if (selected.authority === 'untrusted' || !selected.meta?.lastCommit) {
+    throw new Error('Self-index must have trusted indexed commit metadata');
+  }
+  expect(
+    realpathSync(
+      selected.activeGeneration?.lbugPath ?? path.join(selection.entry.storagePath, 'lbug'),
+    ),
+  ).toBe(realpathSync(LBUG_PATH));
+  committedGeneration = selected.activeGeneration?.generationId ?? selected.meta.lastCommit;
+  fixtureMetadata = selected;
+  committedRepoId = registryRepoIds(repos).get(selection.entry)!;
   await initLbug(REPO_ID, LBUG_PATH);
 }, 30_000);
 
 afterAll(async () => {
   try {
+    if (fixtureMetadata) {
+      const current = await readActiveGenerationMeta(path.join(CHECKOUT_ROOT, '.ontoindex'));
+      expect(current.authority).not.toBe('untrusted');
+      expect(current.authority).toBe(fixtureMetadata.authority);
+      expect(current.activeGeneration?.generationId).toBe(
+        fixtureMetadata.activeGeneration?.generationId,
+      );
+      expect(current.meta?.lastCommit).toBe(fixtureMetadata.meta?.lastCommit);
+      expect(current.meta?.indexedAt).toBe(fixtureMetadata.meta?.indexedAt);
+    }
+  } finally {
     await closeLbug(REPO_ID);
-  } catch {
-    // best-effort
   }
 }, 10_000);
 
@@ -75,7 +107,10 @@ describe.skipIf(!HAS_SELF_INDEX)('gnExplore', () => {
   it(
     'returns a valid ExploreReport shape for a known concept',
     async () => {
-      const report = await gnExplore(REPO_ID, { query: 'worker-pool', depth: 'shallow' });
+      // Select committed evidence; this context alone does not pin a generation.
+      const report = await withCommittedRead(committedRepoId, committedGeneration, () =>
+        gnExplore(REPO_ID, { query: 'worker-pool', depth: 'shallow', read_mode: 'committed' }),
+      );
 
       expect(report.version).toBe(1);
       expect(report.query.original).toBe('worker-pool');
@@ -88,6 +123,12 @@ describe.skipIf(!HAS_SELF_INDEX)('gnExplore', () => {
       expect(Array.isArray(report.clusters)).toBe(true);
       expect(Array.isArray(report.suggestedEntryPoints)).toBe(true);
       expect(Array.isArray(report.warnings)).toBe(true);
+      expect(
+        report.warnings.filter((warning) =>
+          /enrichment unavailable|query primitive failed/.test(warning),
+        ),
+      ).toEqual([]);
+      expect(report.topSymbols.length).toBeGreaterThan(0);
 
       // depth: 'shallow' limits to ≤3 topSymbols
       expect(report.topSymbols.length).toBeLessThanOrEqual(3);
@@ -112,7 +153,15 @@ describe.skipIf(!HAS_SELF_INDEX)('gnExplore', () => {
   );
 
   it('depth: deep returns ≤10 topSymbols', async () => {
-    const report = await gnExplore(REPO_ID, { query: 'worker-pool', depth: 'deep' });
+    const report = await withCommittedRead(committedRepoId, committedGeneration, () =>
+      gnExplore(REPO_ID, { query: 'worker-pool', depth: 'deep', read_mode: 'committed' }),
+    );
+    expect(
+      report.warnings.filter((warning) =>
+        /enrichment unavailable|query primitive failed/.test(warning),
+      ),
+    ).toEqual([]);
+    expect(report.topSymbols.length).toBeGreaterThan(0);
     expect(report.topSymbols.length).toBeLessThanOrEqual(10);
   }, 30_000);
 });
@@ -228,24 +277,25 @@ describe.skipIf(!HAS_SELF_INDEX)('gnFindRelated', () => {
 // ---------------------------------------------------------------------------
 
 describe.skipIf(!HAS_SELF_INDEX)('env-var invariant', () => {
+  afterEach(() => vi.unstubAllEnvs());
   it(
     'gnExplore does not persistently set ONTOINDEX_INTENT_ENSEMBLE',
     async () => {
-      const prevEnsemble = process.env.ONTOINDEX_INTENT_ENSEMBLE;
-      const prevCitations = process.env.ONTOINDEX_CITATIONS;
-
       // Ensure both are unset before the call
-      delete process.env.ONTOINDEX_INTENT_ENSEMBLE;
-      delete process.env.ONTOINDEX_CITATIONS;
+      vi.stubEnv('ONTOINDEX_INTENT_ENSEMBLE', undefined);
+      vi.stubEnv('ONTOINDEX_CITATIONS', undefined);
 
-      await gnExplore(REPO_ID, { query: 'worker-pool', depth: 'shallow' });
+      const report = await withCommittedRead(committedRepoId, committedGeneration, () =>
+        gnExplore(REPO_ID, { query: 'worker-pool', depth: 'shallow', read_mode: 'committed' }),
+      );
+      expect(
+        report.warnings.filter((warning) =>
+          /enrichment unavailable|query primitive failed/.test(warning),
+        ),
+      ).toEqual([]);
 
       expect(process.env.ONTOINDEX_INTENT_ENSEMBLE).toBeUndefined();
       expect(process.env.ONTOINDEX_CITATIONS).toBeUndefined();
-
-      // Restore original state for any following tests
-      if (prevEnsemble !== undefined) process.env.ONTOINDEX_INTENT_ENSEMBLE = prevEnsemble;
-      if (prevCitations !== undefined) process.env.ONTOINDEX_CITATIONS = prevCitations;
     },
     SLOW_SUPER_FUNCTION_TIMEOUT_MS,
   );
@@ -255,17 +305,20 @@ describe.skipIf(!HAS_SELF_INDEX)('env-var invariant', () => {
     async () => {
       const sentinelEnsemble = '__test_sentinel_ensemble__';
       const sentinelCitations = '__test_sentinel_citations__';
-      process.env.ONTOINDEX_INTENT_ENSEMBLE = sentinelEnsemble;
-      process.env.ONTOINDEX_CITATIONS = sentinelCitations;
+      vi.stubEnv('ONTOINDEX_INTENT_ENSEMBLE', sentinelEnsemble);
+      vi.stubEnv('ONTOINDEX_CITATIONS', sentinelCitations);
 
-      await gnExplore(REPO_ID, { query: 'worker-pool', depth: 'shallow' });
+      const report = await withCommittedRead(committedRepoId, committedGeneration, () =>
+        gnExplore(REPO_ID, { query: 'worker-pool', depth: 'shallow', read_mode: 'committed' }),
+      );
+      expect(
+        report.warnings.filter((warning) =>
+          /enrichment unavailable|query primitive failed/.test(warning),
+        ),
+      ).toEqual([]);
 
       expect(process.env.ONTOINDEX_INTENT_ENSEMBLE).toBe(sentinelEnsemble);
       expect(process.env.ONTOINDEX_CITATIONS).toBe(sentinelCitations);
-
-      // Clean up
-      delete process.env.ONTOINDEX_INTENT_ENSEMBLE;
-      delete process.env.ONTOINDEX_CITATIONS;
     },
     SLOW_SUPER_FUNCTION_TIMEOUT_MS,
   );
@@ -397,13 +450,26 @@ describe.skipIf(!HAS_SELF_INDEX)('gnPreCommitAudit', () => {
 
 describe.skipIf(!HAS_SELF_INDEX)('gnSafeRefactor', () => {
   it('dryRun:true returns preview with applied:false and does not modify files', async () => {
-    const report = await gnSafeRefactor(REPO_ID, {
-      intent: 'rename',
-      symbol: 'mergeWithRRF',
-      params: { newName: 'mergeWithRRF_dryRunTest' },
-      dryRun: true,
-      force: true,
-    });
+    const repoPath = fileURLToPath(new URL('../../../', import.meta.url));
+    const sourcePath = 'ontoindex/src/core/search/hybrid-search.ts';
+    const sourceBefore = readFileSync(path.join(repoPath, sourcePath));
+    const backend: RefactorBackend = {
+      repoPath,
+      async callTool() {
+        throw new Error('Dry-run preview must not apply refactor tools');
+      },
+    };
+    const report = await gnSafeRefactor(
+      REPO_ID,
+      {
+        intent: 'rename',
+        symbol: 'mergeWithRRF',
+        params: { newName: 'mergeWithRRF_dryRunTest' },
+        dryRun: true,
+        force: true,
+      },
+      backend,
+    );
 
     expect(report.version).toBe(1);
     expect(report.intent).toBe('rename');
@@ -412,16 +478,12 @@ describe.skipIf(!HAS_SELF_INDEX)('gnSafeRefactor', () => {
     // preview must be populated
     expect(report.preview).toBeDefined();
     expect(Array.isArray(report.warnings)).toBe(true);
-
-    // If the symbol was resolved, the preview should contain meaningful data.
-    if (report.symbol.nodeId) {
-      expect(typeof report.preview.diffSummary).toBe('string');
-      expect(report.preview.diffSummary.length).toBeGreaterThan(0);
-      expect(Array.isArray(report.preview.affectedFiles)).toBe(true);
-    } else {
-      // symbol not in index — graceful empty preview
-      expect(report.warnings.some((w) => w.includes('not found'))).toBe(true);
-    }
+    expect(report.symbol.nodeId).toContain('mergeWithRRF');
+    expect(report.preview.diffSummary.length).toBeGreaterThan(0);
+    expect(report.preview.affectedFiles).toContain(sourcePath);
+    expect(report.preview.estimatedLinesChanged).toBeGreaterThan(0);
+    expect(report.warnings.some((w) => w.includes('Could not read rename candidate'))).toBe(false);
+    expect(readFileSync(path.join(repoPath, sourcePath))).toEqual(sourceBefore);
   }, 30_000);
 });
 

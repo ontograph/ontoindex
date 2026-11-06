@@ -71,21 +71,27 @@ describe('committed index generation retention', () => {
       fs.stat(path.join(storage, 'generations', 'orphan', '.retention-managed')),
     ).rejects.toMatchObject({ code: 'ENOENT' });
   });
-  it.each(['missing', 'directory', 'symlink'])(
-    'leaves an active generation with a %s snapshot unmanaged through pinning and publication',
-    async (kind) => {
+  it.each(
+    ['snapshot.json', 'meta.json', 'lbug'].flatMap((file) =>
+      ['missing', 'directory', 'symlink'].map((kind) => ({ file, kind })),
+    ),
+  )(
+    'leaves an active generation with a $kind $file unmanaged through publication',
+    async ({ file, kind }) => {
       vi.spyOn(Date, 'now').mockReturnValue(1000);
       await activateUnmanaged('1-orphan');
       const directory = path.join(storage, 'generations', '1-orphan');
-      const snapshot = path.join(directory, 'snapshot.json');
-      await fs.unlink(snapshot);
-      if (kind === 'directory') await fs.mkdir(snapshot);
-      if (kind === 'symlink') await fs.symlink('meta.json', snapshot);
+      const target = path.join(directory, file);
+      await fs.unlink(target);
+      if (kind === 'directory') await fs.mkdir(target);
+      if (kind === 'symlink') await fs.symlink(file === 'lbug' ? 'meta.json' : 'lbug', target);
       const marker = path.join(directory, '.retention-managed');
 
-      const pin = await acquireIndexGenerationPin(path.join(storage, 'lbug'));
+      if (file !== 'lbug') {
+        const pin = await acquireIndexGenerationPin(path.join(storage, 'lbug'));
+        await pin.release();
+      }
       await expect(fs.lstat(marker)).rejects.toMatchObject({ code: 'ENOENT' });
-      await pin.release();
 
       await publish('a');
       await expect(fs.lstat(marker)).rejects.toMatchObject({ code: 'ENOENT' });
@@ -97,16 +103,20 @@ describe('committed index generation retention', () => {
       await expect(fs.lstat(marker)).rejects.toMatchObject({ code: 'ENOENT' });
     },
   );
-  it.each(['missing', 'directory', 'symlink'])(
-    'preserves a managed generation with a later %s snapshot while pruning complete siblings',
-    async (kind) => {
+  it.each(
+    ['snapshot.json', 'meta.json', 'lbug'].flatMap((file) =>
+      ['missing', 'directory', 'symlink'].map((kind) => ({ file, kind })),
+    ),
+  )(
+    'preserves a managed generation with a later $kind $file while pruning complete siblings',
+    async ({ file, kind }) => {
       await publish('damaged');
       await publish('complete');
       const directory = path.join(storage, 'generations', 'damaged');
-      const snapshot = path.join(directory, 'snapshot.json');
-      await fs.unlink(snapshot);
-      if (kind === 'directory') await fs.mkdir(snapshot);
-      if (kind === 'symlink') await fs.symlink('meta.json', snapshot);
+      const target = path.join(directory, file);
+      await fs.unlink(target);
+      if (kind === 'directory') await fs.mkdir(target);
+      if (kind === 'symlink') await fs.symlink(file === 'lbug' ? 'meta.json' : 'lbug', target);
 
       await publish('a');
       await publish('b');

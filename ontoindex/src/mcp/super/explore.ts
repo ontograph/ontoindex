@@ -146,6 +146,7 @@ interface QueryProcess {
 }
 
 interface ExploreQueryResult {
+  warning?: string;
   processes?: QueryProcess[];
   process_symbols?: QuerySymbol[];
   definitions?: QuerySymbol[];
@@ -382,6 +383,7 @@ export async function gnExplore(
     warnings.push(`query primitive failed: ${err instanceof Error ? err.message : String(err)}`);
     queryResult = { processes: [], process_symbols: [], definitions: [] };
   }
+  if (queryResult.warning) warnings.push(queryResult.warning);
 
   // --- 3. Select top-N symbols ------------------------------------------
   const depth = params.depth ?? 'balanced';
