@@ -1,3 +1,5 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import { beforeEach, expect, it, vi } from 'vitest';
 import { withTestLbugDB } from '../helpers/test-indexed-db.js';
 
@@ -112,6 +114,45 @@ withTestLbugDB(
           applied: false,
         });
       }
+      expect(backend.callTool).not.toHaveBeenCalled();
+    });
+
+    it('previews a canonical UID rename through the real lookup without changing source bytes', async () => {
+      const repoPath = db.tmpHandle.dbPath;
+      const sourcePath = path.join(repoPath, 'src/singleton.ts');
+      const source = Buffer.from('export function singleton() { return 1; }\n');
+      await fs.mkdir(path.dirname(sourcePath), { recursive: true });
+      await fs.writeFile(sourcePath, source);
+      const backend = { repoPath, callTool: vi.fn() };
+
+      const report = await gnSafeRefactor(
+        db.repoId,
+        {
+          intent: 'rename',
+          symbol: 'Function:singleton',
+          params: { newName: 'renamedSingleton' },
+          dryRun: true,
+          preChecks: false,
+        },
+        backend,
+      );
+
+      expect(report).toMatchObject({
+        intent: 'rename',
+        symbol: {
+          nodeId: 'Function:singleton',
+          name: 'singleton',
+          filePath: 'src/singleton.ts',
+          kind: 'Function',
+        },
+        preview: {
+          affectedFiles: ['src/singleton.ts'],
+          diffSummary: 'rename singleton → renamedSingleton (1 edits across 1 files)',
+          estimatedLinesChanged: 1,
+        },
+        applied: false,
+      });
+      expect(await fs.readFile(sourcePath)).toEqual(source);
       expect(backend.callTool).not.toHaveBeenCalled();
     });
 

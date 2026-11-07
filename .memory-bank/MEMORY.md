@@ -12,9 +12,7 @@ Active-only project router. Keep at or below 100 lines. Closed plans live under
 
 ## Active Plans
 
-[GN remaining execution](../docs/plans/ONTOINDEX_GN_REMAINING_EXECUTION_PLAN.md)
-tracks the user-authorized items 1–7. NEXT-1 and NEXT-2 are complete; all four
-CodeQL alerts are fixed. The manager is blocked. Qualification, dependency delivery,
-release, delivery-evidence reconciliation and verified installation cleanup remain open.
-GN planning is accepted; NEXT-6 needs delivered evidence, not another special
-authenticated receiving receipt. Qualification and retirement gates remain.
+No active task in the bounded 2.5.7 coverage/diagnostics follow-up.
+Unresolved qualification diagnoses: Community memory exhaustion under full-suite
+load and intermittent overlay timeouts. A 64 MiB serial/concurrent query probe
+did not reproduce exhaustion. Full qualification remains not green.
