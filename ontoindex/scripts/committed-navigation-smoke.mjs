@@ -445,6 +445,7 @@ export async function runFacadeSmoke(options, { client, head, repoPath, record =
     };
     const legacy = await call('gn_find_related', relatedArgs);
     const facade = await call('inspect', { action: 'related', ...relatedArgs });
+    const relatedResponseBytes = Buffer.byteLength(JSON.stringify(calls.at(-1).response), 'utf8');
     const relatedError = [legacy, facade].find((result) => result.kind === 'error');
     if (relatedError)
       checks.push({
@@ -486,7 +487,7 @@ export async function runFacadeSmoke(options, { client, head, repoPath, record =
     const budgeted = await call('inspect', {
       action: 'related',
       ...relatedArgs,
-      response_budget_bytes: 4096,
+      response_budget_bytes: relatedResponseBytes,
     });
     check(
       'positive logical budget keeps identity and provenance',

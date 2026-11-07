@@ -234,6 +234,24 @@ describe('committed index generation retention', () => {
       expect(await names()).toEqual(['2-directory', '2-missing', '2-symlink', 'a', 'b']);
     },
   );
+  it.skipIf(process.platform !== 'linux')(
+    'prunes an old unmarked pathname while its unpinned descriptor stays readable',
+    async () => {
+      vi.spyOn(Date, 'now').mockReturnValue(1000);
+      await publish('a');
+      const directory = await createLegacy('1-legacy');
+      const dbPath = path.join(directory, 'lbug');
+      const descriptor = await fs.open(dbPath, 'r');
+      try {
+        await publish('b');
+
+        await expect(fs.stat(dbPath)).rejects.toMatchObject({ code: 'ENOENT' });
+        expect(await descriptor.readFile('utf8')).toBe('{}');
+      } finally {
+        await descriptor.close();
+      }
+    },
+  );
   it('preserves old unmarked generations with live reader pins until release', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(1000);
     await publish('a');

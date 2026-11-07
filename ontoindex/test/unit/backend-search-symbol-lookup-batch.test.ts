@@ -187,6 +187,59 @@ describe('batched search symbol lookup', () => {
     expect((result as unknown as Record<string, any>).definitions).toEqual([]);
   });
 
+  it('preserves complete enrichment within a single shared query memory budget', async () => {
+    let active = 0;
+    let peakActive = 0;
+    vi.mocked(executeParameterized).mockImplementation(async (_repo, cypher, params) => {
+      if (!('nodeIds' in params || 'nodeId' in params)) return lookupRows(cypher);
+      active += 1;
+      peakActive = Math.max(peakActive, active);
+      try {
+        if (active > 1) throw resourceErrors[0];
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        return lookupRows(cypher, params.nodeId as string);
+      } finally {
+        active -= 1;
+      }
+    });
+
+    const result = (await query(repo, options)) as Record<string, any>;
+
+    expect(peakActive).toBe(1);
+    expect(active).toBe(0);
+    expect(enrichmentCalls()).toHaveLength(4);
+    expect(result.warning).toBeUndefined();
+    expect(result.processes).toEqual([
+      {
+        id: 'p',
+        summary: 'Pipeline',
+        priority: 1.95,
+        symbol_count: 2,
+        process_type: 'flow',
+        step_count: 2,
+      },
+    ]);
+    expect(result.process_symbols).toEqual(
+      symbols.map((symbol, index) => ({
+        id: symbol.nodeId,
+        name: symbol.name,
+        type: symbol.type,
+        filePath: symbol.filePath,
+        startLine: symbol.startLine,
+        endLine: symbol.endLine,
+        module: index === 0 ? 'Alpha module' : 'Beta module',
+        content: `${symbol.name} body`,
+        process_id: 'p',
+        step_index: index + 1,
+        citation_path:
+          index === 0
+            ? 'src/main.ts:main -> CALLS -> alpha'
+            : 'src/beta-main.ts:betaMain -> IMPORTS -> beta',
+      })),
+    );
+    expect(result.definitions).toEqual([]);
+  });
+
   it.each(['STEP_IN_PROCESS', 'MEMBER_OF', 'n.content AS content', 'callerPath'])(
     'keeps other enrichment when the %s batch fails',
     async (failedKind) => {

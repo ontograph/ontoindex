@@ -2189,45 +2189,46 @@ export async function query(
     return grouped;
   }
 
-  const [processesByNode, communitiesByNode, contentByNode, citationsByNode] = await Promise.all([
-    lookupByNode<ProcessLookupRow>(
-      `
+  // These lookups share a database buffer pool. Avoid overlapping their working
+  // sets within one request; each lookup still handles its own failure.
+  const processesByNode = await lookupByNode<ProcessLookupRow>(
+    `
       MATCH (n)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
       WHERE n.id IN $nodeIds
       RETURN p.id AS pid, p.label AS label, p.heuristicLabel AS heuristicLabel, p.processType AS processType, p.stepCount AS stepCount, r.step AS step, n.id AS nodeId
     `,
-      'query:process-lookup',
-    ),
-    lookupFirstByNode<CohesionLookupRow>(
-      // Select one complete record per target without collecting every neighbor.
-      // Minimum IDs make selection stable; aggregation still scans matching edges.
-      `
+    'query:process-lookup',
+  );
+  const communitiesByNode = await lookupFirstByNode<CohesionLookupRow>(
+    // Select one complete record per target without collecting every neighbor.
+    // Minimum IDs make selection stable; aggregation still scans matching edges.
+    `
       MATCH (n)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
       WHERE n.id IN $nodeIds
       WITH n.id AS nodeId, min(c.id) AS communityId
       MATCH (c:Community {id: communityId})
       RETURN c.cohesion AS cohesion, c.heuristicLabel AS module, nodeId
     `,
-      `
+    `
       MATCH (n {id: $nodeId})-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
       RETURN c.cohesion AS cohesion, c.heuristicLabel AS module
       ORDER BY c.id
       LIMIT 1
     `,
-      'query:cluster-info',
-    ),
-    lookupByNode<ContentLookupRow>(
-      `
+    'query:cluster-info',
+  );
+  const contentByNode = await lookupByNode<ContentLookupRow>(
+    `
       MATCH (n)
       WHERE n.id IN $nodeIds
       RETURN n.content AS content, n.id AS nodeId
     `,
-      'query:content-fetch',
-      includeContent,
-    ),
-    lookupFirstByNode<CitationLookupRow>(
-      // Repeat the target filter on the rematch so its hash-build branch stays scoped.
-      `
+    'query:content-fetch',
+    includeContent,
+  );
+  const citationsByNode = await lookupFirstByNode<CitationLookupRow>(
+    // Repeat the target filter on the rematch so its hash-build branch stays scoped.
+    `
       MATCH (m)-[r:CodeRelation]->(n)
       WHERE n.id IN $nodeIds AND r.type IN ['CALLS', 'IMPORTS']
       WITH n.id AS nodeId, min(m.id) AS callerId
@@ -2235,16 +2236,15 @@ export async function query(
       WHERE n.id IN $nodeIds AND r.type IN ['CALLS', 'IMPORTS']
       RETURN m.name AS caller, min(r.type) AS type, m.filePath AS callerPath, n.id AS nodeId
     `,
-      `
+    `
       MATCH (m)-[r:CodeRelation]->(n {id: $nodeId})
       WHERE r.type IN ['CALLS', 'IMPORTS']
       RETURN m.name AS caller, r.type AS type, m.filePath AS callerPath
       ORDER BY m.id, r.type
       LIMIT 1
     `,
-      'query:citation-lookup',
-    ),
-  ]);
+    'query:citation-lookup',
+  );
 
   for (const [, item] of mergedReordered) {
     const sym = item.data;

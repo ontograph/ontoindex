@@ -374,6 +374,7 @@ function facadeFixture(
     plainRefactorError?: boolean;
     budgetedRelatedError?: boolean;
     budgetedRelatedPartial?: boolean;
+    relatedDescription?: string;
   } = {},
 ) {
   const calls: Array<{ name: string; arguments?: Record<string, unknown> }> = [];
@@ -440,7 +441,8 @@ function facadeFixture(
         };
       if (
         request.name === 'inspect' &&
-        request.arguments.response_budget_bytes === 4096 &&
+        typeof request.arguments.response_budget_bytes === 'number' &&
+        request.arguments.response_budget_bytes > 0 &&
         overrides.budgetedRelatedError
       )
         return wrap({ error: 'budgeted related unavailable' }, true);
@@ -482,9 +484,11 @@ function facadeFixture(
             context = { ...readContext, workingTreeIncluded: true };
           }
         }
-        return wrap({
+        const response = wrap({
           ...(context !== undefined ? { readContext: context } : {}),
-          ...(request.arguments.response_budget_bytes === 4096 && overrides.budgetedRelatedPartial
+          ...(typeof request.arguments.response_budget_bytes === 'number' &&
+          request.arguments.response_budget_bytes > 0 &&
+          overrides.budgetedRelatedPartial
             ? { detailTruncated: true }
             : {}),
           ...(overrides.missingCallers === request.name
@@ -516,8 +520,18 @@ function facadeFixture(
                 ? 'Function:other'
                 : 'Function:baseline',
             name: 'baseline',
+            ...(overrides.relatedDescription ? { description: overrides.relatedDescription } : {}),
           },
         });
+        if (
+          overrides.relatedDescription &&
+          typeof request.arguments.response_budget_bytes === 'number' &&
+          request.arguments.response_budget_bytes > 0 &&
+          request.arguments.response_budget_bytes <
+            Buffer.byteLength(JSON.stringify(response), 'utf8')
+        )
+          return wrap({ error: 'response budget too small' }, true);
+        return response;
       }
       if (overrides.throwRefactorError)
         throw new Error('response_budget_bytes must be a positive safe integer.');
@@ -659,7 +673,10 @@ describe('installed facade smoke', () => {
     );
     expect(
       fake.calls.filter(
-        ({ name, arguments: args }) => name === 'inspect' && args?.response_budget_bytes === 4096,
+        ({ name, arguments: args }) =>
+          name === 'inspect' &&
+          typeof args?.response_budget_bytes === 'number' &&
+          args.response_budget_bytes > 0,
       ),
     ).toHaveLength(1);
     expect(
@@ -673,6 +690,33 @@ describe('installed facade smoke', () => {
       { dryRun: true, response_budget_bytes: -1 },
       { dryRun: true, response_budget_bytes: -1 },
     ]);
+  });
+
+  it('measures an adequate UTF-8 budget for a related response larger than 4096 bytes', async () => {
+    const fake = facadeFixture({ relatedDescription: '界'.repeat(1600) });
+    let recorded: Array<{ response?: unknown }> = [];
+    const result = await runFacadeSmoke(options, {
+      client: fake.client,
+      head: 'head',
+      repoPath: '/repo',
+      record: (calls: Array<{ response?: unknown }>) => {
+        recorded = structuredClone(calls);
+      },
+    });
+    const raw = JSON.stringify(recorded[4].response);
+    const responseBytes = Buffer.byteLength(raw, 'utf8');
+    expect(responseBytes).toBeGreaterThan(4096);
+    expect(responseBytes).toBeGreaterThan(raw.length);
+    expect(fake.calls[5].arguments?.response_budget_bytes).toBe(responseBytes);
+    expect(result.contractPassed).toBe(true);
+    expect(result.callCount).toBe(8);
+    expect(fake.calls).toHaveLength(8);
+    const undersized = await fake.client.callTool({
+      name: 'inspect',
+      arguments: { action: 'related', response_budget_bytes: raw.length },
+    });
+    expect(undersized.isError).toBe(true);
+    expect(payloadOf(undersized)).toEqual({ error: 'response budget too small' });
   });
 
   it.each(['inspect', 'manage', 'refactor'])(
