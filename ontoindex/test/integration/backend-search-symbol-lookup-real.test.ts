@@ -1,3 +1,5 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import { beforeEach, expect, it, vi } from 'vitest';
 import { withTestLbugDB } from '../helpers/test-indexed-db.js';
 
@@ -18,10 +20,11 @@ vi.mock('../../src/mcp/local/query-log.js', () => ({
 
 import { bm25Search, semanticSearch } from '../../src/mcp/local/backend-query.js';
 import { query } from '../../src/mcp/local/backend-search.js';
+import { gnSafeRefactor } from '../../src/mcp/super/safe-refactor.js';
 import * as poolAdapter from '../../src/core/lbug/pool-adapter.js';
 import type { EnrichedSymbolRow } from '../../src/core/search/symbol-merge.js';
 
-const names = ['singleton', 'noEdge', 'mixed', 'multiple', 'fanIn'];
+const names = ['singleton', 'noEdge', 'mixed', 'multiple', 'fanIn', 'importsFirst'];
 const symbols: Array<
   Required<Pick<EnrichedSymbolRow, 'name' | 'type' | 'filePath'>> & EnrichedSymbolRow
 > = names.map((name) => ({
@@ -37,6 +40,10 @@ const seed = [
     (name) =>
       `CREATE (:Function {id: 'Function:${name}', name: '${name}', filePath: 'src/${name}.ts', content: '${name} body'})`,
   ),
+  "CREATE (:File {id: 'File:firstImporter', name: 'firstImporter', filePath: 'src/import.ts'})",
+  "CREATE (:Method {id: 'Method:laterCaller', name: 'laterCaller', filePath: 'src/method.ts'})",
+  "MATCH (m:File {id: 'File:firstImporter'}), (n:Function {id: 'Function:importsFirst'}) CREATE (m)-[:CodeRelation {type: 'IMPORTS'}]->(n)",
+  "MATCH (m:Method {id: 'Method:laterCaller'}), (n:Function {id: 'Function:importsFirst'}) CREATE (m)-[:CodeRelation {type: 'CALLS'}]->(n)",
   "CREATE (:Community {id: 'Community:one', heuristicLabel: 'One', cohesion: 0.2})",
   "CREATE (:Community {id: 'Community:two', heuristicLabel: 'Two', cohesion: 0.8})",
   "CREATE (:Function {id: 'Function:caller', name: 'caller', filePath: 'src/caller.ts'})",
@@ -79,6 +86,76 @@ withTestLbugDB(
       }) as Promise<Extract<Awaited<ReturnType<typeof query>>, { query_intent: unknown }>>;
     }
 
+    it('rejects ambiguous refactor names before writes and previews each exact UID', async () => {
+      const backend = { repoPath: db.tmpHandle.dbPath, callTool: vi.fn() };
+      const params = {
+        intent: 'modify-body' as const,
+        params: { newBody: 'return 42;' },
+        preChecks: false,
+      };
+
+      await expect(
+        gnSafeRefactor(
+          db.repoId,
+          { ...params, symbol: 'singleton', dryRun: false, confirm: true },
+          backend,
+        ),
+      ).rejects.toThrow('Ambiguous symbol "singleton"; provide a canonical symbol UID.');
+      expect(backend.callTool).not.toHaveBeenCalled();
+
+      for (const [nodeId, filePath] of [
+        ['Function:singleton', 'src/singleton.ts'],
+        ['Function:sameName', 'src/other.ts'],
+      ]) {
+        const report = await gnSafeRefactor(db.repoId, { ...params, symbol: nodeId }, backend);
+        expect(report).toMatchObject({
+          symbol: { nodeId, name: 'singleton', filePath, kind: 'Function' },
+          preview: { affectedFiles: [filePath] },
+          applied: false,
+        });
+      }
+      expect(backend.callTool).not.toHaveBeenCalled();
+    });
+
+    it('previews a canonical UID rename through the real lookup without changing source bytes', async () => {
+      const repoPath = db.tmpHandle.dbPath;
+      const sourcePath = path.join(repoPath, 'src/singleton.ts');
+      const source = Buffer.from('export function singleton() { return 1; }\n');
+      await fs.mkdir(path.dirname(sourcePath), { recursive: true });
+      await fs.writeFile(sourcePath, source);
+      const backend = { repoPath, callTool: vi.fn() };
+
+      const report = await gnSafeRefactor(
+        db.repoId,
+        {
+          intent: 'rename',
+          symbol: 'Function:singleton',
+          params: { newName: 'renamedSingleton' },
+          dryRun: true,
+          preChecks: false,
+        },
+        backend,
+      );
+
+      expect(report).toMatchObject({
+        intent: 'rename',
+        symbol: {
+          nodeId: 'Function:singleton',
+          name: 'singleton',
+          filePath: 'src/singleton.ts',
+          kind: 'Function',
+        },
+        preview: {
+          affectedFiles: ['src/singleton.ts'],
+          diffSummary: 'rename singleton → renamedSingleton (1 edits across 1 files)',
+          estimatedLinesChanged: 1,
+        },
+        applied: false,
+      });
+      expect(await fs.readFile(sourcePath)).toEqual(source);
+      expect(backend.callTool).not.toHaveBeenCalled();
+    });
+
     it('enriches a singleton edge through the production search and real adapter', async () => {
       vi.mocked(semanticSearch).mockResolvedValue([symbols[0]]);
       const result = await search();
@@ -119,6 +196,9 @@ withTestLbugDB(
         'src/fan.ts:fanCaller1 -> CALLS -> fanIn',
       );
       expect(byId.get('Function:fanIn')!.module).toBe('Fan 1');
+      expect(byId.get('Function:importsFirst')!.citation_path).toBe(
+        'src/import.ts:firstImporter -> IMPORTS -> importsFirst',
+      );
       for (const name of names)
         expect(byId.get(`Function:${name}`)).toHaveProperty('content', `${name} body`);
     });
@@ -177,13 +257,17 @@ withTestLbugDB(
         await search();
         expect(execute).toHaveBeenCalledTimes(4);
         for (const [, , params] of execute.mock.calls) expect(params).toHaveProperty('nodeIds');
+        let checkedLookups = 0;
         for (const [index, [, cypher]] of execute.mock.calls.entries()) {
-          if (!cypher.includes('min(')) continue;
+          if (!cypher.includes('MEMBER_OF') && !cypher.includes('callerPath')) continue;
+          checkedLookups++;
           const rows = await execute.mock.results[index].value;
           const ids = rows.map((row: Record<string, unknown>) => row.nodeId);
+          expect(ids).toContain('Function:fanIn');
           expect(new Set(ids).size).toBe(ids.length);
           expect(ids.length).toBeLessThanOrEqual(names.length);
         }
+        expect(checkedLookups).toBe(2);
       } finally {
         execute.mockRestore();
       }

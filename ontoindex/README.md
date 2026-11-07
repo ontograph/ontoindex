@@ -237,7 +237,7 @@ for the available memory and CPU; the defaults and deadlines are listed above.
 
 ## Index Generations
 
-`ontoindex clean --generations` prints a dry-run plan for obsolete index generations. It keeps the active generation and, by default, the two newest other generations, as well as generations with a live reader pin, incomplete generations, or generations while analysis is in progress. Add `--force` to delete eligible generations; `--keep <n>` sets the retained non-active generation count from `0` to `10` (default `2`), and `--all` applies the operation to every registered repository. A run deletes at most 50 generations. This mode never removes the active index or unregisters a repository. Generations created by older versions without a retention marker are eligible for cleanup only through this command.
+`ontoindex clean --generations` prints a dry-run plan for obsolete index generations. It keeps the active generation and, by default, the two newest other generations, as well as generations with a live reader pin, incomplete generations, or generations while analysis is in progress. Add `--force` to delete eligible generations; `--keep <n>` sets the retained non-active generation count from `0` to `10` (default `2`), and `--all` applies the operation to every registered repository. A run deletes at most 50 generations. This mode never removes the active index or unregisters a repository. Publication also automatically prunes eligible older generations, including complete legacy generations without a retention marker. Readers must acquire a generation pin to preserve its pathname; an open file descriptor alone does not prevent pruning.
 
 ## MCP Resources
 

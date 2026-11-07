@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import lbug from '@ladybugdb/core';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { runFullAnalysis } from '../../src/core/run-analyze.js';
 import { closeLbug } from '../../src/core/lbug/lbug-adapter.js';
 import * as pool from '../../src/core/lbug/pool-adapter.js';
@@ -55,76 +55,108 @@ describe('overlay reader retention', () => {
   });
 });
 
-describe('immutable overlay generations (real LadybugDB)', () => {
-  let root: string;
-  let repo: { id: string; repoPath: string; storagePath: string };
-  let overlay: string;
-  const cypher = 'MATCH (n:Function) RETURN n.name AS name LIMIT 10';
-  const current = () => fs.readFile(path.join(overlay, 'CURRENT'), 'utf8');
-  const directories = async () =>
-    (await fs.readdir(overlay, { withFileTypes: true }))
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => entry.name)
-      .sort();
-  // Mirrors the literal `generations.slice(3)` in run-analyze.ts (runDirtyOverlayAnalysis pruning).
-  const retentionLimit = async () => 3;
+function createPhaseRecorder() {
+  const started = performance.now();
+  let previous = started;
+  const trail: string[] = [];
+  let lastOperationPhase: string | undefined;
+  return {
+    markPhase(label: string) {
+      const now = performance.now();
+      const entry = `${label.replace(/[\r\n]/g, ' ').slice(0, 160)} @${(now - started).toFixed(1)}ms (+${(now - previous).toFixed(1)}ms)`;
+      trail.push(entry);
+      if (!label.startsWith('cleanup:')) lastOperationPhase = entry;
+      if (trail.length > 32) trail.shift();
+      previous = now;
+    },
+    report() {
+      return `[overlay-generations] elapsed=${(performance.now() - started).toFixed(1)}ms; lastOperation=${lastOperationPhase}; lastRecorded=${trail.at(-1)}\n${trail.join('\n')}`;
+    },
+  };
+}
 
-  async function build(name: string, fail = false, onLog = vi.fn()) {
-    const analyzeRepo = vi.fn(async () => ({
-      graph: buildTestGraph([
-        { id: 'File:source.ts', label: 'File', name: 'source.ts', filePath: 'source.ts' },
-        { id: `Function:${name}`, label: 'Function', name, filePath: 'source.ts' },
-      ]),
-      repoPath: root,
-      totalFileCount: 1,
-      usedWorkerPool: false,
-    }));
-    const result = await runFullAnalysis(
-      root,
-      { dirtyOverlay: true, overlayPaths: ['source.ts'] },
-      {
-        onLog,
-        onProgress: (phase, _percent, message) => {
-          if (fail && phase === 'lbug' && message.startsWith('Loaded nodes')) {
-            throw new Error('injected generation load failure');
-          }
-        },
-      },
-      { analyzeRuntime: { analyzeRepo } },
-    );
-    expect(analyzeRepo).toHaveBeenCalledWith(
-      expect.objectContaining({
-        options: {
-          profile: 'symbols',
-          includePaths: ['source.ts'],
-          capturedWorkspace: {
-            captureRoot: expect.stringContaining('workspace-inputs'),
-            canonicalRepoPath: expect.any(String),
+it('keeps a deferred phase update local to its owning recorder', async () => {
+  const first = createPhaseRecorder();
+  let resume!: () => void;
+  const deferred = new Promise<void>((resolve) => {
+    resume = resolve;
+  });
+  const lateUpdate = deferred.then(() => first.markPhase('build: late first fixture'));
+  first.markPhase('cleanup: complete');
+  const second = createPhaseRecorder();
+  second.markPhase('build: second fixture');
+  second.markPhase('cleanup: complete');
+  const secondBefore = second.report().split('; lastOperation=')[1];
+  resume();
+  await lateUpdate;
+  expect(first.report()).toContain('lastOperation=build: late first fixture');
+  expect(second.report().split('; lastOperation=')[1]).toBe(secondBefore);
+  expect(second.report()).toContain('lastOperation=build: second fixture');
+  expect(second.report()).toContain('lastRecorded=cleanup: complete');
+  expect(second.report()).not.toContain('late first fixture');
+});
+
+describe('immutable overlay generations (real LadybugDB)', () => {
+  const cypher = 'MATCH (n:Function) RETURN n.name AS name LIMIT 10';
+  async function createFixture(root: string, markPhase: (label: string) => void) {
+    markPhase('setup: fixture');
+    const repo = { id: root, repoPath: root, storagePath: path.join(root, '.ontoindex') };
+    const overlay = path.join(repo.storagePath, 'overlay');
+    const current = () => {
+      markPhase('read: CURRENT');
+      return fs.readFile(path.join(overlay, 'CURRENT'), 'utf8');
+    };
+    const directories = async () =>
+      (await fs.readdir(overlay, { withFileTypes: true }))
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name)
+        .sort();
+    // Mirrors the literal `generations.slice(3)` in run-analyze.ts (runDirtyOverlayAnalysis pruning).
+    const retentionLimit = async () => 3;
+
+    async function build(name: string, fail = false, onLog = vi.fn()) {
+      markPhase(`build: ${name}`);
+      const analyzeRepo = vi.fn(async () => ({
+        graph: buildTestGraph([
+          { id: 'File:source.ts', label: 'File', name: 'source.ts', filePath: 'source.ts' },
+          { id: `Function:${name}`, label: 'Function', name, filePath: 'source.ts' },
+        ]),
+        repoPath: root,
+        totalFileCount: 1,
+        usedWorkerPool: false,
+      }));
+      const result = await runFullAnalysis(
+        root,
+        { dirtyOverlay: true, overlayPaths: ['source.ts'] },
+        {
+          onLog,
+          onProgress: (stage, _percent, message) => {
+            markPhase(`build ${name}: ${stage}: ${message}`);
+            if (fail && stage === 'lbug' && message.startsWith('Loaded nodes')) {
+              throw new Error('injected generation load failure');
+            }
           },
         },
-      }),
-    );
-    expect(result.stats.embeddings).toBe(0);
-    return result;
-  }
+        { analyzeRuntime: { analyzeRepo } },
+      );
+      markPhase(`build ${name}: assertions`);
+      expect(analyzeRepo).toHaveBeenCalledWith(
+        expect.objectContaining({
+          options: {
+            profile: 'symbols',
+            includePaths: ['source.ts'],
+            capturedWorkspace: {
+              captureRoot: expect.stringContaining('workspace-inputs'),
+              canonicalRepoPath: expect.any(String),
+            },
+          },
+        }),
+      );
+      expect(result.stats.embeddings).toBe(0);
+      markPhase(`read: after build ${name}`);
+      return result;
+    }
 
-  beforeEach(async () => {
-    // Exercise real native readers without reserving the pool's default 8-TiB
-    // mapping for every fixture generation. Production adapters stay unchanged.
-    const Database = lbug.Database;
-    vi.spyOn(lbug, 'Database').mockImplementation(function (
-      dbPath?: string,
-      bufferSize?: number,
-      compression?: boolean,
-      readOnly?: boolean,
-      maxDBSize?: number,
-    ) {
-      return new Database(dbPath, bufferSize, compression, readOnly, maxDBSize ?? 2 ** 32);
-    });
-    resetOverlaySnapshotCache();
-    root = await fs.mkdtemp(path.join(os.tmpdir(), 'overlay-generations-'));
-    repo = { id: root, repoPath: root, storagePath: path.join(root, '.ontoindex') };
-    overlay = path.join(repo.storagePath, 'overlay');
     for (const args of [
       ['init', '-q'],
       ['config', 'user.name', 'test'],
@@ -140,17 +172,50 @@ describe('immutable overlay generations (real LadybugDB)', () => {
       expect(spawnSync('git', args, { cwd: root, encoding: 'utf8' }).status).toBe(0);
     }
     await fs.writeFile(path.join(root, 'source.ts'), 'export function dirtySymbol() {}\n');
+    markPhase('read: fixture ready');
+    return { root, repo, overlay, build, current, directories, retentionLimit };
+  }
+
+  const test = it.extend<{ generation: Awaited<ReturnType<typeof createFixture>> }>({
+    generation: async ({ onTestFailed, onTestFinished }, use) => {
+      const { markPhase, report } = createPhaseRecorder();
+      onTestFailed(() => console.error(report()));
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), 'overlay-generations-'));
+      // Completion hooks have Vitest's hook timeout and run before failure reports.
+      onTestFinished(async () => {
+        markPhase('cleanup: mocks and snapshot cache');
+        vi.restoreAllMocks();
+        resetOverlaySnapshotCache();
+        markPhase('cleanup: overlay reader');
+        await pool.closeLbug(overlayRepoId(root));
+        markPhase('cleanup: native database');
+        await closeLbug();
+        markPhase('cleanup: fixture');
+        await fs.rm(root, { recursive: true, force: true });
+        markPhase('cleanup: complete');
+      });
+      markPhase('setup: native database');
+      // Exercise real native readers without reserving the pool's default 8-TiB
+      // mapping for every fixture generation. Production adapters stay unchanged.
+      const Database = lbug.Database;
+      vi.spyOn(lbug, 'Database').mockImplementation(function (
+        dbPath?: string,
+        bufferSize?: number,
+        compression?: boolean,
+        readOnly?: boolean,
+        maxDBSize?: number,
+      ) {
+        return new Database(dbPath, bufferSize, compression, readOnly, maxDBSize ?? 2 ** 32);
+      });
+      resetOverlaySnapshotCache();
+      const fixture = await createFixture(root, markPhase);
+      await use(fixture);
+    },
   });
 
-  afterEach(async () => {
-    vi.restoreAllMocks();
-    resetOverlaySnapshotCache();
-    await pool.closeLbug(overlayRepoId(repo.id));
-    await closeLbug();
-    await fs.rm(root, { recursive: true, force: true });
-  });
-
-  it('publishes gen2 while gen1 has a live reader, then switches serialized reads', async () => {
+  test('publishes gen2 while gen1 has a live reader, then switches serialized reads', async ({
+    generation: { build, repo },
+  }) => {
     await build('gen1');
     const first = await resolveOverlayDbPath(repo.storagePath);
     expect(first).toBe(overlayDbPath(repo.storagePath));
@@ -174,7 +239,9 @@ describe('immutable overlay generations (real LadybugDB)', () => {
     expect(close).toHaveBeenCalledExactlyOnceWith(overlayRepoId(repo.id));
   });
 
-  it('removes only a failed build and leaves CURRENT, gen1 bytes and its reader untouched', async () => {
+  test('removes only a failed build and leaves CURRENT, gen1 bytes and its reader untouched', async ({
+    generation: { build, repo, current, overlay },
+  }) => {
     await build('gen1');
     await queryOverlay(repo, cypher);
     const published = await current();
@@ -188,7 +255,9 @@ describe('immutable overlay generations (real LadybugDB)', () => {
     expect(await queryOverlay(repo, cypher)).toEqual([{ name: 'gen1' }]);
   });
 
-  it('leaves the published generation untouched when CURRENT rename fails', async () => {
+  test('leaves the published generation untouched when CURRENT rename fails', async ({
+    generation: { build, repo, current, overlay },
+  }) => {
     await build('gen1');
     const published = await current();
     const before = await fs.readdir(overlay);
@@ -199,7 +268,9 @@ describe('immutable overlay generations (real LadybugDB)', () => {
     expect(await queryOverlay(repo, cypher)).toEqual([{ name: 'gen1' }]);
   });
 
-  it('keeps CURRENT and the two newest generations, tolerating locked old stores', async () => {
+  test('keeps CURRENT and the two newest generations, tolerating locked old stores', async ({
+    generation: { build, repo, current, overlay, directories },
+  }) => {
     await build('gen1');
     const firstId = (await current()).trim();
     const lockedId = '1-1-locked';
@@ -235,7 +306,9 @@ describe('immutable overlay generations (real LadybugDB)', () => {
     expect(await queryOverlay(repo, cypher)).toEqual([{ name: 'gen3' }]);
   });
 
-  it('bounds retained generations with a simulated OS lock until reader release', async () => {
+  test('bounds retained generations with a simulated OS lock until reader release', async ({
+    generation: { build, repo, current, overlay, directories, retentionLimit },
+  }) => {
     const retained = await retentionLimit();
     await build('held');
     await queryOverlay(repo, cypher);
@@ -284,9 +357,9 @@ describe('immutable overlay generations (real LadybugDB)', () => {
     expect((await current()).trim()).not.toBe(heldId);
   });
 
-  it.each(['', '../outside', '/absolute', 'one/two', '..', 'gen\nother', 'missing-generation'])(
+  test.for(['', '../outside', '/absolute', 'one/two', '..', 'gen\nother', 'missing-generation'])(
     'rejects queries for invalid or missing CURRENT target %j and closes stale handles',
-    async (value) => {
+    async (value, { generation: { build, repo, overlay } }) => {
       await build('gen1');
       await queryOverlay(repo, cypher);
       await fs.writeFile(path.join(overlay, 'CURRENT'), value);
@@ -300,7 +373,9 @@ describe('immutable overlay generations (real LadybugDB)', () => {
     },
   );
 
-  it('ignores missing/unreadable CURRENT and the legacy layout, then replaces it best-effort', async () => {
+  test('ignores missing/unreadable CURRENT and the legacy layout, then replaces it best-effort', async ({
+    generation: { build, repo, overlay },
+  }) => {
     await fs.mkdir(overlay, { recursive: true });
     await fs.writeFile(path.join(overlay, 'lbug'), 'legacy');
     await expect(resolveOverlayDbPath(repo.storagePath)).resolves.toBeNull();

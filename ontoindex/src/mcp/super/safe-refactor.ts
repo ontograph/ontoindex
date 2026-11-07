@@ -113,6 +113,8 @@ interface RenameChange {
 
 interface RenameResult {
   error?: unknown;
+  status?: string;
+  warnings?: string[];
   total_edits?: unknown;
   changes?: unknown;
   applied_files?: unknown;
@@ -170,8 +172,9 @@ async function resolveSymbol(repoId: string, symbol: string): Promise<ResolvedSy
     }
   }
 
+  let candidates: unknown[];
   try {
-    const candidates = await executeParameterized(
+    candidates = await executeParameterized(
       repoId,
       `MATCH (s) WHERE s.name = $name
        OPTIONAL MATCH (caller)-[r:CodeRelation]->(s) WHERE r.type = 'CALLS'
@@ -181,17 +184,20 @@ async function resolveSymbol(repoId: string, symbol: string): Promise<ResolvedSy
        LIMIT 5`,
       { name: symbol },
     );
-    if (candidates.length === 0) return null;
-    const row = candidates[0] as GraphRow;
-    return {
-      nodeId: rowString(row, 'nodeId', 0),
-      name: rowString(row, 'name', 1),
-      filePath: rowString(row, 'filePath', 2),
-      kind: rowString(row, 'kind', 3),
-    };
   } catch {
     return null;
   }
+  if (candidates.length === 0) return null;
+  if (new Set(candidates.map((row) => rowString(row as GraphRow, 'nodeId', 0))).size > 1) {
+    throw new Error(`Ambiguous symbol "${symbol}"; provide a canonical symbol UID.`);
+  }
+  const row = candidates[0] as GraphRow;
+  return {
+    nodeId: rowString(row, 'nodeId', 0),
+    name: rowString(row, 'name', 1),
+    filePath: rowString(row, 'filePath', 2),
+    kind: rowString(row, 'kind', 3),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -218,11 +224,8 @@ async function makeLookupSymbol(repoId: string): Promise<LookupSymbol> {
         rows = (await executeParameterized(
           repoId,
           `MATCH (s) WHERE s.id = $id
-           OPTIONAL MATCH (caller)-[r:CodeRelation]->(s) WHERE r.type IN ['CALLS', 'REFERENCES', 'IMPORTS']
-           OPTIONAL MATCH (s)-[ri:CodeRelation]->(callee) WHERE ri.type IN ['CALLS', 'REFERENCES', 'IMPORTS']
            RETURN s.id AS id, s.name AS name, s.filePath AS filePath,
-                  s.startLine AS startLine, label(s) AS kind,
-                  COLLECT(DISTINCT {filePath: caller.filePath, type: ri.type}) AS incoming
+                  s.startLine AS startLine, label(s) AS kind
            LIMIT 1`,
           { id: uid },
         )) as GraphRow[];
@@ -292,10 +295,33 @@ async function dispatchDryRun(
     const lookupSymbol = await makeLookupSymbol(repoId);
     const result = (await renameSymbol(
       repoHandle,
-      { symbol_name: resolved.name, new_name: newName, dry_run: true },
+      {
+        symbol_name: resolved.name,
+        symbol_uid: resolved.nodeId,
+        new_name: newName,
+        dry_run: true,
+      },
       lookupSymbol,
       { confirmWrites: false },
     )) as RenameResult;
+    if (result.error) {
+      throw new Error(String(result.error));
+    }
+    if (result.status === 'ambiguous' || result.status === 'failed') {
+      throw new Error(`Rename preview ${result.status}: ${resolved.nodeId}`);
+    }
+    if (result.warnings) {
+      for (const warning of result.warnings.slice(0, 5)) {
+        if (warning.length > 240) {
+          const prefix = warning.slice(0, 237).replace(/[\uD800-\uDBFF]$/, '');
+          warnings.push(`${prefix}...`);
+        } else {
+          warnings.push(warning);
+        }
+      }
+      const omitted = result.warnings.length - 5;
+      if (omitted > 0) warnings.push(`Rename preview: ${omitted} additional warning(s) omitted.`);
+    }
     const affectedFiles = renameAffectedFiles(result);
     return {
       affectedFiles,

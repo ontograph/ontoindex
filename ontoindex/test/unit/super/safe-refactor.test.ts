@@ -203,6 +203,81 @@ describe('gnSafeRefactor', () => {
     });
   });
 
+  it.each(['rename', 'modify-body', 'extract', 'move'] as const)(
+    'rejects ambiguous names before %s preview or apply',
+    async (intent) => {
+      mockResolve([
+        resolvedRow(),
+        resolvedRow('Function:src/other.ts:parseToken', SYMBOL_NAME, 'src/other.ts'),
+      ]);
+      await expect(
+        gnSafeRefactor(
+          REPO_ID,
+          {
+            intent,
+            symbol: SYMBOL_NAME,
+            params: { newName: 'validateToken', newBody: 'return 1;', targetFile: 'src/new.ts' },
+            preChecks: false,
+            dryRun: false,
+            confirm: true,
+          },
+          refactorBackend,
+        ),
+      ).rejects.toThrow('Ambiguous symbol "parseToken"; provide a canonical symbol UID.');
+      expect(mockRenameSymbol).not.toHaveBeenCalled();
+      expect(refactorBackend.callTool).not.toHaveBeenCalled();
+      expect(mockExecuteParameterized).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('accepts an explicit UID without fuzzy name selection', async () => {
+    mockResolve();
+    mockRenameSymbol.mockResolvedValueOnce({ status: 'success', total_edits: 0, changes: [] });
+    const report = await gnSafeRefactor(REPO_ID, {
+      intent: 'rename',
+      symbol: NODE_ID,
+      params: { newName: 'validateToken' },
+      preChecks: false,
+    });
+    expect(report.applied).toBe(false);
+    expect(mockExecuteParameterized.mock.calls[0][2]).toEqual({ id: NODE_ID });
+    expect(mockRenameSymbol.mock.calls[0][1]).toMatchObject({ symbol_uid: NODE_ID });
+  });
+
+  it('looks up the resolved rename UID using only symbol metadata', async () => {
+    mockResolve();
+    mockRenameSymbol.mockResolvedValueOnce({ total_edits: 0, changes: [] });
+    await gnSafeRefactor(REPO_ID, {
+      intent: 'rename',
+      symbol: SYMBOL_NAME,
+      params: { newName: 'validateToken' },
+      preChecks: false,
+    });
+    const symbol = {
+      id: NODE_ID,
+      name: SYMBOL_NAME,
+      filePath: 'src/auth/token.ts',
+      startLine: 12,
+      kind: 'Function',
+    };
+    mockExecuteParameterized.mockResolvedValueOnce([symbol]);
+    const lookup = mockRenameSymbol.mock.calls[0][2] as (
+      name?: string,
+      uid?: string,
+    ) => Promise<unknown>;
+
+    expect(await lookup(SYMBOL_NAME, NODE_ID)).toEqual({
+      symbol,
+      incoming: { calls: [], imports: [], extends: [], implements: [] },
+    });
+    const [repo, query, parameters] = mockExecuteParameterized.mock.calls[1];
+    expect(repo).toBe(REPO_ID);
+    expect(parameters).toEqual({ id: NODE_ID });
+    expect(query.replace(/\s+/g, ' ').trim()).toBe(
+      'MATCH (s) WHERE s.id = $id RETURN s.id AS id, s.name AS name, s.filePath AS filePath, s.startLine AS startLine, label(s) AS kind LIMIT 1',
+    );
+  });
+
   describe('real facade and super dispatch parity', () => {
     const args = {
       intent: 'modify-body',
@@ -467,6 +542,100 @@ describe('gnSafeRefactor', () => {
   // -------------------------------------------------------------------------
   // 3. dryRun:true (default) returns preview without calling apply path
   // -------------------------------------------------------------------------
+  it('preserves warnings from a partial rename preview', async () => {
+    mockResolve();
+    mockRenameSymbol.mockResolvedValueOnce({
+      total_edits: 0,
+      changes: [],
+      warnings: ['Could not read rename candidate: src/auth/token.ts'],
+    });
+    const report = await gnSafeRefactor(
+      REPO_ID,
+      {
+        intent: 'rename',
+        symbol: SYMBOL_NAME,
+        params: { newName: 'verifyToken' },
+        preChecks: false,
+      },
+      refactorBackend,
+    );
+    expect(report.applied).toBe(false);
+    expect(report.warnings).toEqual(['Could not read rename candidate: src/auth/token.ts']);
+  });
+
+  it.each([
+    { count: 0, length: 0 },
+    { count: 5, length: 240 },
+    { count: 6, length: 20 },
+    { count: 1, length: 241 },
+    { count: 20, length: 1000 },
+  ])(
+    'bounds rename warnings with $count entries of $length characters',
+    async ({ count, length }) => {
+      mockResolve();
+      const renameWarnings = Array.from({ length: count }, (_, i) => `${i}:`.padEnd(length, 'x'));
+      mockRenameSymbol.mockResolvedValueOnce({
+        total_edits: 0,
+        changes: [],
+        warnings: renameWarnings,
+      });
+      const report = await gnSafeRefactor(REPO_ID, {
+        intent: 'rename',
+        symbol: SYMBOL_NAME,
+        params: { newName: 'verifyToken' },
+        preChecks: false,
+      });
+
+      const samples = report.warnings.slice(0, Math.min(count, 5));
+      samples.forEach((sample, i) => {
+        if (length > 240) {
+          expect(sample.endsWith('...')).toBe(true);
+          expect(sample.length).toBe(240);
+          expect(renameWarnings[i].startsWith(sample.slice(0, -3))).toBe(true);
+        } else {
+          expect(sample).toBe(renameWarnings[i]);
+        }
+      });
+      expect(samples.every((warning) => warning.length <= 240)).toBe(true);
+      expect(JSON.stringify(report.warnings).length).toBeLessThanOrEqual(5 * 240 + 100);
+      if (count > 5) {
+        expect(report.warnings).toHaveLength(6);
+        expect(report.warnings[5]).toBe(
+          `Rename preview: ${count - 5} additional warning(s) omitted.`,
+        );
+      } else {
+        expect(report.warnings).toHaveLength(count);
+      }
+      expect(renameWarnings).toHaveLength(count);
+      expect(renameWarnings.every((warning) => warning.length === length)).toBe(true);
+    },
+  );
+
+  it.each([
+    { prefixLength: 235, expectedPrefix: `${'x'.repeat(235)}😀` },
+    { prefixLength: 236, expectedPrefix: 'x'.repeat(236) },
+  ])(
+    'preserves Unicode at truncation boundary $prefixLength',
+    async ({ prefixLength, expectedPrefix }) => {
+      mockResolve();
+      mockRenameSymbol.mockResolvedValueOnce({
+        total_edits: 0,
+        changes: [],
+        warnings: [`${'x'.repeat(prefixLength)}😀${'y'.repeat(20)}`],
+      });
+      const report = await gnSafeRefactor(REPO_ID, {
+        intent: 'rename',
+        symbol: SYMBOL_NAME,
+        params: { newName: 'verifyToken' },
+        preChecks: false,
+      });
+
+      expect(report.warnings).toEqual([`${expectedPrefix}...`]);
+      expect(report.warnings[0].length).toBeLessThanOrEqual(240);
+      expect(JSON.stringify(report.warnings).length).toBeLessThanOrEqual(244);
+    },
+  );
+
   it('returns preview-only when dryRun defaults to true', async () => {
     mockResolve();
     // gnSafeEditCheck sequence — SAFE
@@ -525,9 +694,53 @@ describe('gnSafeRefactor', () => {
     expect(mockRenameSymbol).toHaveBeenCalledTimes(1);
     // Verify dry_run:true was passed
     const callArgs = mockRenameSymbol.mock.calls[0];
-    expect(callArgs[1]).toMatchObject({ dry_run: true, new_name: 'validateToken' });
+    expect(callArgs[1]).toMatchObject({
+      symbol_name: SYMBOL_NAME,
+      symbol_uid: NODE_ID,
+      dry_run: true,
+      new_name: 'validateToken',
+    });
     expect(report.preview.affectedFiles).toHaveLength(2);
     expect(report.preview.diffSummary).toContain('parseToken → validateToken');
+  });
+
+  describe.each([true, false])('failed rename preview with dryRun:%s', (dryRun) => {
+    it.each([
+      {
+        result: { error: 'New name is the same as the current name.' },
+        message: 'New name is the same as the current name.',
+      },
+      {
+        result: { status: 'ambiguous', candidates: [{ id: NODE_ID }] },
+        message: `Rename preview ambiguous: ${NODE_ID}`,
+      },
+      {
+        result: { status: 'failed', total_edits: 0, changes: [] },
+        message: `Rename preview failed: ${NODE_ID}`,
+      },
+    ])('rejects $result without applying', async ({ result, message }) => {
+      mockResolve();
+      mockRenameSymbol.mockResolvedValueOnce(result);
+
+      await expect(
+        gnSafeRefactor(
+          REPO_ID,
+          {
+            intent: 'rename',
+            symbol: NODE_ID,
+            params: { newName: SYMBOL_NAME },
+            preChecks: false,
+            dryRun,
+            confirm: true,
+          },
+          refactorBackend,
+        ),
+      ).rejects.toThrow(message);
+
+      expect(mockRenameSymbol).toHaveBeenCalledTimes(1);
+      expect(refactorBackend.callTool).not.toHaveBeenCalled();
+      expect(mockDetectChanges).not.toHaveBeenCalled();
+    });
   });
 
   // -------------------------------------------------------------------------

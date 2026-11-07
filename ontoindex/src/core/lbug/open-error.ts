@@ -30,7 +30,12 @@ export function classifyLbugOpenError(error: unknown): LbugOpenErrorKind {
     typeof error === 'object' && error !== null && 'code' in error ? String(error.code) : '';
   const diagnostic = `${code} ${message}`;
   if (classifyLbugOpenDiagnostic(diagnostic) === 'lock') return 'lock';
-  if (/\b(ENOMEM|EMFILE|ENFILE)\b|allocation|out of memory/i.test(diagnostic)) return 'resource';
+  if (
+    /\b(ENOMEM|EMFILE|ENFILE)\b|allocation|out of memory|unable to allocate memory|buffer pool is full and no memory could be freed/i.test(
+      diagnostic,
+    )
+  )
+    return 'resource';
   if (/\b(EACCES|EPERM)\b/i.test(diagnostic)) return 'permission';
   if (
     /corrupt|checksum|truncated|malformed database|invalid database file|not a valid [\w-]* ?database file/i.test(

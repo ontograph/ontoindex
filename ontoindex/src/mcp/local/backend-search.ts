@@ -9,6 +9,7 @@ import type {
   QueryTokenCostSnapshotInput,
 } from '../../core/runtime/query-budget.js';
 import { executeParameterized } from '../../core/lbug/pool-adapter.js';
+import { classifyLbugOpenError } from '../../core/lbug/open-error.js';
 import { PhaseTimer } from '../../core/search/phase-timer.js';
 import { computeGraphPathWithDiagnostics } from '../../core/search/graph-path.js';
 import type { GraphPathEdge, GraphPathReport } from '../../core/search/graph-path.js';
@@ -2099,6 +2100,18 @@ export async function query(
   timer.start('symbol_lookup');
   const processMap = new Map<string, ProcessBucket>();
   const definitions: Array<DefinitionEntry | SymbolEntry> = [];
+  const enrichmentWarnings = new Set<string>();
+  let enrichmentStopped = false;
+  const stopsEnrichment = (error: unknown): boolean =>
+    classifyLbugOpenError(error) === 'resource' ||
+    (error instanceof Error &&
+      (error.name === 'QueryTimeoutError' || error.name === 'CheckoutTimeoutError'));
+  const enrichmentWarningByContext: Record<string, string> = {
+    'query:process-lookup': 'Process enrichment unavailable; search results may be partial.',
+    'query:cluster-info': 'Community enrichment unavailable; search results may be partial.',
+    'query:content-fetch': 'Content enrichment unavailable; search results may be partial.',
+    'query:citation-lookup': 'Citation enrichment unavailable; search results may be partial.',
+  };
 
   const nodeIds = [
     ...new Set(
@@ -2107,7 +2120,7 @@ export async function query(
       ),
     ),
   ];
-  // Keep each lookup independent: a failed batch contributes no enrichment.
+  // Ordinary failures stay independent; resource failures stop optional work.
   // nodeId is the last projection so existing tuple field offsets stay intact.
   async function lookupByNode<T extends QueryTuple>(
     cypher: string,
@@ -2116,6 +2129,10 @@ export async function query(
   ): Promise<Map<string, T[]>> {
     const grouped = new Map<string, T[]>();
     if (!enabled || nodeIds.length === 0) return grouped;
+    if (enrichmentStopped) {
+      if (errorContext) enrichmentWarnings.add(enrichmentWarningByContext[errorContext]);
+      return grouped;
+    }
     try {
       const rows = await executeParameterized(graphId, cypher, { nodeIds });
       for (const row of rows) {
@@ -2125,7 +2142,11 @@ export async function query(
         else grouped.set(nodeId, [row as T]);
       }
     } catch (e) {
-      if (errorContext) logSearchQueryError(errorContext, e);
+      if (stopsEnrichment(e)) enrichmentStopped = true;
+      if (errorContext) {
+        logSearchQueryError(errorContext, e);
+        enrichmentWarnings.add(enrichmentWarningByContext[errorContext]);
+      }
     }
     return grouped;
   }
@@ -2137,6 +2158,10 @@ export async function query(
   ): Promise<Map<string, T[]>> {
     const grouped = new Map<string, T[]>();
     if (nodeIds.length === 0) return grouped;
+    if (enrichmentStopped) {
+      if (errorContext) enrichmentWarnings.add(enrichmentWarningByContext[errorContext]);
+      return grouped;
+    }
     try {
       const rows = await executeParameterized(graphId, batchCypher, { nodeIds });
       for (const row of rows) {
@@ -2148,10 +2173,9 @@ export async function query(
       grouped.clear();
       if (errorContext) logSearchQueryError(errorContext, e);
       // Optional enrichment must not multiply a saturated query into N retries.
-      if (
-        e instanceof Error &&
-        (e.name === 'QueryTimeoutError' || e.name === 'CheckoutTimeoutError')
-      ) {
+      if (stopsEnrichment(e)) {
+        enrichmentStopped = true;
+        if (errorContext) enrichmentWarnings.add(enrichmentWarningByContext[errorContext]);
         return grouped;
       }
     }
@@ -2160,11 +2184,12 @@ export async function query(
         const rows = await executeParameterized(graphId, cypher, { nodeId });
         if (rows.length > 0) grouped.set(nodeId, [rows[0] as T]);
       } catch (e) {
-        if (errorContext) logSearchQueryError(errorContext, e);
-        if (
-          e instanceof Error &&
-          (e.name === 'QueryTimeoutError' || e.name === 'CheckoutTimeoutError')
-        ) {
+        if (errorContext) {
+          logSearchQueryError(errorContext, e);
+          enrichmentWarnings.add(enrichmentWarningByContext[errorContext]);
+        }
+        if (stopsEnrichment(e)) {
+          enrichmentStopped = true;
           break;
         }
       }
@@ -2172,60 +2197,62 @@ export async function query(
     return grouped;
   }
 
-  const [processesByNode, communitiesByNode, contentByNode, citationsByNode] = await Promise.all([
-    lookupByNode<ProcessLookupRow>(
-      `
+  // These lookups share a database buffer pool. Avoid overlapping their working
+  // sets within one request, and stop submitting work after resource failures.
+  const processesByNode = await lookupByNode<ProcessLookupRow>(
+    `
       MATCH (n)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
       WHERE n.id IN $nodeIds
       RETURN p.id AS pid, p.label AS label, p.heuristicLabel AS heuristicLabel, p.processType AS processType, p.stepCount AS stepCount, r.step AS step, n.id AS nodeId
     `,
-      'query:process-lookup',
-    ),
-    lookupFirstByNode<CohesionLookupRow>(
-      // Select one complete record per target without collecting every neighbor.
-      // Minimum IDs make selection stable; aggregation still scans matching edges.
-      `
+    'query:process-lookup',
+  );
+  const communitiesByNode = await lookupFirstByNode<CohesionLookupRow>(
+    // Select one complete record per target without collecting every neighbor.
+    // Minimum IDs make selection stable; aggregation still scans matching edges.
+    `
       MATCH (n)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
       WHERE n.id IN $nodeIds
       WITH n.id AS nodeId, min(c.id) AS communityId
       MATCH (c:Community {id: communityId})
       RETURN c.cohesion AS cohesion, c.heuristicLabel AS module, nodeId
     `,
-      `
+    `
       MATCH (n {id: $nodeId})-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
       RETURN c.cohesion AS cohesion, c.heuristicLabel AS module
       ORDER BY c.id
       LIMIT 1
     `,
-      'query:cluster-info',
-    ),
-    lookupByNode<ContentLookupRow>(
-      `
+    'query:cluster-info',
+  );
+  const contentByNode = await lookupByNode<ContentLookupRow>(
+    `
       MATCH (n)
       WHERE n.id IN $nodeIds
       RETURN n.content AS content, n.id AS nodeId
     `,
-      'query:content-fetch',
-      includeContent,
-    ),
-    lookupFirstByNode<CitationLookupRow>(
-      `
+    'query:content-fetch',
+    includeContent,
+  );
+  const citationsByNode = await lookupFirstByNode<CitationLookupRow>(
+    // Repeat the target filter on the rematch so its hash-build branch stays scoped.
+    `
       MATCH (m)-[r:CodeRelation]->(n)
       WHERE n.id IN $nodeIds AND r.type IN ['CALLS', 'IMPORTS']
       WITH n.id AS nodeId, min(m.id) AS callerId
       MATCH (m {id: callerId})-[r:CodeRelation]->(n {id: nodeId})
-      WHERE r.type IN ['CALLS', 'IMPORTS']
+      WHERE n.id IN $nodeIds AND r.type IN ['CALLS', 'IMPORTS']
       RETURN m.name AS caller, min(r.type) AS type, m.filePath AS callerPath, n.id AS nodeId
     `,
-      `
+    `
       MATCH (m)-[r:CodeRelation]->(n {id: $nodeId})
       WHERE r.type IN ['CALLS', 'IMPORTS']
       RETURN m.name AS caller, r.type AS type, m.filePath AS callerPath
       ORDER BY m.id, r.type
       LIMIT 1
     `,
-    ),
-  ]);
+    'query:citation-lookup',
+  );
 
   for (const [, item] of mergedReordered) {
     const sym = item.data;
@@ -2377,7 +2404,17 @@ export async function query(
   });
   timer.stop();
 
+  const includeSkeleton = params.include_skeleton ?? skeletonDefault;
+  if (enrichmentStopped) {
+    if (citationsEnabled) {
+      enrichmentWarnings.add('Graph path enrichment unavailable; search results may be partial.');
+    }
+    if (includeSkeleton) {
+      enrichmentWarnings.add('Skeleton enrichment unavailable; search results may be partial.');
+    }
+  }
   const structuredWarnings = uniqueStrings([
+    ...enrichmentWarnings,
     !ftsUsed
       ? 'FTS extension unavailable - keyword search degraded. Run: ontoindex analyze --force to rebuild indexes.'
       : undefined,
@@ -2421,7 +2458,7 @@ export async function query(
   // BFS graphPath population (W3b-v11).
   // Gate: ONTOINDEX_CITATIONS=1 only — preserves default behaviour when unset.
   // Bounded to top-10 deduped symbols to stay under 200ms p95 budget.
-  if (citationsEnabled) {
+  if (citationsEnabled && !enrichmentStopped) {
     const TOP_N_FOR_BFS = Math.min(dedupedSymbols.length, 10);
     const graphResults = await timer.time(
       'citations-bfs',
@@ -2453,10 +2490,9 @@ export async function query(
   }
 
   // Kill-switch (W0b-v8): if completion-rate drops >5pp post-skeleton OR any integration test fails, set include_skeleton default to false and remove the env-gate.
-  const includeSkeleton = params.include_skeleton ?? skeletonDefault;
   const skeletons: Record<string, string> = {};
   let skeletonDepth = 3;
-  if (includeSkeleton) {
+  if (includeSkeleton && !enrichmentStopped) {
     skeletonDepth = process.env.ONTOINDEX_SKELETON_DEPTH
       ? parseInt(process.env.ONTOINDEX_SKELETON_DEPTH, 10)
       : (SKELETON_DEPTH_BY_INTENT[queryIntent] ?? 3);
@@ -2541,6 +2577,7 @@ export async function query(
   }
 
   const warning = combineWarnings(
+    ...enrichmentWarnings,
     !ftsUsed
       ? 'FTS extension unavailable - keyword search degraded. Run: ontoindex analyze --force to rebuild indexes.'
       : undefined,
@@ -2627,6 +2664,7 @@ export async function query(
                 : []),
             ],
             uniqueStrings([
+              ...enrichmentWarnings,
               ...typedWarnings,
               ...(frontierResult?.warnings ?? []),
               ...(frontierResult?.diagnostics?.warnings ?? []),

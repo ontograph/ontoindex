@@ -131,6 +131,22 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 
 describe('gn_explore', () => {
+  it.each([
+    { format: 'json' as const },
+    { format: 'files' as const },
+    { profile: 'task-pack' as const },
+  ])('preserves partial backend warnings in %j', async (params) => {
+    const warning = 'Community enrichment unavailable; search results may be partial.';
+    mockBackendQuery.mockResolvedValue({ ...makeDefaultQueryResult(1), warning });
+
+    const report = await gnExplore('test-repo', { query: 'search flow', ...params });
+
+    expect(report.warnings).toEqual([warning]);
+    if ('taskPack' in report && params.profile === 'task-pack') {
+      expect(report.taskPack?.warnings).toEqual([warning]);
+    }
+  });
+
   it('preserves cluster and co-change enrichment with supported graph properties', async () => {
     mockBackendQuery.mockResolvedValue(makeDefaultQueryResult(1));
     mockExecuteParameterized.mockImplementation(async (_repoId: string, cypher: string) => {

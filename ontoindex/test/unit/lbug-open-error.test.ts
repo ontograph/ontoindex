@@ -51,6 +51,10 @@ describe('native open classification', () => {
     ['ENFILE', 'resource'],
     ['allocation failed', 'resource'],
     ['out of memory', 'resource'],
+    [
+      'Unable to allocate memory! The buffer pool is full and no memory could be freed!',
+      'resource',
+    ],
     ['EACCES: permission denied', 'permission'],
     ['EPERM', 'permission'],
     ['corrupt database', 'corrupt'],
@@ -71,6 +75,9 @@ describe('native open classification', () => {
   });
 
   it('reads system error codes without requiring them in the message', () => {
+    expect(
+      classifyLbugOpenError(Object.assign(new Error('query failed'), { code: 'ENOMEM' })),
+    ).toBe('resource');
     expect(classifyLbugOpenError(Object.assign(new Error('open failed'), { code: 'EACCES' }))).toBe(
       'permission',
     );

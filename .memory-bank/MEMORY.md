@@ -12,9 +12,7 @@ Active-only project router. Keep at or below 100 lines. Closed plans live under
 
 ## Active Plans
 
-[GN remaining execution](../docs/plans/ONTOINDEX_GN_REMAINING_EXECUTION_PLAN.md)
-tracks the user-authorized items 1–7. NEXT-1 and NEXT-2 are complete; all four
-CodeQL alerts are fixed. The manager is blocked. Qualification, dependency delivery,
-release, delivery-evidence reconciliation and verified installation cleanup remain open.
-GN planning is accepted; NEXT-6 needs delivered evidence, not another special
-authenticated receiving receipt. Qualification and retirement gates remain.
+The retained final 2.5.9 gate passed for tree `22539d94`, matching `12c2107`.
+Native memory-exhaustion causality remains unproven. Current follow-up addresses
+repeated enrichment failures and bounded fixture cleanup; see the
+[review evidence](audit_session-2026-11-07-enrichment-cleanup-review.md).

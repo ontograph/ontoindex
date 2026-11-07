@@ -84,7 +84,31 @@ describe('pre-commit typecheck gate', () => {
         expect(f.run().status).toBe(0);
       });
 
+      it.each(['ts', 'tsx', 'mts', 'cts', 'js', 'jsx', 'mjs', 'cjs'])(
+        'permits baseline diagnostics for .%s sources',
+        (extension) => {
+          const f = fixture(`${pkg}/src/example.ts`, {
+            status: 2,
+            output: diagnostic.replace('example.ts', `example.${extension}`),
+          });
+          expect(f.run().status).toBe(0);
+        },
+      );
+
       it.each([
+        { status: 2, output: 'base.jsonc(2,3): error TS5023: Unknown compiler option.\n' },
+        { status: 2, output: 'custom.config(2,3): error TS5023: Unknown compiler option.\n' },
+        { status: 1, output: "error TS5023: Unknown compiler option 'invalid'.\n" },
+        { status: 2, output: 'error TS18003: No inputs were found in config file.\n' },
+        {
+          status: 2,
+          output: "tsconfig.json(2,3): error TS5023: Unknown compiler option 'invalid'.\n",
+        },
+        {
+          status: 2,
+          output:
+            diagnostic + "config/build.json(2,3): error TS6053: File 'base.json' not found.\n",
+        },
         { status: 1, output: '' },
         { status: 1, output: 'Error: Cannot find module typescript\n' },
         { status: 1, output: diagnostic + 'FATAL ERROR: JavaScript heap out of memory\n' },

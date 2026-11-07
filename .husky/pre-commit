@@ -13,13 +13,13 @@ echo "pre-commit: formatting staged files..."
 WEB_CHANGED=$(git diff --cached --name-only -- 'ontoindex-web/' | head -1)
 CLI_CHANGED=$(git diff --cached --name-only -- 'ontoindex/' | head -1)
 
-# Only normal TypeScript diagnostic exits may use the production baseline.
+# Only source-file TypeScript diagnostics may use the production baseline.
 check_tsc_status() {
   local status="$1" output="$2"
   [ "$status" -eq 0 ] && return 0
   if { [ "$status" -eq 1 ] || [ "$status" -eq 2 ]; } &&
     printf '%s\n' "$output" | awk '
-      /^(.*\([0-9]+,[0-9]+\): )?error TS[0-9]+:/ { diagnostic = 1; next }
+      /^.*\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)\([0-9]+,[0-9]+\): error TS[0-9]+:/ { diagnostic = 1; next }
       /^[[:space:]]*$/ { next }
       /^[[:space:]]/ && diagnostic { next }
       { unexpected = 1 }
