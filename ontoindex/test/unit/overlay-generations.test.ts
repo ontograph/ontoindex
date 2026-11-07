@@ -177,28 +177,12 @@ describe('immutable overlay generations (real LadybugDB)', () => {
   }
 
   const test = it.extend<{ generation: Awaited<ReturnType<typeof createFixture>> }>({
-    generation: async ({ onTestFailed }, use) => {
+    generation: async ({ onTestFailed, onTestFinished }, use) => {
       const { markPhase, report } = createPhaseRecorder();
       onTestFailed(() => console.error(report()));
       const root = await fs.mkdtemp(path.join(os.tmpdir(), 'overlay-generations-'));
-      try {
-        markPhase('setup: native database');
-        // Exercise real native readers without reserving the pool's default 8-TiB
-        // mapping for every fixture generation. Production adapters stay unchanged.
-        const Database = lbug.Database;
-        vi.spyOn(lbug, 'Database').mockImplementation(function (
-          dbPath?: string,
-          bufferSize?: number,
-          compression?: boolean,
-          readOnly?: boolean,
-          maxDBSize?: number,
-        ) {
-          return new Database(dbPath, bufferSize, compression, readOnly, maxDBSize ?? 2 ** 32);
-        });
-        resetOverlaySnapshotCache();
-        const fixture = await createFixture(root, markPhase);
-        await use(fixture);
-      } finally {
+      // Completion hooks have Vitest's hook timeout and run before failure reports.
+      onTestFinished(async () => {
         markPhase('cleanup: mocks and snapshot cache');
         vi.restoreAllMocks();
         resetOverlaySnapshotCache();
@@ -209,7 +193,23 @@ describe('immutable overlay generations (real LadybugDB)', () => {
         markPhase('cleanup: fixture');
         await fs.rm(root, { recursive: true, force: true });
         markPhase('cleanup: complete');
-      }
+      });
+      markPhase('setup: native database');
+      // Exercise real native readers without reserving the pool's default 8-TiB
+      // mapping for every fixture generation. Production adapters stay unchanged.
+      const Database = lbug.Database;
+      vi.spyOn(lbug, 'Database').mockImplementation(function (
+        dbPath?: string,
+        bufferSize?: number,
+        compression?: boolean,
+        readOnly?: boolean,
+        maxDBSize?: number,
+      ) {
+        return new Database(dbPath, bufferSize, compression, readOnly, maxDBSize ?? 2 ** 32);
+      });
+      resetOverlaySnapshotCache();
+      const fixture = await createFixture(root, markPhase);
+      await use(fixture);
     },
   });
 

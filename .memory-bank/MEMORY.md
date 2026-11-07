@@ -12,7 +12,7 @@ Active-only project router. Keep at or below 100 lines. Closed plans live under
 
 ## Active Plans
 
-No active task in the bounded 2.5.7 coverage/diagnostics follow-up.
-Unresolved qualification diagnoses: Community memory exhaustion under full-suite
-load and intermittent overlay timeouts. A 64 MiB serial/concurrent query probe
-did not reproduce exhaustion. Full qualification remains not green.
+The retained final 2.5.9 gate passed for tree `22539d94`, matching `12c2107`.
+Native memory-exhaustion causality remains unproven. Current follow-up addresses
+repeated enrichment failures and bounded fixture cleanup; see the
+[review evidence](audit_session-2026-11-07-enrichment-cleanup-review.md).

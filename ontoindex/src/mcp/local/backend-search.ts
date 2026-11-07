@@ -2101,6 +2101,11 @@ export async function query(
   const processMap = new Map<string, ProcessBucket>();
   const definitions: Array<DefinitionEntry | SymbolEntry> = [];
   const enrichmentWarnings = new Set<string>();
+  let enrichmentStopped = false;
+  const stopsEnrichment = (error: unknown): boolean =>
+    classifyLbugOpenError(error) === 'resource' ||
+    (error instanceof Error &&
+      (error.name === 'QueryTimeoutError' || error.name === 'CheckoutTimeoutError'));
   const enrichmentWarningByContext: Record<string, string> = {
     'query:process-lookup': 'Process enrichment unavailable; search results may be partial.',
     'query:cluster-info': 'Community enrichment unavailable; search results may be partial.',
@@ -2115,7 +2120,7 @@ export async function query(
       ),
     ),
   ];
-  // Keep each lookup independent: a failed batch contributes no enrichment.
+  // Ordinary failures stay independent; resource failures stop optional work.
   // nodeId is the last projection so existing tuple field offsets stay intact.
   async function lookupByNode<T extends QueryTuple>(
     cypher: string,
@@ -2124,6 +2129,10 @@ export async function query(
   ): Promise<Map<string, T[]>> {
     const grouped = new Map<string, T[]>();
     if (!enabled || nodeIds.length === 0) return grouped;
+    if (enrichmentStopped) {
+      if (errorContext) enrichmentWarnings.add(enrichmentWarningByContext[errorContext]);
+      return grouped;
+    }
     try {
       const rows = await executeParameterized(graphId, cypher, { nodeIds });
       for (const row of rows) {
@@ -2133,6 +2142,7 @@ export async function query(
         else grouped.set(nodeId, [row as T]);
       }
     } catch (e) {
+      if (stopsEnrichment(e)) enrichmentStopped = true;
       if (errorContext) {
         logSearchQueryError(errorContext, e);
         enrichmentWarnings.add(enrichmentWarningByContext[errorContext]);
@@ -2148,6 +2158,10 @@ export async function query(
   ): Promise<Map<string, T[]>> {
     const grouped = new Map<string, T[]>();
     if (nodeIds.length === 0) return grouped;
+    if (enrichmentStopped) {
+      if (errorContext) enrichmentWarnings.add(enrichmentWarningByContext[errorContext]);
+      return grouped;
+    }
     try {
       const rows = await executeParameterized(graphId, batchCypher, { nodeIds });
       for (const row of rows) {
@@ -2159,11 +2173,8 @@ export async function query(
       grouped.clear();
       if (errorContext) logSearchQueryError(errorContext, e);
       // Optional enrichment must not multiply a saturated query into N retries.
-      if (
-        classifyLbugOpenError(e) === 'resource' ||
-        (e instanceof Error &&
-          (e.name === 'QueryTimeoutError' || e.name === 'CheckoutTimeoutError'))
-      ) {
+      if (stopsEnrichment(e)) {
+        enrichmentStopped = true;
         if (errorContext) enrichmentWarnings.add(enrichmentWarningByContext[errorContext]);
         return grouped;
       }
@@ -2177,11 +2188,8 @@ export async function query(
           logSearchQueryError(errorContext, e);
           enrichmentWarnings.add(enrichmentWarningByContext[errorContext]);
         }
-        if (
-          classifyLbugOpenError(e) === 'resource' ||
-          (e instanceof Error &&
-            (e.name === 'QueryTimeoutError' || e.name === 'CheckoutTimeoutError'))
-        ) {
+        if (stopsEnrichment(e)) {
+          enrichmentStopped = true;
           break;
         }
       }
@@ -2190,7 +2198,7 @@ export async function query(
   }
 
   // These lookups share a database buffer pool. Avoid overlapping their working
-  // sets within one request; each lookup still handles its own failure.
+  // sets within one request, and stop submitting work after resource failures.
   const processesByNode = await lookupByNode<ProcessLookupRow>(
     `
       MATCH (n)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
@@ -2396,6 +2404,15 @@ export async function query(
   });
   timer.stop();
 
+  const includeSkeleton = params.include_skeleton ?? skeletonDefault;
+  if (enrichmentStopped) {
+    if (citationsEnabled) {
+      enrichmentWarnings.add('Graph path enrichment unavailable; search results may be partial.');
+    }
+    if (includeSkeleton) {
+      enrichmentWarnings.add('Skeleton enrichment unavailable; search results may be partial.');
+    }
+  }
   const structuredWarnings = uniqueStrings([
     ...enrichmentWarnings,
     !ftsUsed
@@ -2441,7 +2458,7 @@ export async function query(
   // BFS graphPath population (W3b-v11).
   // Gate: ONTOINDEX_CITATIONS=1 only — preserves default behaviour when unset.
   // Bounded to top-10 deduped symbols to stay under 200ms p95 budget.
-  if (citationsEnabled) {
+  if (citationsEnabled && !enrichmentStopped) {
     const TOP_N_FOR_BFS = Math.min(dedupedSymbols.length, 10);
     const graphResults = await timer.time(
       'citations-bfs',
@@ -2473,10 +2490,9 @@ export async function query(
   }
 
   // Kill-switch (W0b-v8): if completion-rate drops >5pp post-skeleton OR any integration test fails, set include_skeleton default to false and remove the env-gate.
-  const includeSkeleton = params.include_skeleton ?? skeletonDefault;
   const skeletons: Record<string, string> = {};
   let skeletonDepth = 3;
-  if (includeSkeleton) {
+  if (includeSkeleton && !enrichmentStopped) {
     skeletonDepth = process.env.ONTOINDEX_SKELETON_DEPTH
       ? parseInt(process.env.ONTOINDEX_SKELETON_DEPTH, 10)
       : (SKELETON_DEPTH_BY_INTENT[queryIntent] ?? 3);

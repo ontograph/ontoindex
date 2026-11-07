@@ -340,9 +340,11 @@ describe('batched search symbol lookup', () => {
       );
       expect((result as unknown as Record<string, any>).process_symbols![0]).toMatchObject({
         id: nodeIds[0],
-        content: 'alpha body',
       });
-      expect(enrichmentCalls()).toHaveLength(4);
+      expect((result as unknown as Record<string, any>).process_symbols![0]).not.toHaveProperty(
+        'content',
+      );
+      expect(enrichmentCalls()).toHaveLength(2);
       expect(
         vi.mocked(executeParameterized).mock.calls.filter(([, , params]) => 'nodeId' in params),
       ).toHaveLength(0);
@@ -358,11 +360,12 @@ describe('batched search symbol lookup', () => {
     const result = (await query(repo, options)) as Record<string, any>;
 
     expect(result.process_symbols).toHaveLength(symbols.length);
-    expect(enrichmentCalls()).toHaveLength(4);
+    expect(enrichmentCalls()).toHaveLength(2);
     expect(
       vi.mocked(executeParameterized).mock.calls.filter(([, , params]) => 'nodeId' in params),
     ).toHaveLength(0);
     expect(result.warning).toContain('Community enrichment unavailable');
+    expect(result.warning).toContain('Content enrichment unavailable');
     expect(result.warning).toContain('Citation enrichment unavailable');
     expect(result.warning).not.toContain(error.message);
   });
@@ -389,36 +392,63 @@ describe('batched search symbol lookup', () => {
     },
   );
 
-  it.each([
-    ['STEP_IN_PROCESS', 'Process'],
-    ['MEMBER_OF', 'Community'],
-    ['n.content AS content', 'Content'],
-    ['callerPath', 'Citation'],
-  ])('reports bounded %s failures through all warning channels', async (kind, label) => {
-    vi.mocked(executeParameterized).mockImplementation(async (_repo, cypher, params) => {
-      if (cypher.includes(kind)) throw resourceErrors[0];
-      return lookupRows(cypher, params.nodeId as string);
-    });
+  it.each(
+    [
+      ['STEP_IN_PROCESS', 'Process'],
+      ['MEMBER_OF', 'Community'],
+      ['n.content AS content', 'Content'],
+      ['callerPath', 'Citation'],
+    ].flatMap(([kind, label]) =>
+      [
+        ...resourceErrors,
+        Object.assign(new Error('Lookup timed out'), { name: 'QueryTimeoutError' }),
+        Object.assign(new Error('Lookup timed out'), { name: 'CheckoutTimeoutError' }),
+      ].map((error) => ({ kind, label, error })),
+    ),
+  )(
+    'reports bounded $kind failures through all warning channels: $error',
+    async ({ kind, label, error }) => {
+      vi.mocked(executeParameterized).mockImplementation(async (_repo, cypher, params) => {
+        if (cypher.includes(kind)) throw error;
+        return lookupRows(cypher, params.nodeId as string);
+      });
 
-    const result = (await query(repo, {
-      ...options,
-      structured_output: true,
-      retrieval_diagnostics: true,
-    })) as Record<string, any>;
-    const warning = `${label} enrichment unavailable; search results may be partial.`;
+      const result = (await query(repo, {
+        ...options,
+        structured_output: true,
+        retrieval_diagnostics: true,
+      })) as Record<string, any>;
+      const warning = `${label} enrichment unavailable; search results may be partial.`;
+      const labels = ['Process', 'Community', 'Content', 'Citation'];
+      const warnings = labels
+        .slice(labels.indexOf(label))
+        .map((name) => `${name} enrichment unavailable; search results may be partial.`);
 
-    expect([...result.process_symbols, ...result.definitions]).toHaveLength(symbols.length);
-    expect(result.warning).toBe(warning);
-    expect(
-      result.structured_retrieval.capabilityState.warnings.filter(
-        (message: string) => message === warning,
-      ),
-    ).toEqual([warning]);
-    expect(
-      result.retrieval_diagnostics.warnings.filter((message: string) => message === warning),
-    ).toEqual([warning]);
-    expect(result.warning).not.toContain(resourceErrors[0].message);
-  });
+      expect([...result.process_symbols, ...result.definitions]).toHaveLength(symbols.length);
+      if (label !== 'Process') expect(result.processes).toHaveLength(1);
+      if (label === 'Content' || label === 'Citation') {
+        expect(result.process_symbols[0]).toHaveProperty('module', 'Alpha module');
+      }
+      if (label === 'Citation') {
+        expect(result.process_symbols[0]).toHaveProperty('content', 'alpha body');
+      }
+      expect(result.warning).toBe(warnings.join(' | '));
+      expect(enrichmentCalls()).toHaveLength(labels.indexOf(label) + 1);
+      for (const skippedWarning of warnings) {
+        expect(result.structured_retrieval.capabilityState.warnings).toContain(skippedWarning);
+        expect(result.retrieval_diagnostics.warnings).toContain(skippedWarning);
+      }
+      expect(
+        result.structured_retrieval.capabilityState.warnings.filter(
+          (message: string) => message === warning,
+        ),
+      ).toEqual([warning]);
+      expect(
+        result.retrieval_diagnostics.warnings.filter((message: string) => message === warning),
+      ).toEqual([warning]);
+      expect(result.warning).not.toContain(error.message);
+    },
+  );
 
   it.each([
     ['MEMBER_OF', 'QueryTimeoutError'],
@@ -437,12 +467,131 @@ describe('batched search symbol lookup', () => {
     expect((result as unknown as Record<string, any>).process_symbols).toHaveLength(symbols.length);
     expect((result as unknown as Record<string, any>).process_symbols![1]).toMatchObject({
       id: nodeIds[1],
-      content: 'beta body',
+      ...(failedKind === 'callerPath' ? { content: 'beta body' } : {}),
     });
+    expect(enrichmentCalls()).toHaveLength(failedKind === 'MEMBER_OF' ? 2 : 4);
     const retries = vi
       .mocked(executeParameterized)
       .mock.calls.filter(([, , params]) => 'nodeId' in params);
     expect(retries.map(([, , params]) => params)).toEqual([{ nodeId: nodeIds[0] }]);
+  });
+
+  it.each([
+    resourceErrors[0],
+    resourceErrors[1],
+    Object.assign(new Error('Lookup timed out'), { name: 'QueryTimeoutError' }),
+    Object.assign(new Error('Lookup timed out'), { name: 'CheckoutTimeoutError' }),
+  ])(
+    'stops after the first enrichment fails and resets for the next request: %s',
+    async (error) => {
+      vi.mocked(executeParameterized).mockRejectedValue(error);
+
+      const result = (await query(repo, options)) as Record<string, any>;
+
+      expect(executeParameterized).toHaveBeenCalledTimes(1);
+      expect(result.definitions.map(({ id }: { id: string }) => id)).toEqual(nodeIds);
+      expect(result.process_symbols).toEqual([]);
+      for (const label of ['Process', 'Community', 'Content', 'Citation']) {
+        expect(result.warning).toContain(`${label} enrichment unavailable`);
+      }
+
+      vi.mocked(executeParameterized).mockClear();
+      vi.mocked(executeParameterized).mockImplementation(async (_repo, cypher, params) =>
+        lookupRows(cypher, params.nodeId as string),
+      );
+      const next = (await query(repo, options)) as Record<string, any>;
+      expect(executeParameterized).toHaveBeenCalledTimes(4);
+      expect(next.warning).toBeUndefined();
+      expect(next.process_symbols).toHaveLength(symbols.length);
+    },
+  );
+
+  it('does not warn for disabled content after enrichment stops', async () => {
+    vi.mocked(executeParameterized).mockRejectedValue(resourceErrors[0]);
+
+    const result = (await query(repo, { ...options, include_content: false })) as Record<
+      string,
+      any
+    >;
+
+    expect(executeParameterized).toHaveBeenCalledTimes(1);
+    expect(result.definitions).toHaveLength(symbols.length);
+    expect(result.warning).toContain('Process enrichment unavailable');
+    expect(result.warning).toContain('Community enrichment unavailable');
+    expect(result.warning).toContain('Citation enrichment unavailable');
+    expect(result.warning).not.toContain('Content enrichment unavailable');
+    expect(result.warning).not.toContain('Graph path enrichment unavailable');
+    expect(result.warning).not.toContain('Skeleton enrichment unavailable');
+  });
+
+  it.each(
+    ['STEP_IN_PROCESS', 'MEMBER_OF'].flatMap((kind) =>
+      [
+        ...resourceErrors,
+        Object.assign(new Error('Lookup timed out'), { name: 'QueryTimeoutError' }),
+        Object.assign(new Error('Lookup timed out'), { name: 'CheckoutTimeoutError' }),
+      ].map((error) => ({ kind, error })),
+    ),
+  )(
+    'skips enabled graph paths and skeletons after $kind fails: $error',
+    async ({ kind, error }) => {
+      vi.mocked(executeParameterized).mockImplementation(async (_repo, cypher, params) => {
+        if (cypher.includes(kind)) throw error;
+        return lookupRows(cypher, params.nodeId as string);
+      });
+
+      const result = (await query(repo, {
+        ...options,
+        include_citations: true,
+        include_skeleton: true,
+        structured_output: true,
+        retrieval_diagnostics: true,
+      })) as Record<string, any>;
+
+      expect(executeParameterized).toHaveBeenCalledTimes(kind === 'STEP_IN_PROCESS' ? 1 : 2);
+      expect([...result.process_symbols, ...result.definitions]).toHaveLength(symbols.length);
+      expect(result).not.toHaveProperty('skeletons');
+      for (const symbol of [...result.process_symbols, ...result.definitions]) {
+        expect(symbol.citations[0].graphPath).toEqual([]);
+      }
+      for (const label of ['Graph path', 'Skeleton']) {
+        const warning = `${label} enrichment unavailable; search results may be partial.`;
+        expect(result.warning).toContain(warning);
+        expect(result.structured_retrieval.capabilityState.warnings).toContain(warning);
+        expect(result.retrieval_diagnostics.warnings).toContain(warning);
+      }
+    },
+  );
+
+  it.each([
+    resourceErrors[0],
+    Object.assign(new Error('Lookup timed out'), { name: 'QueryTimeoutError' }),
+    Object.assign(new Error('Lookup timed out'), { name: 'CheckoutTimeoutError' }),
+  ])('retains earlier per-node enrichment when a later fallback stops work: %s', async (error) => {
+    vi.mocked(executeParameterized).mockImplementation(async (_repo, cypher, params) => {
+      if (cypher.includes('MEMBER_OF')) {
+        if ('nodeIds' in params) throw new Error('unsupported batch');
+        if (params.nodeId === nodeIds[1]) throw error;
+      }
+      return lookupRows(cypher, params.nodeId as string);
+    });
+
+    const result = (await query(repo, options)) as Record<string, any>;
+
+    expect(executeParameterized).toHaveBeenCalledTimes(4);
+    expect(enrichmentCalls()).toHaveLength(2);
+    expect(result.processes).toHaveLength(1);
+    expect(result.process_symbols).toHaveLength(symbols.length);
+    expect(result.process_symbols[0]).toMatchObject({ id: nodeIds[0], module: 'Alpha module' });
+    expect(result.process_symbols[1]).toMatchObject({ id: nodeIds[1] });
+    expect(result.process_symbols[1]).not.toHaveProperty('module');
+    for (const symbol of result.process_symbols) {
+      expect(symbol).not.toHaveProperty('content');
+      expect(symbol).not.toHaveProperty('citation_path');
+    }
+    for (const label of ['Community', 'Content', 'Citation']) {
+      expect(result.warning).toContain(`${label} enrichment unavailable`);
+    }
   });
 
   it('does not query enrichment for an empty result set', async () => {
