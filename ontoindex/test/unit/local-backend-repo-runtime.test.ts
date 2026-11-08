@@ -112,13 +112,13 @@ describe('shared workspace watcher lifecycle', () => {
   });
 
   it.each([
-    ['above the limit', 2, false, '1'],
+    ['above the former limit', 2, true, '1'],
     ['at the limit', 1, true, '1'],
     ['below the limit', 0, true, '1'],
     ['unknown', undefined, true, '1'],
-    ['above the default with an invalid infinite override', 1601, false, 'Infinity'],
+    ['above the former default with an invalid infinite override', 1601, true, 'Infinity'],
   ] as const)(
-    'honors the watcher file limit when the active file count is %s',
+    'starts a watcher regardless of indexed file count: %s',
     async (_name, files, watches, maxFiles) => {
       vi.stubEnv('ONTOINDEX_WORKSPACE_MAX_FILES', maxFiles);
       const root = await fs.mkdtemp(path.join(os.tmpdir(), 'workspace-watch-size-'));
@@ -696,8 +696,6 @@ describe('workspace read preparation', () => {
   it.each([
     ['getSnapshot', 'timeout'],
     ['getSnapshot', 'cancelled'],
-    ['baseFileCount', 'timeout'],
-    ['baseFileCount', 'cancelled'],
     ['getInputIdentity', 'timeout'],
     ['getInputIdentity', 'cancelled'],
   ] as const)('does not admit a build after %s resumes for a %s caller', async (probe, code) => {
@@ -722,12 +720,6 @@ describe('workspace read preparation', () => {
             await deferred;
             return f.dirty;
           });
-      } else if (probe === 'baseFileCount') {
-        f.dependencies.baseFileCount.mockImplementationOnce(async () => {
-          entered();
-          await deferred;
-          return 10;
-        });
       } else {
         f.dependencies.getInputIdentity.mockImplementationOnce(async () => {
           entered();
@@ -1024,10 +1016,10 @@ describe('workspace read preparation', () => {
       }
     },
   );
-  it('admits a full graph build exactly at the indexed-file limit', async () => {
+  it('admits a full graph build above the former indexed-file limit', async () => {
     const f = fixture();
     vi.stubEnv('ONTOINDEX_WORKSPACE_MAX_FILES', '1600');
-    f.dependencies.baseFileCount.mockResolvedValue(1600);
+    f.dependencies.baseFileCount.mockResolvedValue(1601);
     expect(await prepareWorkspaceRead(f.options)).toBe(f.ready);
     expect(f.dependencies.acquireLock).toHaveBeenCalledOnce();
     expect(f.dependencies.buildWorkspaceGraph).toHaveBeenCalledOnce();
@@ -1130,7 +1122,6 @@ describe('workspace read preparation', () => {
   it.each([
     'watcher',
     'snapshot',
-    'count',
     'recheck',
     'build',
     'release',
@@ -1148,7 +1139,6 @@ describe('workspace read preparation', () => {
     let reason = 'planning_failed';
     if (stage === 'watcher') options.beforeSnapshot.mockRejectedValue(cause);
     else if (stage === 'snapshot') f.dependencies.getSnapshot.mockRejectedValue(cause);
-    else if (stage === 'count') f.dependencies.baseFileCount.mockRejectedValue(cause);
     else if (stage === 'recheck') {
       phase = 'recheck';
       reason = 'snapshot_failed';
@@ -1346,7 +1336,7 @@ describe('workspace read preparation', () => {
       }
     },
   );
-  it('reuses a matching complete workspace graph above the admission limit without rebuilding', async () => {
+  it('reuses a matching complete workspace graph for a large repository without rebuilding', async () => {
     const f = fixture();
     f.dependencies.getSnapshot.mockReset().mockResolvedValue(f.ready);
     f.dependencies.baseFileCount.mockResolvedValue(7001);
@@ -1356,57 +1346,25 @@ describe('workspace read preparation', () => {
     expect(f.dependencies.acquireLock).not.toHaveBeenCalled();
     expect(f.dependencies.buildWorkspaceGraph).not.toHaveBeenCalled();
   });
-  it.each(['Infinity', '1e309', '-1', '1.5', '9007199254740992', 'NaN', '', '0'])(
-    'uses the default admission limit for an invalid max-files override of %j',
+  it.each(['1', 'Infinity', '1e309', '-1', '1.5', '9007199254740992', 'NaN', '', '0'])(
+    'ignores the removed max-files override of %j',
     async (maxFiles) => {
       const f = fixture();
       vi.stubEnv('ONTOINDEX_WORKSPACE_MAX_FILES', maxFiles);
       f.dependencies.baseFileCount.mockResolvedValue(1601);
-      f.dependencies.getSnapshot.mockResolvedValue(f.dirty);
-      await expect(prepareWorkspaceRead(f.options)).rejects.toMatchObject({
-        code: 'workspace_too_large',
-        diagnostics: {
-          observedIndexedFiles: 1601,
-          maxIndexedFiles: 1600,
-          requiredCapability: 'workspace-graph',
-        },
-      });
-      expect(f.dependencies.baseFileCount).toHaveBeenCalled();
-      expect(f.dependencies.acquireLock).not.toHaveBeenCalled();
-      expect(f.dependencies.buildWorkspaceGraph).not.toHaveBeenCalled();
+      expect(await prepareWorkspaceRead(f.options)).toBe(f.ready);
+      expect(f.dependencies.baseFileCount).not.toHaveBeenCalled();
+      expect(f.dependencies.acquireLock).toHaveBeenCalledOnce();
+      expect(f.dependencies.buildWorkspaceGraph).toHaveBeenCalledOnce();
     },
   );
-  it('refuses a build for a repository above the file limit without taking the lock', async () => {
+  it('builds a workspace graph for a large repository without a file-count admission probe', async () => {
     const f = fixture();
     f.dependencies.baseFileCount.mockResolvedValue(5000);
-    f.dependencies.getSnapshot.mockResolvedValue(f.dirty);
-    const failure = await prepareWorkspaceRead(f.options).catch((error: unknown) => error);
-    expect(failure).toMatchObject({
-      code: 'workspace_too_large',
-      diagnostics: {
-        observedIndexedFiles: 5000,
-        maxIndexedFiles: 1600,
-        requiredCapability: 'workspace-graph',
-      },
-    });
-    expect(failure).toBeInstanceOf(Error);
-    expect((failure as Error).message).toContain(
-      'ONTOINDEX_AUTO_WORKSPACE=1 ontoindex analyze --workspace-graph',
-    );
-    expect((failure as Error).message).toContain('preserving the committed index');
-    expect((failure as Error).message).toContain(
-      'Rerun this command after workspace inputs change.',
-    );
-    expect(f.dependencies.acquireLock).not.toHaveBeenCalled();
-    expect(f.dependencies.buildWorkspaceGraph).not.toHaveBeenCalled();
-    expect(f.dependencies.getInputIdentity).not.toHaveBeenCalled();
-    vi.stubEnv('ONTOINDEX_WORKSPACE_MAX_FILES', '9000');
-    f.dependencies.getSnapshot
-      .mockReset()
-      .mockResolvedValueOnce(f.dirty)
-      .mockResolvedValueOnce(f.dirty)
-      .mockResolvedValue(f.ready);
-    await prepareWorkspaceRead(f.options);
+    expect(await prepareWorkspaceRead(f.options)).toBe(f.ready);
+    expect(f.dependencies.baseFileCount).not.toHaveBeenCalled();
+    expect(f.dependencies.acquireLock).toHaveBeenCalledOnce();
+    expect(f.dependencies.getInputIdentity).toHaveBeenCalled();
     expect(f.dependencies.buildWorkspaceGraph).toHaveBeenCalledOnce();
   });
   describe('reads that need no relationships', () => {
@@ -1415,14 +1373,29 @@ describe('workspace read preparation', () => {
       f.options.needsRelationships = false;
       f.dependencies.getSnapshot.mockResolvedValue(f.dirty);
     };
+    it('builds a symbols overlay beyond the former dirty-file cap', async () => {
+      const f = fixture();
+      manyDirty(f);
+      const ready = { ...f.ready, dirtyPaths: f.dirty.dirtyPaths, capability: 'symbols' as const };
+      f.dependencies.getSnapshot
+        .mockReset()
+        .mockResolvedValueOnce(f.dirty)
+        .mockResolvedValueOnce(f.dirty)
+        .mockResolvedValue(ready);
+      expect(await prepareWorkspaceRead(f.options)).toBe(ready);
+      expect(f.dependencies.buildWorkspaceGraph).toHaveBeenCalledWith(
+        f.options.repo,
+        expect.any(AbortSignal),
+        expect.objectContaining({ workspaceGraph: false }),
+      );
+      expect(f.release).toHaveBeenCalledOnce();
+    });
     it.each([
-      ['too large', 'workspace_too_large'],
       ['busy', 'workspace_busy'],
       ['build failure', 'workspace_build_failed'],
     ])('rejects when the required build is refused: %s', async (kind, code) => {
       const f = fixture();
       manyDirty(f);
-      if (kind === 'too large') f.dependencies.baseFileCount.mockResolvedValue(9000);
       if (kind === 'busy')
         f.dependencies.acquireLock.mockRejectedValue(
           new Error('OntoIndex analyze is already running'),
@@ -1434,20 +1407,21 @@ describe('workspace read preparation', () => {
     it('rejects a refused build instead of returning a stale symbols overlay', async () => {
       const f = fixture();
       manyDirty(f);
-      // 60 dirty files force a workspace build even though a symbols overlay is usable.
+      // A stale base forces a rebuild even though a symbols overlay is usable.
       f.dependencies.getSnapshot.mockReset();
       f.dependencies.getSnapshot.mockResolvedValue({
         ...f.ready,
         dirtyPaths: f.dirty.dirtyPaths,
         capability: 'symbols',
         generation: 'old-generation',
+        baseMatches: false,
         reason: 'overlay was built on base a/1 but the active base is b/2; rebuild',
       });
-      f.dependencies.baseFileCount.mockResolvedValue(9000);
+      f.dependencies.buildWorkspaceGraph.mockRejectedValue(new Error('boom'));
       await expect(prepareWorkspaceRead(f.options)).rejects.toMatchObject({
-        code: 'workspace_too_large',
+        code: 'workspace_build_failed',
       });
-      expect(f.dependencies.baseFileCount).toHaveBeenCalled();
+      expect(f.dependencies.baseFileCount).not.toHaveBeenCalled();
     });
     it.each([
       ['search', false],
@@ -1528,9 +1502,9 @@ describe('workspace read preparation', () => {
       const f = fixture();
       manyDirty(f);
       f.options.needsRelationships = true;
-      f.dependencies.baseFileCount.mockResolvedValue(9000);
+      f.dependencies.buildWorkspaceGraph.mockRejectedValue(new Error('boom'));
       await expect(prepareWorkspaceRead(f.options)).rejects.toMatchObject({
-        code: 'workspace_too_large',
+        code: 'workspace_build_failed',
       });
     });
     it('rejects a cancelled read', async () => {

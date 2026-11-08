@@ -180,7 +180,7 @@ const managedStatusMock = vi.fn().mockResolvedValue('');
 function isManagedStatusCall(
   command: string,
   args: string[],
-  options: { timeoutMs?: number; maxBuffer?: number },
+  options: { timeoutMs?: number; maxBuffer?: number | null },
 ): boolean {
   return (
     command === 'git' &&
@@ -189,7 +189,7 @@ function isManagedStatusCall(
     args[1] === '--porcelain=v1' &&
     args[2] === '--untracked-files=all' &&
     options.timeoutMs === 5_000 &&
-    options.maxBuffer === 1024 * 1024
+    options.maxBuffer === null
   );
 }
 
@@ -526,12 +526,12 @@ describe('runFullAnalysis snapshot persistence', () => {
         [
           'git',
           ['status', '--porcelain=v1', '--untracked-files=all'],
-          { cwd: repoDir, timeoutMs: 5_000, maxBuffer: 1024 * 1024 },
+          { cwd: repoDir, timeoutMs: 5_000, maxBuffer: null },
         ],
         [
           'git',
           ['status', '--porcelain=v1', '--untracked-files=all'],
-          { cwd: repoDir, timeoutMs: 5_000, maxBuffer: 1024 * 1024 },
+          { cwd: repoDir, timeoutMs: 5_000, maxBuffer: null },
         ],
       ]);
       expect(addToGitignoreMock).not.toHaveBeenCalled();
@@ -2148,41 +2148,6 @@ describe('runFullAnalysis snapshot persistence', () => {
     } finally {
       if (previous === undefined) delete process.env.ONTOINDEX_CREATE_EMPTY_FTS_INDEXES;
       else process.env.ONTOINDEX_CREATE_EMPTY_FTS_INDEXES = previous;
-      await fs.rm(repoDir, { recursive: true, force: true });
-    }
-  });
-
-  it('indexes only File.name for large repos when file body storage is disabled', async () => {
-    const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-analyze-'));
-    const previous = process.env.ONTOINDEX_MAX_FILE_CONTENT_CHARS;
-    delete process.env.ONTOINDEX_MAX_FILE_CONTENT_CHARS;
-    try {
-      const graph = createKnowledgeGraph();
-      for (let i = 0; i < 25_001; i++) {
-        graph.addNode({
-          id: `file:${i}`,
-          label: 'File',
-          properties: { name: `file-${i}.ts`, filePath: `src/file-${i}.ts` } as any,
-        });
-      }
-
-      runPipelineMock.mockResolvedValue({
-        graph,
-        repoPath: repoDir,
-        totalFileCount: 25_001,
-        communityResult: undefined,
-        processResult: undefined,
-        usedWorkerPool: false,
-      });
-      executeQueryMock.mockResolvedValue([]);
-
-      await runFullAnalysis(repoDir, {}, { onProgress: vi.fn() });
-
-      expect(createFTSIndexMock).toHaveBeenCalledTimes(1);
-      expect(createFTSIndexMock).toHaveBeenCalledWith('File', 'file_fts', ['name']);
-    } finally {
-      if (previous === undefined) delete process.env.ONTOINDEX_MAX_FILE_CONTENT_CHARS;
-      else process.env.ONTOINDEX_MAX_FILE_CONTENT_CHARS = previous;
       await fs.rm(repoDir, { recursive: true, force: true });
     }
   });

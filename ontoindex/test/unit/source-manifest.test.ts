@@ -119,16 +119,19 @@ describe('source manifest', () => {
     expect(degraded.degradedInputsDigest).toMatch(/^[a-f0-9]{64}$/);
   });
 
-  it('degrades coverage when the canonical scanner excludes an oversized input', async () => {
+  it('includes oversized inputs despite legacy scanner size overrides', async () => {
     const repo = await makeRepo();
     const previous = process.env.ONTOINDEX_SCAN_MAX_FILE_KB;
     process.env.ONTOINDEX_SCAN_MAX_FILE_KB = '1';
     try {
-      await fs.writeFile(path.join(repo, 'src', 'large.ts'), 'x'.repeat(2048));
+      await fs.writeFile(path.join(repo, 'src', 'large.ts'), 'x'.repeat(512 * 1024 + 1));
       const manifest = await computeSourceManifest(repo);
-      expect(manifest.coverage).toBe('degraded');
-      expect(manifest.sourceEntryCount).toBe(0);
-      expect(manifest.degradedInputsDigest).toMatch(/^[a-f0-9]{64}$/);
+      expect(manifest.coverage).toBe('complete');
+      expect(manifest.sourceEntryCount).toBe(1);
+      process.env.ONTOINDEX_SCAN_MAX_FILE_KB = '2';
+      expect(await computeSourceManifest(repo)).toEqual(manifest);
+      await fs.appendFile(path.join(repo, 'src', 'large.ts'), 'changed');
+      expect((await computeSourceManifest(repo)).sourceDigest).not.toBe(manifest.sourceDigest);
     } finally {
       if (previous === undefined) delete process.env.ONTOINDEX_SCAN_MAX_FILE_KB;
       else process.env.ONTOINDEX_SCAN_MAX_FILE_KB = previous;

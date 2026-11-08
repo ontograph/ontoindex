@@ -24,7 +24,6 @@ import {
   getParseMaxAstDepth,
   getParseMaxAstNodes,
   getTreeSitterBufferSize,
-  TREE_SITTER_MAX_BUFFER,
 } from '../constants.js';
 import type { SymbolTableReader } from '../model/symbol-table.js';
 import {
@@ -1171,8 +1170,6 @@ const prepareFileContext = (
   query: Parser.Query,
   parseErrorPaths: string[],
 ): PreparedFileContext | null => {
-  if (file.content.length > TREE_SITTER_MAX_BUFFER) return null;
-
   let parseContent = file.content;
   let lineOffset = 0;
   let isVueSetup = false;

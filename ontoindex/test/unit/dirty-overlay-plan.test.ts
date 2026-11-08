@@ -172,10 +172,10 @@ describe('dirty overlay planner', () => {
   );
 
   it.each([
-    { cap: '1', includePaths: ['src/small.ts'], skipped: ['src/large.ts'] },
+    { cap: '1', includePaths: ['src/large.ts', 'src/small.ts'], skipped: [] },
     { cap: '0', includePaths: ['src/large.ts', 'src/small.ts'], skipped: [] },
   ])(
-    'applies the current scan size cap ($cap KiB) to modified sources',
+    'ignores the retired scan size cap ($cap KiB) for modified sources',
     async ({ cap, includePaths, skipped }) => {
       const previousCap = process.env.ONTOINDEX_SCAN_MAX_FILE_KB;
       try {
@@ -202,7 +202,7 @@ describe('dirty overlay planner', () => {
   );
 
   it(
-    'retains untracked large sources as uncovered and restores coverage after shrinking',
+    'covers untracked large sources before and after shrinking',
     withGitRepo(async (repoDir) => {
       vi.stubEnv('ONTOINDEX_SCAN_MAX_FILE_KB', '1');
       try {
@@ -211,9 +211,9 @@ describe('dirty overlay planner', () => {
         writeFile(repoDir, 'src/large.ts', 'x'.repeat(2048));
         writeFile(repoDir, 'private/large.ts', 'x'.repeat(2048));
         const plan = await planDirtyOverlay(repoDir);
-        expect(plan.includePaths).toEqual([]);
+        expect(plan.includePaths).toEqual(['src/large.ts']);
         expect(plan.allDirtyPaths).toEqual(['src/large.ts']);
-        expect(plan.uncoveredPaths).toEqual(['src/large.ts']);
+        expect(plan.uncoveredPaths).toEqual([]);
         expect(plan.tooMany).toBe(false);
 
         writeFile(repoDir, 'src/large.ts', 'export const small = 1;\n');
@@ -229,7 +229,7 @@ describe('dirty overlay planner', () => {
   );
 
   it(
-    'combines size and count exclusions without dropping deletion tombstones',
+    'includes large sources and preserves deletion tombstones with many dirty files',
     withGitRepo(async (repoDir) => {
       vi.stubEnv('ONTOINDEX_SCAN_MAX_FILE_KB', '1');
       try {
@@ -244,13 +244,13 @@ describe('dirty overlay planner', () => {
           fs.utimesSync(path.join(repoDir, rel), mtime, mtime);
         }
         const plan = await planDirtyOverlay(repoDir);
-        expect(plan.tooMany).toBe(true);
-        expect(plan.includePaths).toHaveLength(50);
-        expect(plan.includePaths).not.toContain('src/large.ts');
-        expect(plan.uncoveredPaths).toEqual(['src/file-0.ts', 'src/large.ts']);
+        expect(plan.tooMany).toBe(false);
+        expect(plan.includePaths).toHaveLength(52);
+        expect(plan.includePaths).toContain('src/large.ts');
+        expect(plan.uncoveredPaths).toEqual([]);
         expect(plan.allDirtyPaths).toHaveLength(53);
         expect(plan.tombstones).toEqual(['src/deleted.ts']);
-        expect(plan.skipped).toEqual(['src/large.ts']);
+        expect(plan.skipped).toEqual([]);
       } finally {
         vi.unstubAllEnvs();
       }
@@ -276,7 +276,7 @@ describe('dirty overlay planner', () => {
   );
 
   it(
-    'does not count ignored paths toward the 50-file cap',
+    'keeps ignored paths out of dirty source coverage',
     withGitRepo(async (repoDir) => {
       for (let index = 0; index < 60; index += 1) {
         writeFile(repoDir, `node_modules/p/f${index}.ts`, 'export const ignored = true;\n');
@@ -359,7 +359,7 @@ describe('dirty overlay planner', () => {
   );
 
   it(
-    'covers the 50 newest dirty files and reports the rest as uncovered',
+    'covers all dirty files without an arbitrary count cap',
     withGitRepo(async (repoDir) => {
       writeFile(repoDir, 'src/deleted.ts', 'export const deleted = true;\n');
       commitFiles(repoDir);
@@ -372,13 +372,11 @@ describe('dirty overlay planner', () => {
 
       const plan = await planDirtyOverlay(repoDir);
 
-      expect(plan.tooMany).toBe(true);
+      expect(plan.tooMany).toBe(false);
       expect(plan.includePaths).toEqual(
-        Array.from({ length: 50 }, (_, index) => `src/file-${74 - index}.ts`),
+        Array.from({ length: 75 }, (_, index) => `src/file-${index}.ts`).sort(),
       );
-      expect(plan.uncoveredPaths).toEqual(
-        Array.from({ length: 25 }, (_, index) => `src/file-${index}.ts`).sort(),
-      );
+      expect(plan.uncoveredPaths).toEqual([]);
       expect(plan.tombstones).toEqual(['src/deleted.ts']);
       expect(plan.allDirtyPaths).toHaveLength(76);
       expect(plan.skipped).toEqual([]);

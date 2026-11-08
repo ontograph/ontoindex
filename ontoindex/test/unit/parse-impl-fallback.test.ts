@@ -290,7 +290,7 @@ describe('parse-impl sequential fallback cleanup (U6)', () => {
     }
   });
 
-  it('large-repo parse cap skips oversized parseable files when explicitly configured', async () => {
+  it('ignores the retired large-repo per-file parse cap override', async () => {
     if (repoPath && fs.existsSync(repoPath)) {
       fs.rmSync(repoPath, { recursive: true, force: true });
     }
@@ -323,14 +323,10 @@ describe('parse-impl sequential fallback cleanup (U6)', () => {
       );
 
       const parsePlan = telemetry.find((event) => event.event === 'parse-plan');
-      expect(parsePlan?.totalParseableFiles).toBe(1);
-      expect(parsePlan?.totalParseableBytes).toBeLessThan(1024);
-
-      const degraded = telemetry.find((event) => event.event === 'parse-degraded-files');
-      expect(degraded?.degradedReason).toBe('large-repo-parse-file-size-cap');
-      expect(degraded?.chunkFiles).toBe(1);
-      expect(degraded?.degradedFiles?.[0]?.filePath).toBe('large.js');
-      expect(graph.nodes.some((node) => node.properties?.name === 'large')).toBe(false);
+      expect(parsePlan?.totalParseableFiles).toBe(2);
+      expect(parsePlan?.totalParseableBytes).toBeGreaterThan(2048);
+      expect(telemetry.some((event) => event.event === 'parse-degraded-files')).toBe(false);
+      expect(graph.nodes.some((node) => node.properties?.name === 'large')).toBe(true);
     } finally {
       if (originalMin === undefined) {
         delete process.env.ONTOINDEX_LARGE_REPO_PARSE_CAP_MIN_KB;

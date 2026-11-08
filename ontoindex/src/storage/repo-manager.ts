@@ -880,8 +880,6 @@ const readerPinIsDead = (pid: number, pinMtimeMs: number): boolean => {
   }
 };
 
-export const OVERLAY_ARTIFACT_BUDGET_BYTES = 2 * 1024 ** 3;
-
 /** Overlay readers and pruning share the existing per-repository publication lock. */
 export async function acquireOverlayGenerationPin(
   generationDir: string,
@@ -921,25 +919,6 @@ export async function overlayGenerationIsPinned(generationDir: string): Promise<
   } catch {
     return true;
   }
-}
-
-/** Bounds traversal as well as bytes; uncertainty refuses admission. Never follows symlinks. */
-export async function overlayArtifactBytes(overlayPath: string): Promise<number> {
-  let bytes = 0;
-  let entries = 0;
-  const pending = [overlayPath];
-  while (pending.length) {
-    const directory = pending.pop()!;
-    for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
-      if (++entries > 100_000) return Infinity;
-      const target = path.join(directory, entry.name);
-      const stat = await fs.lstat(target);
-      if (stat.isSymbolicLink()) continue;
-      if (stat.isDirectory()) pending.push(target);
-      else if (stat.isFile()) bytes += stat.size;
-    }
-  }
-  return bytes;
 }
 
 export async function pruneOverlayGenerations(

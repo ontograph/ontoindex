@@ -563,11 +563,11 @@ describe('filesystem-walker root-file allowlist', () => {
     expect(files.map((file) => file.path)).toEqual([]);
   });
 
-  it('still excludes an allowlisted file larger than the scan size cap', async () => {
+  it('includes a large allowlisted root file', async () => {
     await fs.writeFile(path.join(repoPath, 'CONTRIBUTING.md'), 'x'.repeat(512 * 1024 + 1));
 
     const files = await walkRepositoryPaths(repoPath, undefined, { includeFiles: rootFiles });
 
-    expect(files.map((file) => file.path)).not.toContain('CONTRIBUTING.md');
+    expect(files.map((file) => file.path)).toContain('CONTRIBUTING.md');
   });
 });

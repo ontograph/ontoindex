@@ -18,7 +18,6 @@ import {
 import { buildTestGraph } from '../helpers/test-graph.js';
 import {
   acquireOverlayGenerationPin,
-  overlayArtifactBytes,
   pruneOverlayGenerations,
 } from '../../src/storage/repo-manager.js';
 
@@ -44,7 +43,6 @@ describe('overlay reader retention', () => {
       await expect(fs.stat(path.join(overlay, '2-1-abc'))).rejects.toMatchObject({
         code: 'ENOENT',
       });
-      expect(await overlayArtifactBytes(overlay)).toBe(32);
       await pin.release();
       await fs.utimes(live, 1, 1);
       expect(await pruneOverlayGenerations(overlay, '5-1-abc')).toBe(false);

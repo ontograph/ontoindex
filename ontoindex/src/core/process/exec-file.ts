@@ -3,7 +3,8 @@ import { execFile } from 'child_process';
 export interface ExecFileTextOptions {
   cwd?: string;
   timeoutMs?: number;
-  maxBuffer?: number;
+  /** null permits output without an arbitrary byte cap. */
+  maxBuffer?: number | null;
 }
 
 const DEFAULT_TIMEOUT_MS = 5_000;
@@ -15,7 +16,12 @@ export function execFileText(
   options: ExecFileTextOptions = {},
 ): Promise<string> {
   const timeout = Number.isFinite(options.timeoutMs) ? options.timeoutMs : DEFAULT_TIMEOUT_MS;
-  const maxBuffer = Number.isFinite(options.maxBuffer) ? options.maxBuffer : DEFAULT_MAX_BUFFER;
+  const maxBuffer =
+    options.maxBuffer === null
+      ? Infinity
+      : Number.isFinite(options.maxBuffer)
+        ? options.maxBuffer
+        : DEFAULT_MAX_BUFFER;
 
   return new Promise((resolve, reject) => {
     execFile(

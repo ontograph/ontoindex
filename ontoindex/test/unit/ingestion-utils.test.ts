@@ -11,7 +11,6 @@ import type { LanguageProvider } from '../../src/core/ingestion/language-provide
 import {
   getTreeSitterBufferSize,
   TREE_SITTER_BUFFER_SIZE,
-  TREE_SITTER_MAX_BUFFER,
 } from '../../src/core/ingestion/constants.js';
 import Parser from 'tree-sitter';
 import C from 'tree-sitter-c';
@@ -729,9 +728,9 @@ describe('getTreeSitterBufferSize', () => {
     expect(getTreeSitterBufferSize(size)).toBe(size * 2);
   });
 
-  it('caps at 32MB for very large files', () => {
-    const huge = 20 * 1024 * 1024; // 20 MB — 2x = 40 MB > 32 MB cap
-    expect(getTreeSitterBufferSize(huge)).toBe(32 * 1024 * 1024);
+  it('sizes the buffer beyond the former 32MB cap', () => {
+    const huge = 20 * 1024 * 1024;
+    expect(getTreeSitterBufferSize(huge)).toBe(huge * 2);
   });
 
   it('returns exactly 512KB at the boundary', () => {
@@ -739,7 +738,7 @@ describe('getTreeSitterBufferSize', () => {
     expect(getTreeSitterBufferSize(256 * 1024)).toBe(TREE_SITTER_BUFFER_SIZE);
   });
 
-  it('scales linearly between min and max', () => {
+  it('scales linearly above the minimum', () => {
     const small = getTreeSitterBufferSize(300 * 1024);
     const medium = getTreeSitterBufferSize(1 * 1024 * 1024);
     const large = getTreeSitterBufferSize(5 * 1024 * 1024);
@@ -747,27 +746,18 @@ describe('getTreeSitterBufferSize', () => {
     expect(medium).toBeLessThan(large);
   });
 
-  it('TREE_SITTER_MAX_BUFFER is 32MB', () => {
-    expect(TREE_SITTER_MAX_BUFFER).toBe(32 * 1024 * 1024);
+  it('continues growing beyond the former input threshold', () => {
+    for (const size of [16 * 1024 * 1024, 17 * 1024 * 1024, 33 * 1024 * 1024]) {
+      expect(getTreeSitterBufferSize(size)).toBe(size * 2);
+    }
   });
 
-  it('returns max buffer at exact boundary (16MB input)', () => {
-    // 16MB * 2 = 32MB = max
-    expect(getTreeSitterBufferSize(16 * 1024 * 1024)).toBe(TREE_SITTER_MAX_BUFFER);
-  });
-
-  it('file just over max returns max buffer', () => {
-    // 17MB * 2 = 34MB > 32MB cap
-    expect(getTreeSitterBufferSize(17 * 1024 * 1024)).toBe(TREE_SITTER_MAX_BUFFER);
-  });
-
-  it('handles files between old 512KB limit and new 32MB limit', () => {
-    // This is the range that was previously silently skipped
+  it('handles files beyond the former size limits', () => {
     const sizes = [600 * 1024, 1024 * 1024, 5 * 1024 * 1024, 10 * 1024 * 1024];
     for (const size of sizes) {
       const bufSize = getTreeSitterBufferSize(size);
       expect(bufSize).toBeGreaterThanOrEqual(TREE_SITTER_BUFFER_SIZE);
-      expect(bufSize).toBeLessThanOrEqual(TREE_SITTER_MAX_BUFFER);
+      expect(bufSize).toBe(size * 2);
     }
   });
 });

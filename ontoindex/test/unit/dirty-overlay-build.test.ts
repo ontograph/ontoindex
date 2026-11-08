@@ -17,35 +17,6 @@ import { buildTestGraph } from '../helpers/test-graph.js';
 import { resolveOverlayDbPath } from '../../src/mcp/local/backend-overlay.js';
 
 describe('disposable dirty overlay build', () => {
-  it('refuses an over-budget pinned overlay before capture or build', async () => {
-    const repoPath = await fs.mkdtemp(path.join(os.tmpdir(), 'ontoindex-overlay-budget-'));
-    const overlay = path.join(repoManager.getStoragePaths(repoPath).storagePath, 'overlay');
-    const generation = path.join(overlay, '1-1-abc');
-    const previous = process.env.ONTOINDEX_OVERLAY_BUDGET_BYTES;
-    const analyzeRepo = vi.fn();
-    try {
-      await fs.mkdir(generation, { recursive: true });
-      await fs.writeFile(path.join(generation, 'lbug'), 'over-budget');
-      await fs.writeFile(path.join(generation, `.reader-${process.pid}-live`), '');
-      process.env.ONTOINDEX_OVERLAY_BUDGET_BYTES = '1';
-      await expect(
-        runFullAnalysis(
-          repoPath,
-          { dirtyOverlay: true, overlayPaths: [] },
-          { onProgress: () => {} },
-          { analyzeRuntime: { analyzeRepo } },
-        ),
-      ).rejects.toMatchObject({ code: 'overlay_budget_exceeded' });
-      expect(analyzeRepo).not.toHaveBeenCalled();
-      expect(await fs.readdir(overlay)).toEqual(['1-1-abc']);
-      expect(await fs.readdir(repoPath)).toEqual(['.ontoindex']);
-    } finally {
-      if (previous === undefined) delete process.env.ONTOINDEX_OVERLAY_BUDGET_BYTES;
-      else process.env.ONTOINDEX_OVERLAY_BUDGET_BYTES = previous;
-      await fs.rm(repoPath, { recursive: true, force: true });
-    }
-  });
-
   it('isolates dirty symbols, preserves the active generation, and removes a failed partial store', async () => {
     const repoPath = await fs.mkdtemp(path.join(os.tmpdir(), 'ontoindex-overlay-build-'));
     const { storagePath, metaPath } = repoManager.getStoragePaths(repoPath);
@@ -278,37 +249,36 @@ describe('disposable dirty overlay build', () => {
       expect(analyzeRepo).not.toHaveBeenCalled();
       expect(empty.stats).toEqual({ nodes: 0, edges: 0, files: 0, embeddings: 0 });
       expect(await snapshotActive()).toEqual(before);
+
+      // Neither the former 50-file admission cap nor the retired storage budget
+      // may prevent publishing a complete overlay.
+      const manyPaths = Array.from({ length: 51 }, (_, index) => `src/extra-${index}.ts`);
+      for (const filename of manyPaths) {
+        await fs.writeFile(path.join(repoPath, filename), 'export const extra = 1;\n');
+      }
+      vi.stubEnv('ONTOINDEX_OVERLAY_BUDGET_BYTES', '1');
+      const many = await runFullAnalysis(
+        repoPath,
+        { dirtyOverlay: true, overlayPaths: manyPaths, skipNativeClose: true },
+        { onProgress: () => {} },
+        dependencies,
+      );
+      expect(many.stats.files).toBe(51);
+      const manyDbPath = await resolveOverlayDbPath(storagePath);
+      expect(manyDbPath).not.toBeNull();
+      const manyBase = JSON.parse(
+        await fs.readFile(path.join(path.dirname(manyDbPath!), 'base.json'), 'utf8'),
+      );
+      expect([...manyBase.includePaths].sort()).toEqual([...manyPaths].sort());
+      expect(await snapshotActive()).toEqual(before);
       expect(activate).not.toHaveBeenCalled();
       expect(create).not.toHaveBeenCalled();
       expect(saveMeta).not.toHaveBeenCalled();
     } finally {
+      vi.unstubAllEnvs();
       vi.restoreAllMocks();
       await closeLbug();
       await fs.rm(repoPath, { recursive: true, force: true });
     }
   }, 120_000);
-
-  it('refuses over-limit scope without running the pipeline or creating storage', async () => {
-    const repoPath = await fs.mkdtemp(path.join(os.tmpdir(), 'ontoindex-overlay-limit-'));
-    const analyzeRepo = vi.fn();
-    try {
-      await expect(
-        runFullAnalysis(
-          repoPath,
-          {
-            dirtyOverlay: true,
-            overlayPaths: Array.from({ length: 51 }, (_, index) => `src/file${index}.ts`),
-          },
-          { onProgress: () => {} },
-          { analyzeRuntime: { analyzeRepo } },
-        ),
-      ).rejects.toThrow('limited to 50');
-      expect(analyzeRepo).not.toHaveBeenCalled();
-      await expect(
-        fs.stat(repoManager.getStoragePaths(repoPath).storagePath),
-      ).rejects.toMatchObject({ code: 'ENOENT' });
-    } finally {
-      await fs.rm(repoPath, { recursive: true, force: true });
-    }
-  });
 });

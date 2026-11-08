@@ -20,7 +20,6 @@ import {
   type OverlaySnapshot,
 } from './backend-overlay.js';
 import { WorkspaceBuildError } from './workspace-build-supervisor.js';
-import { workspaceMaxFiles } from '../../core/runtime/runtime-health.js';
 import {
   workspaceConfigurationIdentity,
   WorkspaceInputCaptureError,
@@ -123,7 +122,7 @@ export interface WorkspacePreparationDependencies {
     },
   ): Promise<void>;
   evictSnapshot(repoId: string): void;
-  /** Committed-index file count, used to refuse builds that cost too much. */
+  /** @deprecated File-count admission checks have been removed. */
   baseFileCount(repo: WorkspaceReadRepo): Promise<number | undefined>;
   getInputIdentity: typeof workspaceConfigurationIdentity;
   now(): number;
@@ -334,10 +333,6 @@ const workspaceWatches = new Map<string, WorkspaceWatch>();
 export async function acquireWorkspaceWatch(
   repo: WorkspaceReadRepo,
 ): Promise<{ release(): Promise<void> }> {
-  const fileCount = await workspaceDependencies.baseFileCount(repo).catch(() => undefined);
-  if (typeof fileCount === 'number' && fileCount > workspaceMaxFiles()) {
-    return { async release() {} };
-  }
   const canonicalPath = await fs.realpath(repo.repoPath);
   let state = workspaceWatches.get(canonicalPath);
   if (state?.stopping) {
@@ -626,33 +621,6 @@ export async function prepareWorkspaceRead(options: {
       (workspaceGraph
         ? value.capability === 'workspace-graph' && value.coverage !== 'degraded'
         : value.capability !== 'workspace-graph' || value.coverage !== 'degraded');
-    const maxFiles = workspaceMaxFiles();
-    let fileCount: number | undefined;
-    try {
-      fileCount = workspaceGraph ? await dependencies.baseFileCount(options.repo) : undefined;
-    } catch (cause) {
-      throw new WorkspacePreparationError(
-        'workspace_build_failed',
-        undefined,
-        { cause },
-        undefined,
-        failureDiagnostics('planning', 'planning_failed', cause),
-      );
-    }
-    assertCallerActive();
-    if (fileCount !== undefined && fileCount > maxFiles) {
-      throw new WorkspacePreparationError(
-        'workspace_too_large',
-        `Repository has ${fileCount} indexed files (limit ${maxFiles}); a full workspace graph build is refused (configure ONTOINDEX_WORKSPACE_MAX_FILES to change the limit). To prepare a separate bounded workspace graph while preserving the committed index, explicitly run \`ONTOINDEX_AUTO_WORKSPACE=1 ontoindex analyze --workspace-graph\` in the repository. Rerun this command after workspace inputs change.`,
-        undefined,
-        {
-          observedIndexedFiles: fileCount,
-          maxIndexedFiles: maxFiles,
-          requiredCapability: 'workspace-graph',
-        },
-        failureDiagnostics('planning', 'capability_missing'),
-      );
-    }
     let inputDigest: string | undefined;
     try {
       const inputPaths = symbolInputPaths(snapshot, workspaceGraph);
@@ -802,8 +770,7 @@ export async function prepareWorkspaceRead(options: {
               !workspaceGraph &&
               (recheck.baseMatches === false ||
                 recheck.headChanged === true ||
-                (recheck.configPaths?.size ?? 0) > 0 ||
-                recheck.dirtyPaths.size > 50)
+                (recheck.configPaths?.size ?? 0) > 0)
             ) {
               throw new WorkspacePreparationError(
                 'workspace_build_failed',

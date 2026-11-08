@@ -80,7 +80,6 @@ import {
   getParseMaxAstDepth,
   getParseMaxAstNodes,
   getTreeSitterBufferSize,
-  TREE_SITTER_MAX_BUFFER,
 } from './constants.js';
 import {
   getActiveComponentFilePatterns,
@@ -971,8 +970,6 @@ const prepareSequentialFile = async (
     skippedLanguages.set(language, (skippedLanguages.get(language) || 0) + 1);
     return null;
   }
-
-  if (file.content.length > TREE_SITTER_MAX_BUFFER) return null;
 
   let parseContent = file.content;
   let lineOffset = 0;

@@ -142,7 +142,6 @@ const envInt = (name: string): number | undefined => {
 };
 
 interface ContentLimits {
-  maxFileContentChars: number;
   maxSnippetChars: number;
 }
 
@@ -152,18 +151,13 @@ const extractContent = async (
   limits: ContentLimits,
 ): Promise<string> => {
   const filePath = node.properties.filePath;
-  if (node.label === 'File' && limits.maxFileContentChars === 0) return '';
   if (node.label !== 'File' && limits.maxSnippetChars === 0) return '';
   const content = await contentCache.get(filePath);
   if (!content) return '';
   if (node.label === 'Folder') return '';
   if (isBinaryContent(content)) return '[Binary file - content not stored]';
 
-  if (node.label === 'File') {
-    return content.length > limits.maxFileContentChars
-      ? content.slice(0, limits.maxFileContentChars) + '\n... [truncated]'
-      : content;
-  }
+  if (node.label === 'File') return content;
 
   const startLine = node.properties.startLine;
   const endLine = node.properties.endLine;
@@ -226,7 +220,6 @@ export const streamAllCSVsToDisk = async (
   const contentCache = new FileContentCache(repoPath);
   const largeGraph = graph.nodeCount > 25_000;
   const contentLimits: ContentLimits = {
-    maxFileContentChars: envInt('ONTOINDEX_MAX_FILE_CONTENT_CHARS') ?? (largeGraph ? 0 : 10_000),
     maxSnippetChars: envInt('ONTOINDEX_MAX_SNIPPET_CHARS') ?? (largeGraph ? 1_000 : 5_000),
   };
 
