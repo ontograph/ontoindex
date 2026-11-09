@@ -76,7 +76,6 @@ async function readIgnorePolicy(repoPath: string): Promise<string[]> {
     IGNORE_POLICY_VERSION,
     `noGitignore=${process.env.ONTOINDEX_NO_GITIGNORE === '1'}`,
     `includeThirdParty=${process.env.ONTOINDEX_INCLUDE_THIRD_PARTY === '1'}`,
-    `scanMaxFileKb=${process.env.ONTOINDEX_SCAN_MAX_FILE_KB ?? ''}`,
   ];
   for (const filename of ['.gitignore', '.ontoindexignore']) {
     const filePath = path.join(repoPath, filename);

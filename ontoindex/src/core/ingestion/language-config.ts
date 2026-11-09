@@ -38,11 +38,7 @@ export type ImportConfigObservation =
   | Readonly<{
       kind: 'traversal';
       path: '.';
-      maxDepth: 5;
-      maxDirs: 100;
       dirsScanned: number;
-      depthLimited: boolean;
-      directoryLimited: boolean;
     }>;
 
 /** Evidence of loader reads, not an atomic filesystem snapshot or replay identity. */
@@ -390,15 +386,11 @@ export async function loadCSharpProjectConfig(
     }
     return configs;
   }
-  // BFS scan for .csproj files up to 5 levels deep, cap at 100 dirs to avoid runaway scanning
-  const scanQueue: { dir: string; depth: number }[] = [{ dir: repoRoot, depth: 0 }];
-  const maxDepth = 5;
-  const maxDirs = 100;
+  // BFS scan for .csproj files below the repository root.
+  const scanQueue: string[] = [repoRoot];
   let dirsScanned = 0;
-  let depthLimited = false;
-
-  while (scanQueue.length > 0 && dirsScanned < maxDirs) {
-    const { dir, depth } = scanQueue.shift()!;
+  while (scanQueue.length > 0) {
+    const dir = scanQueue.shift()!;
     dirsScanned++;
     try {
       const entries = await readConfigDirectory(dir, observations);
@@ -412,9 +404,7 @@ export async function loadCSharpProjectConfig(
             entry.name === 'obj'
           )
             continue;
-          if (depth < maxDepth)
-            scanQueue.push({ dir: path.join(dir, entry.name), depth: depth + 1 });
-          else depthLimited = true;
+          scanQueue.push(path.join(dir, entry.name));
         }
         if (entry.isFile() && entry.name.endsWith('.csproj')) {
           await loadProject(path.join(dir, entry.name));
@@ -424,17 +414,10 @@ export async function loadCSharpProjectConfig(
       // Can't read directory
     }
   }
-  const directoryLimited = scanQueue.length > 0;
-  if (depthLimited) observations?.incomplete('depth-limit');
-  if (directoryLimited) observations?.incomplete('directory-limit');
   observations?.add({
     kind: 'traversal',
     path: '.',
-    maxDepth: 5,
-    maxDirs: 100,
     dirsScanned,
-    depthLimited,
-    directoryLimited,
   });
   return configs;
 }

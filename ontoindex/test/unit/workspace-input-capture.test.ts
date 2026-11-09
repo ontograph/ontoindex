@@ -7,7 +7,6 @@ import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { SupportedLanguages } from 'ontoindex-shared';
-import { getScanMaxFileSizeBytes } from '../../src/core/ingestion/scan-config.js';
 import { createParserForLanguage } from '../../src/core/tree-sitter/parser-loader.js';
 import { loadAnalysisCatalog } from '../../src/analysis-packs/catalog.js';
 
@@ -190,26 +189,33 @@ describe('workspace input capture', () => {
     },
   );
 
-  it('applies capture file and byte limits to ignored, off-scope catalog manifests', async () => {
+  it('captures ignored, off-scope catalog manifests regardless of legacy limits', async () => {
     const root = await makeRepo();
     await fs.mkdir(path.join(root, 'ontoindex-packs/core'), { recursive: true });
     await fs.writeFile(path.join(root, '.ontoindexignore'), 'ontoindex-packs/\n');
     await fs.writeFile(path.join(root, 'ontoindex-packs/core/pack.yml'), 'id: model');
-    await expect(
-      capture(root, { includePaths: ['src/main.ts'], maxFiles: 1 }),
-    ).rejects.toMatchObject({ code: 'limit' });
-    await expect(
-      capture(root, { includePaths: ['src/main.ts'], maxTotalBytes: 1 }),
-    ).rejects.toMatchObject({ code: 'limit' });
+    const boundedLegacy = await capture(root, {
+      includePaths: ['src/main.ts'],
+      maxFiles: 0,
+      maxTotalBytes: 0,
+    });
+    try {
+      expect(boundedLegacy.capturedPaths).toContain('ontoindex-packs/core/pack.yml');
+    } finally {
+      await boundedLegacy.dispose();
+    }
     const file = await fs.open(path.join(root, 'ontoindex-packs/core/pack.yml'), 'w');
     try {
-      await file.truncate(getScanMaxFileSizeBytes()! + 1);
+      await file.truncate(2 * 1024 * 1024);
     } finally {
       await file.close();
     }
-    await expect(capture(root, { includePaths: ['src/main.ts'] })).rejects.toMatchObject({
-      code: 'limit',
-    });
+    const largeCatalog = await capture(root, { includePaths: ['src/main.ts'] });
+    try {
+      expect(largeCatalog.capturedPaths).toContain('ontoindex-packs/core/pack.yml');
+    } finally {
+      await largeCatalog.dispose();
+    }
     expect(await pendingCaptures(root)).toEqual([]);
   });
 
@@ -241,84 +247,41 @@ describe('workspace input capture', () => {
   });
 
   it.each(['metadata.json', 'large.ts', 'tsconfig.json'])(
-    'refuses oversized %s without publishing a partial capture',
+    'captures oversized %s without publishing a partial capture',
     async (filename) => {
-      const cap = getScanMaxFileSizeBytes();
-      expect(cap).not.toBeNull();
       const root = await makeRepo();
-      const file = await fs.open(path.join(root, filename), 'w');
-      try {
-        await file.truncate(cap! + 1);
-      } finally {
-        await file.close();
-      }
-      await expect(capture(root)).rejects.toMatchObject({ code: 'limit' });
+      await fs.writeFile(
+        path.join(root, filename),
+        filename.endsWith('.json')
+          ? JSON.stringify({ padding: 'x'.repeat(2 * 1024 * 1024) })
+          : ' '.repeat(2 * 1024 * 1024),
+      );
+      const largeCatalog = await capture(root);
+      await largeCatalog.dispose();
       expect(await pendingCaptures(root)).toEqual([]);
     },
   );
 
-  it('reports every symlink and oversized file without publishing a partial capture', async () => {
+  it('refuses symlink paths without publishing a partial capture', async () => {
     const root = await makeRepo();
-    const cap = getScanMaxFileSizeBytes();
-    expect(cap).not.toBeNull();
     for (const filename of ['link-a.ts', 'link-b.ts']) {
       await fs.symlink(path.join(root, 'src/main.ts'), path.join(root, filename));
-    }
-    for (const filename of ['big-a.txt', 'big-b.txt']) {
-      const file = await fs.open(path.join(root, filename), 'w');
-      try {
-        await file.truncate(cap! + 1);
-      } finally {
-        await file.close();
-      }
     }
     const error = await capture(root).catch((error: unknown) => error);
     expect(error).toMatchObject({ code: 'unsupported' });
-    for (const text of [
-      'link-a.ts',
-      'link-b.ts',
-      'big-a.txt',
-      'big-b.txt',
-      '.ontoindexignore',
-      '2 symlink(s)',
-      '2 file(s)',
-    ]) {
-      expect(error).toHaveProperty('message', expect.stringContaining(text));
-    }
+    expect(error).toHaveProperty('message', expect.stringContaining('link-'));
     expect(await pendingCaptures(root)).toEqual([]);
   });
 
-  it('reports every oversized file with a limit error', async () => {
+  it('preserves ignore rules for large files and symlink paths', async () => {
     const root = await makeRepo();
-    const cap = getScanMaxFileSizeBytes();
-    expect(cap).not.toBeNull();
-    for (const filename of ['big-a.txt', 'big-b.txt']) {
-      const file = await fs.open(path.join(root, filename), 'w');
-      try {
-        await file.truncate(cap! + 1);
-      } finally {
-        await file.close();
-      }
-    }
-    const error = await capture(root).catch((error: unknown) => error);
-    expect(error).toMatchObject({ code: 'limit' });
-    for (const filename of ['big-a.txt', 'big-b.txt']) {
-      expect(error).toHaveProperty('message', expect.stringContaining(filename));
-    }
-    expect(await pendingCaptures(root)).toEqual([]);
-  });
-
-  it('captures successfully when all symlinks and oversized files are explicitly ignored', async () => {
-    const root = await makeRepo();
-    const cap = getScanMaxFileSizeBytes();
-    expect(cap).not.toBeNull();
     for (const filename of ['link-a.ts', 'link-b.ts']) {
       await fs.symlink(path.join(root, 'src/main.ts'), path.join(root, filename));
     }
     for (const filename of ['big-a.txt', 'big-b.txt']) {
       const file = await fs.open(path.join(root, filename), 'w');
       try {
-        await file.truncate(cap! + 1);
+        await file.truncate(2 * 1024 * 1024);
       } finally {
         await file.close();
       }
@@ -1012,10 +975,14 @@ describe('workspace input capture', () => {
     expect(after.configurationDigest).not.toBe(before.configurationDigest);
   });
 
-  it('rejects limits, unreadable required files, cancellation and deadline expiry with cleanup', async () => {
+  it('ignores retired limits and preserves cancellation and deadline cleanup', async () => {
     const root = await makeRepo();
-    await expect(capture(root, { maxFiles: 0 })).rejects.toMatchObject({ code: 'limit' });
-    await expect(capture(root, { maxTotalBytes: 1 })).rejects.toMatchObject({ code: 'limit' });
+    const legacyLimits = await capture(root, { maxFiles: 0, maxTotalBytes: 0 });
+    await legacyLimits.dispose();
+    await fs.writeFile(path.join(root, 'src/main.ts'), 'x'.repeat(2 * 1024 * 1024));
+    const largeSource = await capture(root);
+    await largeSource.dispose();
+    await fs.writeFile(path.join(root, 'src/main.ts'), 'export const value = 1;\n');
     await fs.chmod(path.join(root, 'src/main.ts'), 0);
     await expect(capture(root)).rejects.toMatchObject({ code: 'unsupported' });
     await fs.chmod(path.join(root, 'src/main.ts'), 0o600);

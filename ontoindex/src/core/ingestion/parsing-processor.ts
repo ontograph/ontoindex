@@ -80,7 +80,6 @@ import {
   getParseMaxAstDepth,
   getParseMaxAstNodes,
   getTreeSitterBufferSize,
-  TREE_SITTER_MAX_BUFFER,
 } from './constants.js';
 import {
   getActiveComponentFilePatterns,
@@ -965,21 +964,26 @@ const prepareSequentialFile = async (
   // Extension/basename wins; extensionless scripts fall back to the bounded
   // first-line shebang so sequential parsing matches parent/worker decisions.
   const language = getLanguageFromFilename(file.path) ?? getLanguageFromShebang(file.content);
-  if (!language) return null;
-
-  if (!isLanguageAvailable(language)) {
-    skippedLanguages.set(language, (skippedLanguages.get(language) || 0) + 1);
+  if (!language) {
+    console.warn(`Skipping ${file.path}: language could not be detected`);
     return null;
   }
 
-  if (file.content.length > TREE_SITTER_MAX_BUFFER) return null;
+  if (!isLanguageAvailable(language)) {
+    skippedLanguages.set(language, (skippedLanguages.get(language) || 0) + 1);
+    console.warn(`Skipping ${file.path}: parser for ${language} is unavailable`);
+    return null;
+  }
 
   let parseContent = file.content;
   let lineOffset = 0;
   let isVueSetup = false;
   if (language === SupportedLanguages.Vue) {
     const extracted = extractVueScript(file.content);
-    if (!extracted) return null;
+    if (!extracted) {
+      console.warn(`Skipping ${file.path}: no parseable Vue script`);
+      return null;
+    }
     parseContent = extracted.scriptContent;
     lineOffset = extracted.lineOffset;
     isVueSetup = extracted.isSetup;
@@ -987,7 +991,8 @@ const prepareSequentialFile = async (
 
   try {
     await loadLanguage(language, file.path);
-  } catch {
+  } catch (languageError) {
+    console.warn(`Skipping ${file.path}: failed to load ${language} parser:`, languageError);
     return null;
   }
 
@@ -996,28 +1001,37 @@ const prepareSequentialFile = async (
     tree = parser.parse(parseContent, undefined, {
       bufferSize: getTreeSitterBufferSize(parseContent.length),
     });
-  } catch {
-    console.warn(`Skipping unparseable file: ${file.path}`);
+  } catch (parseError) {
+    console.warn(`Skipping unparseable file: ${file.path}:`, parseError);
     return null;
   }
 
   if (tree.rootNode.hasError) parseErrorPaths.push(file.path);
 
   const maxAstNodes = getParseMaxAstNodes();
-  const astNodeCount = tree.rootNode.descendantCount + 1;
-  if (maxAstNodes !== null && astNodeCount > maxAstNodes) {
-    return null;
+  if (maxAstNodes !== null) {
+    const astNodeCount = tree.rootNode.descendantCount + 1;
+    if (astNodeCount > maxAstNodes) {
+      console.warn(
+        `Skipping ${file.path}: AST node count ${astNodeCount} exceeds configured ceiling ${maxAstNodes}`,
+      );
+      return null;
+    }
   }
 
   const maxAstDepth = getParseMaxAstDepth();
   if (maxAstDepth !== null && exceedsParseMaxAstDepth(tree.rootNode, maxAstDepth)) {
+    console.warn(`Skipping ${file.path}: AST depth exceeds configured ceiling ${maxAstDepth}`);
     return null;
   }
 
   astCache.set(file.path, tree);
 
   const provider = getProvider(language);
-  if (!provider.treeSitterQueries) return null;
+  if (!provider.treeSitterQueries) {
+    console.warn(`Skipping ${file.path}: queries for ${language} are unavailable`);
+    return null;
+  }
 
   try {
     const query = new Parser.Query(parser.getLanguage(), provider.treeSitterQueries);
@@ -1041,7 +1055,7 @@ const prepareSequentialFile = async (
       typeEnv,
     };
   } catch (queryError) {
-    console.warn(`Query error for ${file.path}:`, queryError);
+    console.warn(`Query or type environment preparation failed for ${file.path}:`, queryError);
     return null;
   }
 };

@@ -115,22 +115,15 @@ export function selectWorkspaceCapability(input: {
   }
   if (input.haveUsableWorkspaceGraph)
     return { action: 'reuse-workspace-graph', reason: 'matching complete workspace graph' };
-  if (
-    input.needsRelationships ||
-    input.eligibleChangeCount > 50 ||
-    input.configChanged ||
-    !input.baseMatches ||
-    input.headChanged
-  ) {
+  if (input.needsRelationships || input.configChanged || !input.baseMatches || input.headChanged) {
     return {
       action: 'build-workspace-graph',
-      reason:
-        'workspace relationships, configuration, size, or base identity require full analysis',
+      reason: 'workspace relationships, configuration, or base identity require full analysis',
     };
   }
   return input.haveUsableSymbolsOverlay
     ? { action: 'reuse-symbols-overlay', reason: 'matching symbols overlay' }
-    : { action: 'build-symbols-overlay', reason: 'bounded symbol changes' };
+    : { action: 'build-symbols-overlay', reason: 'eligible symbol changes' };
 }
 
 const EMPTY: OverlaySnapshot = {
@@ -509,7 +502,7 @@ async function computeSnapshot(
     ) {
       base.ftsIndexes = recordedBase.ftsIndexes as string[];
     }
-    // A full graph can cover the symbol-overlay count cap, but not the scan size limit.
+    // Retain scan exclusions when projecting full-graph coverage.
     const sizeExcludedPaths = new Set(plan.skipped.filter((rel) => uncoveredPaths.has(rel)));
     overlayPaths.clear();
     for (const rel of dirtyPaths)

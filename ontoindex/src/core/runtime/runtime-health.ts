@@ -80,18 +80,19 @@ export interface RuntimeHealthSnapshot {
   freshnessState: RuntimeHealthState;
   /** Commit-only freshness, excluding uncommitted source changes. */
   committedFreshness?: 'fresh' | 'stale' | 'unknown';
-  /** Bounded source-file coverage available to a dirty overlay. */
+  /** Source-file coverage available to a dirty overlay. */
   dirtyCoverage?: {
     state: 'none' | 'coverable' | 'over-cap' | 'unknown';
     dirtySourceFiles: number | null;
     coveredFiles?: number | null;
     uncoveredFiles?: number | null;
-    cap: number;
+    /** Omitted when dirty-file coverage is unlimited. */
+    cap?: number;
   };
   /** Whether stored metadata reports at least one embedding vector. */
   embeddingsAvailable?: boolean | null;
   workspaceReadiness?: {
-    /** Size check only; no workspace graph build is attempted. */
+    /** Metadata only; no workspace graph build is attempted. */
     state: 'not-checked' | 'within-limit' | 'over-limit';
     dirtyCoverageScope: 'symbol-overlay-eligibility';
     preparationChecked: false;
@@ -116,36 +117,19 @@ export interface ReadRuntimeHealthOptions {
   repoLabel?: string;
   storagePath?: string;
   meta?: RepoMeta | null;
-  /** Override for tests; defaults to the workspace-graph file limit. */
+  /** @deprecated Workspace preparation no longer has a file-count limit. */
   maxWorkspaceFiles?: number;
 }
 
-/** Measured: 1.3k files ~ 47 s and 1.9 GiB; cost grows with file count. */
-// Builds cost about 33 ms per file (491 files 15 s, 1,225 files 42 s, 2,662 files 90 s on 8 cores), so the
-// ADR's 55 s dirty-cold limit is reached near 1,600 files.
-const DEFAULT_MAX_WORKSPACE_FILES = 1600;
-
-/** Largest indexed file count for which a workspace graph build is attempted. */
-export function workspaceMaxFiles(): number {
-  const value = Number(process.env.ONTOINDEX_WORKSPACE_MAX_FILES);
-  return Number.isSafeInteger(value) && value > 0 ? value : DEFAULT_MAX_WORKSPACE_FILES;
-}
-
 const GIT_TIMEOUT_MS = 5_000;
-const GIT_MAX_BUFFER = 1024 * 1024;
-const DIRTY_COVERAGE_CAP = 50;
 
 type SourceFreshness = {
   state: 'clean' | 'stale' | 'degraded' | 'untrusted';
   reason: string | null;
 };
 
-const WORKSPACE_OVER_LIMIT_REMEDIATION =
-  'Workspace-graph reads are refused for this repository size. Use read_mode="committed" for indexed evidence, or explicitly run `ONTOINDEX_AUTO_WORKSPACE=1 ontoindex analyze --workspace-graph` to prepare a bounded workspace graph.';
-
 function workspaceReadinessFromMeta(
   meta: { stats?: { files?: number } } | null | undefined,
-  maxWorkspaceFiles: number,
 ): NonNullable<RuntimeHealthSnapshot['workspaceReadiness']> {
   const base = {
     dirtyCoverageScope: 'symbol-overlay-eligibility' as const,
@@ -155,20 +139,10 @@ function workspaceReadinessFromMeta(
   if (typeof files !== 'number' || !Number.isSafeInteger(files) || files < 0) {
     return { state: 'not-checked', ...base };
   }
-  if (files > maxWorkspaceFiles) {
-    return {
-      state: 'over-limit',
-      ...base,
-      indexedFiles: files,
-      maxIndexedFiles: maxWorkspaceFiles,
-      remediation: WORKSPACE_OVER_LIMIT_REMEDIATION,
-    };
-  }
   return {
-    state: 'within-limit',
+    state: 'not-checked',
     ...base,
     indexedFiles: files,
-    maxIndexedFiles: maxWorkspaceFiles,
   };
 }
 
@@ -230,10 +204,7 @@ export async function readRuntimeHealth(
           : 'stale'
         : 'unknown',
     dirtyCoverage,
-    workspaceReadiness: workspaceReadinessFromMeta(
-      meta,
-      options.maxWorkspaceFiles ?? workspaceMaxFiles(),
-    ),
+    workspaceReadiness: workspaceReadinessFromMeta(meta),
     embeddingsAvailable:
       typeof meta?.stats?.embeddings === 'number' && Number.isFinite(meta.stats.embeddings)
         ? meta.stats.embeddings > 0
@@ -531,7 +502,7 @@ async function readDirtyWorktree(repoPath: string, warnings: string[]): Promise<
     const output = await execFileText(
       'git',
       ['status', '--porcelain=v1', '--untracked-files=all'],
-      { cwd: repoPath, timeoutMs: GIT_TIMEOUT_MS, maxBuffer: GIT_MAX_BUFFER },
+      { cwd: repoPath, timeoutMs: GIT_TIMEOUT_MS, maxBuffer: null },
     );
     const summary = summarizeGitPorcelainStatus(output);
     return summary ? summary.dirtyFileCount > 0 : null;
@@ -553,7 +524,6 @@ async function readDirtyCoverage(
       dirtySourceFiles: null,
       coveredFiles: null,
       uncoveredFiles: null,
-      cap: DIRTY_COVERAGE_CAP,
     };
   }
 
@@ -567,11 +537,10 @@ async function readDirtyCoverage(
       ...plan.uncoveredPaths,
     ]).size;
     return {
-      state: plan.tooMany ? 'over-cap' : dirtySourceFiles === 0 ? 'none' : 'coverable',
+      state: dirtySourceFiles === 0 ? 'none' : 'coverable',
       dirtySourceFiles,
       coveredFiles,
       uncoveredFiles,
-      cap: DIRTY_COVERAGE_CAP,
     };
   } catch (error) {
     warnings.push(`runtime dirty overlay probe failed: ${formatError(error)}`);
@@ -580,7 +549,6 @@ async function readDirtyCoverage(
       dirtySourceFiles: null,
       coveredFiles: null,
       uncoveredFiles: null,
-      cap: DIRTY_COVERAGE_CAP,
     };
   }
 }

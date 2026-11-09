@@ -24,7 +24,6 @@ import {
   getParseMaxAstDepth,
   getParseMaxAstNodes,
   getTreeSitterBufferSize,
-  TREE_SITTER_MAX_BUFFER,
 } from '../constants.js';
 import type { SymbolTableReader } from '../model/symbol-table.js';
 import {
@@ -1171,14 +1170,18 @@ const prepareFileContext = (
   query: Parser.Query,
   parseErrorPaths: string[],
 ): PreparedFileContext | null => {
-  if (file.content.length > TREE_SITTER_MAX_BUFFER) return null;
-
   let parseContent = file.content;
   let lineOffset = 0;
   let isVueSetup = false;
   if (language === SupportedLanguages.Vue) {
     const extracted = extractVueScript(file.content);
-    if (!extracted) return null;
+    if (!extracted) {
+      emitWorkerWarning(`No script block found in Vue file ${file.path}`, {
+        phase: 'prepare',
+        currentFilePath: file.path,
+      });
+      return null;
+    }
     parseContent = extracted.scriptContent;
     lineOffset = extracted.lineOffset;
     isVueSetup = extracted.isSetup;
@@ -1202,13 +1205,21 @@ const prepareFileContext = (
   if (tree.rootNode.hasError) parseErrorPaths.push(file.path);
 
   const maxAstNodes = getParseMaxAstNodes();
-  const astNodeCount = tree.rootNode.descendantCount + 1;
+  const astNodeCount = maxAstNodes === null ? 0 : tree.rootNode.descendantCount + 1;
   if (maxAstNodes !== null && astNodeCount > maxAstNodes) {
+    emitWorkerWarning(
+      `Tree-sitter AST node limit exceeded for ${file.path}: ${astNodeCount} nodes (configured maximum ${maxAstNodes})`,
+      { phase: 'prepare', currentFilePath: file.path },
+    );
     return null;
   }
 
   const maxAstDepth = getParseMaxAstDepth();
   if (maxAstDepth !== null && exceedsParseMaxAstDepth(tree.rootNode, maxAstDepth)) {
+    emitWorkerWarning(
+      `Tree-sitter AST depth limit exceeded for ${file.path} (configured maximum ${maxAstDepth})`,
+      { phase: 'prepare', currentFilePath: file.path },
+    );
     return null;
   }
 
@@ -2068,10 +2079,10 @@ const processPreparedWorkerFile = (
       prepareFileContext(file, language, query, result.parseErrorPaths),
     );
     if (!fileContext) {
-      // Lightweight fallback for oversized or unparseable files
+      // Lightweight fallback when full AST extraction is unavailable.
       const native = isNativeEnabled();
       console.warn(
-        `[worker] Using ${native ? 'native' : 'lightweight'} fallback for ${file.path} (exceeds Tree-sitter AST or size limits)`,
+        `[worker] Using ${native ? 'native' : 'lightweight'} fallback for ${file.path} (full AST extraction unavailable; see preparation diagnostic)`,
       );
       const lightweightResult = extractImports(file.path, file.content, language);
       mergeParseWorkerResult(result, lightweightResult);

@@ -243,14 +243,11 @@ export const walkRepositoryPaths = async (
       return isNestedGitPath(relative, nestedGitRoots) || ignoreFilter.childrenIgnored(p);
     },
   };
-  const maxFileSizeBytes = getScanMaxFileSizeBytes();
   const includeGlobs = includePaths.length > 0 ? includePaths.map(includePathToGlob) : ['**/*'];
 
   const entries: ScannedFile[] = [];
   const seenEntries = new Set<string>();
   let processed = 0;
-  let skippedLarge = 0;
-  const skippedLargePaths: string[] = [];
 
   let batch: string[] = [];
   const flushBatch = async () => {
@@ -266,13 +263,6 @@ export const walkRepositoryPaths = async (
           return null;
         }
         seenEntries.add(skippedPath);
-        if (maxFileSizeBytes !== null && stat.size > maxFileSizeBytes) {
-          skippedLarge++;
-          skippedLargePaths.push(skippedPath);
-          const file = { path: skippedPath, size: stat.size };
-          options?.onSkippedLargeFile?.(file);
-          return null;
-        }
         // Extensionless scripts: attach a bounded shebang-detected language so
         // downstream parse routing can pick them up without re-reading later.
         // Extension/basename detection always wins, so only probe when the path
@@ -316,17 +306,6 @@ export const walkRepositoryPaths = async (
     }
   }
   await flushBatch();
-
-  if (skippedLarge > 0) {
-    console.warn(
-      `  Skipped ${skippedLarge} large files (>${maxFileSizeBytes! / 1024}KB, likely generated/vendored). Set ONTOINDEX_SCAN_MAX_FILE_KB=0 to include them.`,
-    );
-    if (isVerboseIngestionEnabled()) {
-      for (const p of skippedLargePaths) {
-        console.warn(`  - ${p}`);
-      }
-    }
-  }
 
   return entries;
 };

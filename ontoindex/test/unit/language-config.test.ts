@@ -147,27 +147,20 @@ describe('import configuration observations', () => {
     frozen(configs.observations);
   });
 
-  it('reports depth and directory-budget omissions without expanding the C# scan', async () => {
+  it('scans deep C# projects and directories without arbitrary traversal limits', async () => {
     await write('a/b/c/d/e/f/Hidden.csproj', '<Project/>');
     const depth = await loadImportConfigs(root);
-    expect(depth.csharpConfigs).toEqual([]);
-    expect(depth.observations!.records).toContainEqual(
-      expect.objectContaining({
-        kind: 'traversal',
-        path: '.',
-        maxDepth: 5,
-        maxDirs: 100,
-        depthLimited: true,
-        directoryLimited: false,
-      }),
-    );
-    expect(depth.observations).toMatchObject({ complete: false, digest: null });
+    expect(depth.csharpConfigs).toContainEqual({
+      rootNamespace: 'Hidden',
+      projectDir: 'a/b/c/d/e/f',
+    });
     for (let i = 0; i < 105; i++) await fs.mkdir(path.join(root, `project-${i}`));
     const limited = await loadImportConfigs(root);
-    expect(limited.observations!.records).toContainEqual(
-      expect.objectContaining({ kind: 'traversal', dirsScanned: 100, directoryLimited: true }),
-    );
-    expect(limited.observations).toMatchObject({ complete: false, digest: null });
+    expect(limited.csharpConfigs).toContainEqual({
+      rootNamespace: 'Hidden',
+      projectDir: 'a/b/c/d/e/f',
+    });
+    expect(limited.observations).toMatchObject({ complete: true });
   });
 
   it('uses the scanned inventory without imposing a directory budget', async () => {

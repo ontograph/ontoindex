@@ -339,7 +339,6 @@ describe('deriveRuntimeHealth', () => {
         dirtySourceFiles: 1,
         coveredFiles: 1,
         uncoveredFiles: 0,
-        cap: 50,
       });
       expect(health.embeddingsAvailable).toBe(true);
     } finally {
@@ -347,7 +346,7 @@ describe('deriveRuntimeHealth', () => {
     }
   });
 
-  it('reports workspace readiness from the indexed file count without building', async () => {
+  it('reports indexed file counts without imposing a workspace preparation limit', async () => {
     const repoPath = await makeCommittedGitRepo();
     try {
       const indexedCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
@@ -363,20 +362,19 @@ describe('deriveRuntimeHealth', () => {
 
       const over = await readRuntimeHealth(repoPath, { meta: meta(1832), maxWorkspaceFiles: 1600 });
       expect(over.workspaceReadiness).toMatchObject({
-        state: 'over-limit',
+        state: 'not-checked',
         preparationChecked: false,
         indexedFiles: 1832,
-        maxIndexedFiles: 1600,
       });
-      expect(over.workspaceReadiness?.remediation).toContain('read_mode="committed"');
+      expect(over.workspaceReadiness?.maxIndexedFiles).toBeUndefined();
+      expect(over.workspaceReadiness?.remediation).toBeUndefined();
 
       const within = await readRuntimeHealth(repoPath, { meta: meta(12), maxWorkspaceFiles: 1600 });
       expect(within.workspaceReadiness).toEqual({
-        state: 'within-limit',
+        state: 'not-checked',
         dirtyCoverageScope: 'symbol-overlay-eligibility',
         preparationChecked: false,
         indexedFiles: 12,
-        maxIndexedFiles: 1600,
       });
 
       const unknown = await readRuntimeHealth(repoPath, { meta: meta(), maxWorkspaceFiles: 1600 });
@@ -403,7 +401,6 @@ describe('deriveRuntimeHealth', () => {
         dirtySourceFiles: 0,
         coveredFiles: 0,
         uncoveredFiles: 0,
-        cap: 50,
       });
       expect(health.embeddingsAvailable).toBeNull();
     } finally {
@@ -428,7 +425,6 @@ describe('deriveRuntimeHealth', () => {
         dirtySourceFiles: null,
         coveredFiles: null,
         uncoveredFiles: null,
-        cap: 50,
       });
       expect(
         health.warnings.some((warning) => warning.includes('dirty overlay probe failed')),
@@ -438,7 +434,7 @@ describe('deriveRuntimeHealth', () => {
     }
   });
 
-  it('reports covered and uncovered dirty source files beyond the overlay cap', async () => {
+  it('reports all dirty source files beyond the former overlay cap as coverable', async () => {
     const repoPath = await makeCommittedGitRepo();
     try {
       await Promise.all(
@@ -458,18 +454,17 @@ describe('deriveRuntimeHealth', () => {
       });
 
       expect(health.dirtyCoverage).toEqual({
-        state: 'over-cap',
+        state: 'coverable',
         dirtySourceFiles: 51,
-        coveredFiles: 50,
-        uncoveredFiles: 1,
-        cap: 50,
+        coveredFiles: 51,
+        uncoveredFiles: 0,
       });
     } finally {
       await fs.rm(repoPath, { recursive: true, force: true });
     }
   });
 
-  it('counts tombstones as covered when source files exceed the overlay cap', async () => {
+  it('counts tombstones as covered beyond the former overlay cap', async () => {
     const repoPath = await makeCommittedGitRepo();
     try {
       await Promise.all(
@@ -490,11 +485,10 @@ describe('deriveRuntimeHealth', () => {
       });
 
       expect(health.dirtyCoverage).toEqual({
-        state: 'over-cap',
+        state: 'coverable',
         dirtySourceFiles: 52,
-        coveredFiles: 51,
-        uncoveredFiles: 1,
-        cap: 50,
+        coveredFiles: 52,
+        uncoveredFiles: 0,
       });
     } finally {
       await fs.rm(repoPath, { recursive: true, force: true });

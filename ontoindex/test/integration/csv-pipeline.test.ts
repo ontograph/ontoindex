@@ -4,7 +4,7 @@
  * Tests: streamAllCSVsToDisk with real graph data.
  * Covers hardening fixes: LRU cache (#24), BufferedCSVWriter flush
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import fs from 'fs/promises';
 import fsSync from 'fs';
 import path from 'path';
@@ -44,6 +44,27 @@ afterAll(async () => {
 });
 
 describe('streamAllCSVsToDisk', () => {
+  it.each([
+    ['default settings', undefined, 1],
+    ['a retired zero content limit', '0', 1],
+    ['a large graph', undefined, 25_001],
+  ] as const)('preserves full File content with %s', async (_name, retiredLimit, nodeCount) => {
+    const sourceContent = `export const longValue = '${'a'.repeat(12_000)}';\n`;
+    await fs.writeFile(path.join(repoDir, 'src', 'long.ts'), sourceContent);
+    const graph = buildTestGraph([
+      { id: 'file:src/long.ts', label: 'File', name: 'long.ts', filePath: 'src/long.ts' },
+    ]);
+    vi.stubEnv('ONTOINDEX_MAX_FILE_CONTENT_CHARS', retiredLimit);
+    try {
+      const result = await streamAllCSVsToDisk({ ...graph, nodeCount }, repoDir, csvDir);
+      await expect(fs.readFile(result.nodeFiles.get('File')!.csvPath, 'utf-8')).resolves.toBe(
+        `id,name,filePath,content\n"file:src/long.ts","long.ts","src/long.ts","${sourceContent}"\n`,
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('generates CSV files for all node types in the graph', async () => {
     const graph = buildTestGraph(
       [

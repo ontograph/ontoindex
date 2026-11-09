@@ -4,6 +4,12 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [3.1.3] - 2026-11-09
+
+- AST node-count and nesting-depth limits are opt-in. Full extraction is attempted by default; positive `ONTOINDEX_PARSE_MAX_AST_NODES` and `ONTOINDEX_PARSE_MAX_AST_DEPTH` values retain operator control.
+- Parser fallback diagnostics identify configured AST ceilings, parser failures, query failures, and unavailable language preparation instead of attributing every fallback to size limits.
+- Analysis interrupted by source edits preserves the active graph and explains the captured workspace-graph recovery path for concurrent agents.
+
 ## [2.5.5] - 2026-11-06
 
 - The pre-commit hook preserves compiler exit status and rejects infrastructure failures; test-source type checking rejects every compiler failure.

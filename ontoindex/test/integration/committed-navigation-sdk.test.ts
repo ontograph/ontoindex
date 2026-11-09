@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { runFullAnalysis } from '../../src/core/run-analyze.js';
@@ -29,7 +29,7 @@ describe('explicit committed navigation over MCP', () => {
     vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
     vi.stubEnv('ONTOINDEX_VECTOR_BACKEND', 'lbug');
     vi.stubEnv('ONTOINDEX_MCP_AUTO_ANALYZE', '0');
-    // The over-limit fallback would otherwise spawn a detached workspace prebuild.
+    // Keep this fixture's workspace preparation within the requesting process.
     vi.stubEnv('ONTOINDEX_AUTO_REFRESH', '0');
     await fs.mkdir(path.join(repo, 'src'), { recursive: true });
     await fs.writeFile(path.join(repo, '.gitignore'), '.ontoindex/\n');
@@ -84,6 +84,9 @@ describe('explicit committed navigation over MCP', () => {
     await server.connect(right);
     await client.connect(left);
   }, 240_000);
+  beforeEach(() => {
+    analysisSpy.mockClear();
+  });
   afterAll(async () => {
     await client?.close();
     await server?.close();
@@ -163,7 +166,7 @@ describe('explicit committed navigation over MCP', () => {
   );
 
   it.each(['gn_docs', 'docs'])(
-    'reaches missing-sidecar readiness through %s above the workspace cap',
+    'reaches missing-sidecar readiness through %s with a dirty workspace',
     async (name) => {
       const result = await client.callTool({
         name,
@@ -178,7 +181,7 @@ describe('explicit committed navigation over MCP', () => {
     },
   );
 
-  it('reports committed freshness and the workspace size limit without building', async () => {
+  it('reports committed freshness without applying the retired workspace size limit', async () => {
     const result = await client.callTool({
       name: 'gn_ensure_fresh',
       arguments: {
@@ -192,104 +195,69 @@ describe('explicit committed navigation over MCP', () => {
     expect(payload.indexedCommit).toBe(payload.headCommit);
     expect(payload.runtimeHealth.dirtyCoverage.state).toBe('coverable');
     expect(payload.runtimeHealth.workspaceReadiness).toMatchObject({
-      state: 'over-limit',
+      state: 'not-checked',
       preparationChecked: false,
-      maxIndexedFiles: 1,
+      indexedFiles: 2,
     });
+    expect(payload.runtimeHealth.workspaceReadiness).not.toHaveProperty('maxIndexedFiles');
     expect(payload.actionsTaken).toEqual([]);
   });
 
-  it.each(calls)('serves indexed evidence for $name above the workspace cap', async (call) => {
-    const defaultResult = await client.callTool({
-      ...call,
-      arguments: { ...call.arguments, repo: repoName },
-    });
-    const defaultPayload = payloadOf(defaultResult);
-    if (call.name === 'gn_explore') {
-      expect(defaultResult.isError).toBe(true);
-      expect(defaultPayload).toMatchObject({
-        error: 'workspace_preparation_failed: workspace_too_large',
-        code: 'workspace_too_large',
-        retryable: false,
-        remediation: { read_mode: 'committed' },
-        diagnostics: {
-          observedIndexedFiles: 2,
-          maxIndexedFiles: 1,
-          requiredCapability: 'workspace-graph',
+  it.each(calls)(
+    'isolates workspace and committed evidence for $name despite a retired cap',
+    async (call) => {
+      const defaultResult = await client.callTool({
+        ...call,
+        arguments: {
+          ...call.arguments,
+          repo: repoName,
+          ...('query' in call.arguments ? { query: 'dirtyOnly' } : { target: 'dirtyOnly' }),
         },
       });
-      expect(defaultPayload.remediation.message).toContain('query the last index');
-      expect(defaultPayload.remediation.message).toContain('readContext.sourceProvenance');
-      expect(defaultPayload.remediation.message).toContain('Do not automatically retry or reindex');
-    } else if (call.name === 'search') {
-      // Search sees bounded dirty edits through the symbols overlay instead (2.4.22).
+      const defaultPayload = payloadOf(defaultResult);
       expect(defaultResult.isError, JSON.stringify(defaultResult)).not.toBe(true);
-      expect(defaultPayload.warnings).toEqual(
-        expect.arrayContaining([expect.stringContaining('uncommitted-symbols overlay')]),
-      );
-      // The dirty edit deleted `baseline`, so the overlay suppresses the stale committed row.
-      expect(JSON.stringify(defaultPayload.definitions)).not.toContain('COMMITTED_MARKER');
-      expect(defaultPayload.definitions).not.toEqual(
-        expect.arrayContaining([expect.objectContaining({ name: 'baseline' })]),
-      );
-      expect(analysisSpy).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(defaultPayload)).toContain('dirtyOnly');
+      expect(JSON.stringify(defaultPayload)).not.toContain('COMMITTED_MARKER');
+      expect(defaultPayload.readContext?.mode).not.toBe('committed');
       analysisSpy.mockClear();
-    } else {
-      // Backend navigation falls back to committed evidence since 2.3.15 (#155).
-      expect(defaultResult.isError, JSON.stringify(defaultResult)).not.toBe(true);
-      expect(defaultPayload.readContext).toMatchObject({
-        mode: 'committed',
-        indexedCommit: committedSha,
-        workingTreeIncluded: false,
+      const result = await client.callTool({
+        ...call,
+        arguments: { ...call.arguments, repo: repoName, read_mode: 'committed' },
       });
-      expect(defaultPayload.warnings).toEqual(
-        expect.arrayContaining([
-          expect.stringContaining('workspace_too_large'),
-          expect.stringContaining('answered from the committed index'),
-          expect.stringContaining('src/base.ts'),
-        ]),
-      );
-      expect(JSON.stringify(defaultPayload)).toContain('baseline');
-      expect(JSON.stringify(defaultPayload)).not.toContain('dirtyOnly');
-      expect(JSON.stringify(defaultPayload)).not.toContain('DIRTY_MARKER');
-    }
-    const result = await client.callTool({
-      ...call,
-      arguments: { ...call.arguments, repo: repoName, read_mode: 'committed' },
-    });
-    expect(result.isError, JSON.stringify(result)).not.toBe(true);
-    const text = (result.content as Array<{ text: string }>)[0].text;
-    const payload = JSON.parse(text.split('\n\n---')[0]);
-    expect(payload.readContext).toMatchObject({ mode: 'committed', workingTreeIncluded: false });
-    expect(payload.readContext.indexedCommit).toBe(committedSha);
-    expect(text).not.toContain('dirtyOnly');
-    expect(text).not.toContain('DIRTY_MARKER');
-    expect(text).toContain('baseline');
-    if (call.name === 'inspect') {
-      expect(payload).toMatchObject({
-        status: 'found',
-        symbol: {
-          uid: expect.any(String),
-          name: 'baseline',
-          kind: 'Function',
-          filePath: 'src/base.ts',
-          startLine: 1,
-          endLine: 1,
-        },
-        contextCompleteness: { sourceIncluded: true, truncated: false },
-      });
-      expect(payload.symbol.uid.length).toBeGreaterThan(0);
-      expect(payload.symbol.content).toContain('COMMITTED_MARKER');
-      expect(payload.symbol.content).not.toContain('DIRTY_MARKER');
-      expect(payload.contextCompleteness.missingReasons).not.toContain('source-unavailable');
-      expect(payload.incoming.calls).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({ name: 'caller', kind: 'Function', filePath: 'src/base.ts' }),
-        ]),
-      );
-    }
-    expect(analysisSpy).not.toHaveBeenCalled();
-  });
+      expect(result.isError, JSON.stringify(result)).not.toBe(true);
+      const text = (result.content as Array<{ text: string }>)[0].text;
+      const payload = JSON.parse(text.split('\n\n---')[0]);
+      expect(payload.readContext).toMatchObject({ mode: 'committed', workingTreeIncluded: false });
+      expect(payload.readContext.indexedCommit).toBe(committedSha);
+      expect(text).not.toContain('dirtyOnly');
+      expect(text).not.toContain('DIRTY_MARKER');
+      expect(text).toContain('baseline');
+      if (call.name === 'inspect') {
+        expect(payload).toMatchObject({
+          status: 'found',
+          symbol: {
+            uid: expect.any(String),
+            name: 'baseline',
+            kind: 'Function',
+            filePath: 'src/base.ts',
+            startLine: 1,
+            endLine: 1,
+          },
+          contextCompleteness: { sourceIncluded: true, truncated: false },
+        });
+        expect(payload.symbol.uid.length).toBeGreaterThan(0);
+        expect(payload.symbol.content).toContain('COMMITTED_MARKER');
+        expect(payload.symbol.content).not.toContain('DIRTY_MARKER');
+        expect(payload.contextCompleteness.missingReasons).not.toContain('source-unavailable');
+        expect(payload.incoming.calls).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ name: 'caller', kind: 'Function', filePath: 'src/base.ts' }),
+          ]),
+        );
+      }
+      expect(analysisSpy).not.toHaveBeenCalled();
+    },
+  );
 
   it('executes a generated committed UID continuation', async () => {
     const result = await client.callTool({
@@ -622,32 +590,30 @@ describe('explicit committed navigation over MCP', () => {
     }
   });
 
-  it('isolates explicit committed reads from concurrent default fallback', async () => {
+  it('isolates explicit committed reads from concurrent workspace reads', async () => {
     const call = calls[1];
     const [committed, workspace] = await Promise.all([
       client.callTool({
         ...call,
         arguments: { ...call.arguments, repo: repoName, read_mode: 'committed' },
       }),
-      client.callTool({ ...call, arguments: { ...call.arguments, repo: repoName } }),
+      client.callTool({
+        ...call,
+        arguments: { ...call.arguments, target: 'dirtyOnly', repo: repoName },
+      }),
     ]);
     expect(committed.isError, JSON.stringify(committed)).not.toBe(true);
     expect(workspace.isError, JSON.stringify(workspace)).not.toBe(true);
-    for (const result of [committed, workspace]) {
-      expect(payloadOf(result).readContext).toMatchObject({
-        mode: 'committed',
-        indexedCommit: committedSha,
-        workingTreeIncluded: false,
-      });
-      expect(JSON.stringify(result)).not.toContain('dirtyOnly');
-      expect(JSON.stringify(result)).not.toContain('DIRTY_MARKER');
-    }
-    expect(payloadOf(workspace).warnings).toContainEqual(
-      expect.stringContaining('workspace_too_large'),
-    );
-    expect(payloadOf(committed).warnings).not.toContainEqual(
-      expect.stringContaining('workspace_too_large'),
-    );
+    expect(payloadOf(committed).readContext).toMatchObject({
+      mode: 'committed',
+      indexedCommit: committedSha,
+      workingTreeIncluded: false,
+    });
+    expect(JSON.stringify(committed)).not.toContain('dirtyOnly');
+    expect(JSON.stringify(committed)).not.toContain('DIRTY_MARKER');
+    expect(payloadOf(workspace).symbol).toMatchObject({ name: 'dirtyOnly' });
+    expect(payloadOf(workspace).symbol.content).toContain('DIRTY_MARKER');
+    expect(payloadOf(workspace).readContext?.mode).not.toBe('committed');
   });
 
   it('excludes dirty parsing when automatic workspace is disabled', async () => {

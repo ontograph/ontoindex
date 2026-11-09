@@ -10,7 +10,6 @@ import {
 } from '../../src/core/capture-owner.js';
 import { readProcessStartIdentity } from '../../src/storage/repo-manager.js';
 import { captureWorkspaceInputs } from '../../src/core/analyze-delta.js';
-import { getScanMaxFileSizeBytes } from '../../src/core/ingestion/scan-config.js';
 
 const roots: string[] = [];
 
@@ -69,19 +68,20 @@ describe('workspace capture owner lifecycle', () => {
     expect(await fs.readdir(path.dirname(result.captureRoot))).toEqual([]);
   });
 
-  it('removes the capture and owner marker when an oversized input is refused', async () => {
+  it('removes the capture and owner marker after capturing a large input', async () => {
     const root = await makeRepo();
-    const cap = getScanMaxFileSizeBytes();
-    expect(cap).not.toBeNull();
     const file = await fs.open(path.join(root, 'src/large.ts'), 'w');
     try {
-      await file.truncate(cap! + 1);
+      await file.truncate(2 * 1024 * 1024);
     } finally {
       await file.close();
     }
-    await expect(
-      captureWorkspaceInputs(root, { parserIdentity: 'test-parser-v1' }),
-    ).rejects.toMatchObject({ code: 'limit' });
+    const result = await captureWorkspaceInputs(root, { parserIdentity: 'test-parser-v1' });
+    try {
+      expect(result.capturedPaths).toContain('src/large.ts');
+    } finally {
+      await result.dispose();
+    }
     expect(await fs.readdir(path.join(root, '.ontoindex/workspace-inputs'))).toEqual([]);
   });
 

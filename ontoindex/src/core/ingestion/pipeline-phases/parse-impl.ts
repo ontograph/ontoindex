@@ -199,36 +199,6 @@ async function disposeJsonlStages(stages: readonly { dispose(): Promise<void> }[
   await settleStageOperations(stages.map((stage) => stage.dispose()));
 }
 
-function readEnvKilobytes(name: string, defaultBytes: number): number {
-  const raw = process.env[name];
-  if (raw == null || raw.trim() === '') return defaultBytes;
-
-  const value = Number(raw);
-  if (!Number.isFinite(value) || value < 0) return defaultBytes;
-  return Math.floor(value * 1024);
-}
-
-function readOptionalEnvKilobytes(name: string): number | null {
-  const raw = process.env[name];
-  if (raw == null || raw.trim() === '') return null;
-
-  const value = Number(raw);
-  if (!Number.isFinite(value) || value < 0) return null;
-  return Math.floor(value * 1024);
-}
-
-function getLargeRepoParseMaxFileBytes(totalParseableBytes: number): number | null {
-  const minTotalBytes = readEnvKilobytes(
-    'ONTOINDEX_LARGE_REPO_PARSE_CAP_MIN_KB',
-    LARGE_REPO_SINGLE_WORKER_THRESHOLD_BYTES,
-  );
-  if (totalParseableBytes < minTotalBytes) return null;
-
-  const maxFileBytes = readOptionalEnvKilobytes('ONTOINDEX_LARGE_REPO_PARSE_MAX_FILE_KB');
-  if (maxFileBytes === null) return null;
-  return maxFileBytes > 0 ? maxFileBytes : null;
-}
-
 function emitParseTelemetry(
   options: PipelineOptions | undefined,
   graph: KnowledgeGraph,
@@ -374,34 +344,10 @@ export async function runChunkedParseAndResolve(
   const effectiveScannedLanguage = (f: ScannedFile): SupportedLanguages | null =>
     getLanguageFromFilename(f.path) ?? f.shebangLanguage ?? null;
 
-  let parseableScanned = scannedFiles.filter((f) => {
+  const parseableScanned = scannedFiles.filter((f) => {
     const lang = effectiveScannedLanguage(f);
     return lang && isLanguageAvailable(lang);
   });
-
-  const uncappedParseableBytes = parseableScanned.reduce((sum, file) => sum + file.size, 0);
-  const largeRepoParseMaxFileBytes = getLargeRepoParseMaxFileBytes(uncappedParseableBytes);
-  if (largeRepoParseMaxFileBytes !== null) {
-    const exceedsCap = parseableScanned.filter((file) => file.size > largeRepoParseMaxFileBytes);
-    if (exceedsCap.length > 0) {
-      const cappedPaths = new Set(exceedsCap.map((file) => file.path));
-      console.warn(
-        `Using lightweight fallback for ${exceedsCap.length} large parseable file(s) (>${Math.round(
-          largeRepoParseMaxFileBytes / 1024,
-        )}KB) due to large-repo parse budget. Set ONTOINDEX_LARGE_REPO_PARSE_MAX_FILE_KB=0 for full parsing.`,
-      );
-      emitParseTelemetry(options, graph, pipelineStart, 'parse-degraded-files', {
-        chunkFiles: exceedsCap.length,
-        degradedReason: 'large-repo-parse-file-size-cap',
-        degradedAction: 'lightweight-fallback',
-        degradedFiles: exceedsCap.slice(0, 100).map((file) => ({
-          filePath: file.path,
-          reason: `file exceeds large-repo parse cap (${file.size} bytes > ${largeRepoParseMaxFileBytes} bytes); falling back to regex extraction`,
-        })),
-      });
-      parseableScanned = parseableScanned.filter((file) => !cappedPaths.has(file.path));
-    }
-  }
 
   // Warn about files skipped due to unavailable parsers
   const skippedByLang = new Map<string, number>();
@@ -477,15 +423,9 @@ export async function runChunkedParseAndResolve(
     totalBytes >= LARGE_REPO_SINGLE_WORKER_THRESHOLD_BYTES
       ? PARSE_WORKER_RETRY_POLICY_QUARANTINE
       : PARSE_WORKER_RETRY_POLICY_SEQUENTIAL;
-  const largeRepoSafeMode =
-    totalBytes >= LARGE_REPO_DEGRADED_PARSE_THRESHOLD_BYTES &&
-    process.env.ONTOINDEX_DISABLE_LARGE_REPO_PARSE === '1' &&
-    process.env.ONTOINDEX_ENABLE_LARGE_REPO_PARSE !== '1';
-
   // Create worker pool once, reuse across chunks
   let workerPool: WorkerPool | undefined;
   if (
-    !largeRepoSafeMode &&
     !options?.skipWorkers &&
     (totalParseable >= MIN_FILES_FOR_WORKERS || totalBytes >= MIN_BYTES_FOR_WORKERS)
   ) {
@@ -673,12 +613,7 @@ export async function runChunkedParseAndResolve(
     const deferredWorkerHeritage: ExtractedHeritage[] = [];
     const deferredConstructorBindings: FileConstructorBindings[] = [];
     const deferredAssignments: ExtractedAssignment[] = [];
-    let skipRemainingParseChunksReason: string | undefined = largeRepoSafeMode
-      ? `Large-repo safe mode skipped parse for ${totalParseable} files / ${totalBytes} bytes. Set ONTOINDEX_ENABLE_LARGE_REPO_PARSE=1 to force parser execution.`
-      : undefined;
-    if (skipRemainingParseChunksReason) {
-      console.warn(skipRemainingParseChunksReason);
-    }
+    let skipRemainingParseChunksReason: string | undefined;
 
     let workerPhaseFailed = false;
     try {
@@ -1487,8 +1422,6 @@ export async function runChunkedParseAndResolve(
           if (seen.has(filePath)) continue;
           if (!(getLanguageFromFilename(filePath) ?? scannedLanguages.get(filePath))) continue;
           yield filePath;
-          // Yield the first over-limit member so reconciliation records the refusal.
-          if (seen.size >= 100_000) return;
           seen.add(filePath);
         }
       };

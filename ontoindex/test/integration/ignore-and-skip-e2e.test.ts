@@ -114,7 +114,7 @@ describe('ignore + language-skip E2E', () => {
       expect(paths.every((p) => !p.includes('vendor/'))).toBe(true);
     });
 
-    it('reports files skipped by the large-file discovery cap', async () => {
+    it('includes large files despite the legacy discovery cap override', async () => {
       process.env.ONTOINDEX_SCAN_MAX_FILE_KB = '512';
       await fs.writeFile(path.join(tmpDir, 'src', 'huge.js'), 'x'.repeat(513 * 1024));
       const skipped: { path: string; size: number }[] = [];
@@ -124,16 +124,11 @@ describe('ignore + language-skip E2E', () => {
       });
       const paths = files.map((f) => f.path.replace(/\\/g, '/'));
 
-      expect(paths).not.toContain('src/huge.js');
-      expect(skipped).toEqual([
-        {
-          path: 'src/huge.js',
-          size: 513 * 1024,
-        },
-      ]);
+      expect(paths).toContain('src/huge.js');
+      expect(skipped).toEqual([]);
     });
 
-    it('can disable the large-file discovery cap for full-fidelity runs', async () => {
+    it('includes large files with the legacy zero override', async () => {
       process.env.ONTOINDEX_SCAN_MAX_FILE_KB = '0';
       await fs.writeFile(path.join(tmpDir, 'src', 'huge.js'), 'x'.repeat(513 * 1024));
       const skipped: { path: string; size: number }[] = [];

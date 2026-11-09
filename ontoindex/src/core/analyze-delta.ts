@@ -23,8 +23,6 @@ import {
 } from './indexing/source-manifest.js';
 
 const GIT_TIMEOUT_MS = 5_000;
-const GIT_MAX_BUFFER = 1024 * 1024;
-const MAX_CHANGED_FILES_FOR_BOUNDED_REFRESH = 50;
 const OVERLAY_SIZE_STAT_CONCURRENCY = 16;
 
 const SOURCE_FILE_EXTENSIONS = new Set([
@@ -152,7 +150,7 @@ async function inspectCommittedDiff(
         '--find-copies',
         `${baselineCommit}..${currentCommit}`,
       ],
-      { cwd: repoPath, timeoutMs: GIT_TIMEOUT_MS, maxBuffer: GIT_MAX_BUFFER },
+      { cwd: repoPath, timeoutMs: GIT_TIMEOUT_MS, maxBuffer: null },
     );
   } catch (error) {
     unsafeReasons.push(
@@ -238,7 +236,7 @@ export async function planExperimentalFileDeltaRefresh(
     const statusOutput = await execFileText(
       'git',
       ['status', '--porcelain=v1', '--untracked-files=all'],
-      { cwd: repoPath, timeoutMs: GIT_TIMEOUT_MS, maxBuffer: GIT_MAX_BUFFER },
+      { cwd: repoPath, timeoutMs: GIT_TIMEOUT_MS, maxBuffer: null },
     );
     dirtyFiles = parsePorcelainChangedFiles(statusOutput);
     if (dirtyFiles.length > 0) {
@@ -263,12 +261,6 @@ export async function planExperimentalFileDeltaRefresh(
     changedFiles = diffResult.changedFiles;
     boundedIncludePaths = diffResult.boundedIncludePaths;
     unsafeReasons.push(...diffResult.unsafeReasons);
-  }
-
-  if (changedFiles.length > MAX_CHANGED_FILES_FOR_BOUNDED_REFRESH) {
-    unsafeReasons.push(
-      `too many changed files for bounded refresh (${changedFiles.length} > ${MAX_CHANGED_FILES_FOR_BOUNDED_REFRESH})`,
-    );
   }
 
   const uniqueUnsafeReasons = [...new Set(unsafeReasons)];
@@ -386,7 +378,7 @@ async function hiddenIndexPaths(repoPath: string): Promise<string[]> {
   const output = await execFileText('git', ['ls-files', '-v', '-z'], {
     cwd: repoPath,
     timeoutMs: GIT_TIMEOUT_MS,
-    maxBuffer: 64 * 1024 * 1024,
+    maxBuffer: null,
   });
   const paths: string[] = [];
   for (const entry of output.split('\0')) {
@@ -409,7 +401,7 @@ export async function workingTreeMatchesHead(
   const statusOutput = await execFileText(
     'git',
     ['status', '--porcelain=v1', '--untracked-files=all'],
-    { cwd: repoPath, timeoutMs: GIT_TIMEOUT_MS, maxBuffer: GIT_MAX_BUFFER },
+    { cwd: repoPath, timeoutMs: GIT_TIMEOUT_MS, maxBuffer: null },
   );
   const changedPaths = new Set<string>();
   for (const { paths } of parseDirtyOverlayStatus(statusOutput)) {
@@ -450,7 +442,7 @@ export async function planDirtyOverlay(repoPath: string): Promise<DirtyOverlayPl
   const statusOutput = await execFileText(
     'git',
     ['status', '--porcelain=v1', '--untracked-files=all'],
-    { cwd: repoPath, timeoutMs: GIT_TIMEOUT_MS, maxBuffer: GIT_MAX_BUFFER },
+    { cwd: repoPath, timeoutMs: GIT_TIMEOUT_MS, maxBuffer: null },
   );
 
   for (const { status, paths } of parseDirtyOverlayStatus(statusOutput)) {
@@ -512,36 +504,9 @@ export async function planDirtyOverlay(repoPath: string): Promise<DirtyOverlayPl
   }
 
   const allDirtyPaths = [...new Set([...includePaths, ...sizeExcludedPaths, ...tombstones])].sort();
-  const tooMany = allDirtyPaths.length > MAX_CHANGED_FILES_FOR_BOUNDED_REFRESH;
-  let plannedIncludePaths = [...includePaths].sort();
-  let uncoveredPaths = [...sizeExcludedPaths].sort();
-  if (tooMany) {
-    const newestFirst = await Promise.all(
-      [...includePaths].map(async (filePath) => {
-        try {
-          return { filePath, mtimeMs: (await fs.stat(path.join(repoPath, filePath))).mtimeMs };
-        } catch {
-          return { filePath, mtimeMs: null };
-        }
-      }),
-    );
-    newestFirst.sort((a, b) => {
-      if (a.mtimeMs === null && b.mtimeMs !== null) return 1;
-      if (a.mtimeMs !== null && b.mtimeMs === null) return -1;
-      return (
-        (b.mtimeMs ?? 0) - (a.mtimeMs ?? 0) ||
-        (a.filePath < b.filePath ? -1 : a.filePath > b.filePath ? 1 : 0)
-      );
-    });
-    plannedIncludePaths = newestFirst
-      .slice(0, MAX_CHANGED_FILES_FOR_BOUNDED_REFRESH)
-      .map(({ filePath }) => filePath);
-    const covered = new Set(plannedIncludePaths);
-    uncoveredPaths = [
-      ...sizeExcludedPaths,
-      ...[...includePaths].filter((filePath) => !covered.has(filePath)),
-    ].sort();
-  }
+  const tooMany = false; // Retained output field for compatibility; there is no count cap.
+  const plannedIncludePaths = [...includePaths].sort();
+  const uncoveredPaths = [...sizeExcludedPaths].sort();
   const configPaths = [...skipped]
     .filter((filePath) => CAPTURE_CONFIGURATION.test(path.posix.basename(filePath)))
     .filter((filePath) => !isIgnored(filePath))
@@ -581,7 +546,9 @@ export interface WorkspaceInputCaptureOptions {
   parserIdentity?: string;
   /** Restrict captured source to these repo-relative files; configuration files are always captured. */
   includePaths?: readonly string[];
+  /** @deprecated Ignored for source compatibility; captures have no count cap. */
   maxFiles?: number;
+  /** @deprecated Ignored for source compatibility; captures have no byte cap. */
   maxTotalBytes?: number;
   hooks?: {
     beforeRead?: (relativePath: string, attempt: number) => void | Promise<void>;
@@ -779,13 +746,10 @@ async function workspaceConfigurationPaths(
   root: string,
   includePaths: readonly string[] | undefined,
   check: () => void,
-  maxFiles: number,
-  maxTotalBytes: number,
 ): Promise<string[]> {
   // Catalog manifests are consumed independently of source scopes and ignore rules.
-  // Stream the catalog's exact patterns through the same capture safety limits.
+  // Stream the catalog's exact patterns through the same path-safety checks.
   const catalogPaths: string[] = [];
-  let catalogBytes = 0;
   for await (const entry of globStream(Object.values(ANALYSIS_MANIFEST_PATTERNS), {
     cwd: root,
     nodir: true,
@@ -799,16 +763,6 @@ async function workspaceConfigurationPaths(
         'unsupported',
         `Workspace capture requires regular input: ${relativePath}`,
       );
-    catalogBytes += stat.size;
-    if (
-      catalogPaths.length >= maxFiles ||
-      catalogBytes > maxTotalBytes ||
-      (getScanMaxFileSizeBytes() !== null && stat.size > getScanMaxFileSizeBytes()!)
-    )
-      throw new WorkspaceInputCaptureError(
-        'limit',
-        `Workspace input limit exceeded at ${relativePath}`,
-      );
     catalogPaths.push(relativePath);
   }
   if (includePaths) {
@@ -821,14 +775,13 @@ async function workspaceConfigurationPaths(
         directory = path.posix.dirname(directory);
       }
     }
-    // loadCSharpProjectConfig scans .csproj files breadth-first from the root (depth 5, 100
-    // directories), so those directories are resolver inputs even when off the include chain.
-    const queue: { directory: string; depth: number }[] = [{ directory: '.', depth: 0 }];
-    for (let scanned = 0; queue.length > 0 && scanned < 100; scanned++) {
+    // loadCSharpProjectConfig scans .csproj files below the root, so those directories
+    // are resolver inputs even when off the include chain.
+    const queue: string[] = ['.'];
+    while (queue.length > 0) {
       check();
-      const { directory, depth } = queue.shift()!;
+      const directory = queue.shift()!;
       directories.add(directory);
-      if (depth >= 5) continue;
       let entries: Dirent[];
       try {
         entries = await fs.readdir(path.join(root, directory), { withFileTypes: true });
@@ -848,14 +801,10 @@ async function workspaceConfigurationPaths(
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
         }
-        queue.push({
-          directory: childDirectory,
-          depth: depth + 1,
-        });
+        queue.push(childDirectory);
       }
     }
     const paths: string[] = [];
-    let bytes = 0;
     for (const directory of [...directories].sort()) {
       check();
       if (directory !== '.') await checkCapturePath(root, directory);
@@ -870,17 +819,6 @@ async function workspaceConfigurationPaths(
             'unsupported',
             `Workspace capture requires regular input: ${relativePath}`,
           );
-        bytes += stat.size;
-        if (
-          paths.length >= maxFiles ||
-          bytes > maxTotalBytes ||
-          (getScanMaxFileSizeBytes() !== null && stat.size > getScanMaxFileSizeBytes()!)
-        ) {
-          throw new WorkspaceInputCaptureError(
-            'limit',
-            `Workspace input limit exceeded at ${relativePath}`,
-          );
-        }
         paths.push(relativePath);
       }
     }
@@ -888,11 +826,6 @@ async function workspaceConfigurationPaths(
   }
   const ignore = await createIgnoreFilter(root);
   const paths: string[] = [];
-  let files = 0;
-  let bytes = 0;
-  const cap = getScanMaxFileSizeBytes();
-  const offenders: { path: string; size: number | null }[] = [];
-  let symlinks = 0;
   // The canonical walker owns eligibility; this pass only rejects unsafe inputs
   // and adds configuration files that its built-in filename policy excludes.
   const filter = {
@@ -910,9 +843,10 @@ async function workspaceConfigurationPaths(
     const relativePath = String(entry);
     const stat = await fs.lstat(captureInputPath(root, relativePath));
     if (stat.isSymbolicLink()) {
-      symlinks++;
-      offenders.push({ path: relativePath, size: null });
-      continue;
+      throw new WorkspaceInputCaptureError(
+        'unsupported',
+        `Workspace capture rejects symlink: ${relativePath}`,
+      );
     }
     await checkCapturePath(root, relativePath);
     if (!stat.isDirectory() && !stat.isFile()) {
@@ -921,40 +855,8 @@ async function workspaceConfigurationPaths(
         `Workspace capture requires regular input: ${relativePath}`,
       );
     }
-    if (stat.isFile()) {
-      if (++files > maxFiles) {
-        throw new WorkspaceInputCaptureError(
-          'limit',
-          `Workspace input limit exceeded at ${relativePath}`,
-        );
-      }
-      if (cap !== null && stat.size > cap) {
-        offenders.push({ path: relativePath, size: stat.size });
-        continue;
-      }
-      bytes += stat.size;
-      if (bytes > maxTotalBytes) {
-        throw new WorkspaceInputCaptureError(
-          'limit',
-          `Workspace input limit exceeded at ${relativePath}`,
-        );
-      }
-    }
     if (stat.isFile() && CAPTURE_CONFIGURATION.test(path.basename(relativePath)))
       paths.push(relativePath);
-  }
-  if (offenders.length > 0) {
-    offenders.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
-    let samples = offenders
-      .slice(0, 20)
-      .map(({ path, size }) => `${path} (${size === null ? 'symlink' : `${size} bytes`})`)
-      .join('; ');
-    if (offenders.length > 20) samples += `; and ${offenders.length - 20} more`;
-    const capKiB = cap === null ? 'unlimited' : Math.floor(cap / 1024);
-    throw new WorkspaceInputCaptureError(
-      symlinks > 0 ? 'unsupported' : 'limit',
-      `Workspace input refused: ${symlinks} symlink(s) and ${offenders.length - symlinks} file(s) over the ${capKiB} KiB scan cap. Exclude them with .ontoindexignore (resolver configuration files cannot be excluded). Examples: ${samples}`,
-    );
   }
   return [...new Set([...paths, ...catalogPaths])].sort();
 }
@@ -980,19 +882,10 @@ export async function workspaceConfigurationIdentity(
   };
   check();
   const root = await fs.realpath(repoPath);
-  const configs = await workspaceConfigurationPaths(
-    root,
-    options.includePaths,
-    check,
-    100_000,
-    512 * 1024 * 1024,
-  );
+  const configs = await workspaceConfigurationPaths(root, options.includePaths, check);
   const configPaths = new Set(configs);
   const inputPaths = [...new Set([...configs, ...(options.inputPaths ?? [])])].sort();
-  if (inputPaths.length > 100_000)
-    throw new WorkspaceInputCaptureError('limit', 'Workspace input file limit exceeded');
   const entries: CapturedSourceEntry[] = [];
-  let bytes = 0;
   for (const relativePath of inputPaths) {
     check();
     await checkCapturePath(root, relativePath);
@@ -1009,15 +902,6 @@ export async function workspaceConfigurationIdentity(
           `Workspace input is not a readable regular file: ${relativePath}`,
         );
       assertCaptureInputIdentity(relativePath, beforeOpen, stat);
-      const fileCap = Math.min(
-        getScanMaxFileSizeBytes() ?? 512 * 1024 * 1024,
-        512 * 1024 * 1024 - bytes,
-      );
-      if (stat.size > fileCap)
-        throw new WorkspaceInputCaptureError(
-          'limit',
-          `Workspace input limit exceeded at ${relativePath}`,
-        );
       const content = Buffer.alloc(stat.size + 1);
       let length = 0;
       while (length < content.length) {
@@ -1031,7 +915,6 @@ export async function workspaceConfigurationIdentity(
           'changed-input',
           `Workspace input changed during read: ${relativePath}`,
         );
-      bytes += length;
       await checkCapturePath(root, relativePath);
       assertCaptureInputIdentity(
         relativePath,
@@ -1087,19 +970,6 @@ export async function captureWorkspaceInputs(
   };
   check();
   const canonicalRepoPath = await fs.realpath(repoPath);
-  const maxFiles = Math.min(options.maxFiles ?? 100_000, 100_000);
-  const maxTotalBytes = Math.min(options.maxTotalBytes ?? 512 * 1024 * 1024, 512 * 1024 * 1024);
-  if (
-    !Number.isInteger(maxFiles) ||
-    maxFiles < 0 ||
-    !Number.isSafeInteger(maxTotalBytes) ||
-    maxTotalBytes < 0
-  ) {
-    throw new WorkspaceInputCaptureError(
-      'limit',
-      'Workspace input limits must be non-negative integers',
-    );
-  }
   const parserIdentity = options.parserIdentity ?? (await workspaceParserIdentity());
   const { storagePath } = getStoragePaths(canonicalRepoPath);
   const captureParent = path.join(storagePath, 'workspace-inputs');
@@ -1187,21 +1057,12 @@ export async function captureWorkspaceInputs(
       await fs.chmod(captureRoot, 0o700);
       await writeCaptureOwner(captureRoot);
       const before = await identity();
-      let totalBytes = 0;
       const readManifest = async (
         root: string,
         copy: boolean,
         executableEntries?: Map<string, CapturedSourceEntry>,
       ) => {
-        const configs = await workspaceConfigurationPaths(
-          root,
-          options.includePaths,
-          check,
-          maxFiles,
-          maxTotalBytes,
-        );
-        let files = 0;
-        let bytes = 0;
+        const configs = await workspaceConfigurationPaths(root, options.includePaths, check);
         return computeSourceManifest(root, {
           ...(options.includePaths ? { includePaths: options.includePaths } : {}),
           capture: {
@@ -1226,16 +1087,6 @@ export async function captureWorkspaceInputs(
                   );
                 }
                 assertCaptureInputIdentity(relativePath, beforeOpen, stat);
-                const fileCap = Math.min(
-                  getScanMaxFileSizeBytes() ?? maxTotalBytes,
-                  maxTotalBytes - bytes,
-                );
-                if (++files > maxFiles || stat.size > fileCap) {
-                  throw new WorkspaceInputCaptureError(
-                    'limit',
-                    `Workspace input limit exceeded at ${relativePath}`,
-                  );
-                }
                 const content = Buffer.alloc(stat.size + 1);
                 let length = 0;
                 while (length < content.length) {
@@ -1249,7 +1100,6 @@ export async function captureWorkspaceInputs(
                     'changed-input',
                     `Workspace input changed during read: ${relativePath}`,
                   );
-                bytes += length;
                 await checkCapturePath(root, relativePath);
                 assertCaptureInputIdentity(
                   relativePath,
@@ -1272,7 +1122,6 @@ export async function captureWorkspaceInputs(
                   const target = captureInputPath(captureRoot, entry.path);
                   await fs.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
                   await fs.writeFile(target, content, { mode: 0o600, flag: 'wx' });
-                  totalBytes += content.length;
                 }
               : undefined,
           },
@@ -1309,7 +1158,7 @@ export async function captureWorkspaceInputs(
         ? await execFileText('git', ['ls-tree', '-r', '--name-only', '-z', before.head], {
             cwd: canonicalRepoPath,
             timeoutMs: Math.min(GIT_TIMEOUT_MS, Math.max(1, deadline - performance.now())),
-            maxBuffer: 16 * GIT_MAX_BUFFER,
+            maxBuffer: null,
           })
         : '';
       check();
@@ -1338,7 +1187,10 @@ export async function captureWorkspaceInputs(
         configurationDigest: manifest.workspaceCapture!.configurationDigest,
         capturedPaths,
         tombstones,
-        totalBytes,
+        totalBytes: manifest.workspaceCapture!.entries.reduce(
+          (total, entry) => total + entry.byteLength,
+          0,
+        ),
         dispose,
       };
     } catch (error) {

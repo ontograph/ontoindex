@@ -38,8 +38,6 @@ import {
 import {
   getStoragePaths,
   isValidParserEvidence,
-  OVERLAY_ARTIFACT_BUDGET_BYTES,
-  overlayArtifactBytes,
   pruneOverlayGenerations,
   acquireOverlayGenerationPin,
   readActiveGenerationMeta,
@@ -194,7 +192,7 @@ export interface AnalyzeOptions {
   dirtyOverlay?: boolean;
   /** Build an isolated complete graph of captured workspace inputs. */
   workspaceGraph?: boolean;
-  /** Repository-relative dirty source files; at most 50, never directory roots. */
+  /** Repository-relative dirty source files; never directory roots. */
   overlayPaths?: string[];
   /** Publication identity supplied only by the managed analysis runner. */
   managedAnalysis?: ManagedAnalysisContext;
@@ -251,7 +249,6 @@ function embeddingNodeLimit(): number {
   return configured <= 0 ? Number.POSITIVE_INFINITY : configured;
 }
 const MANAGED_GIT_STATUS_TIMEOUT_MS = 5_000;
-const MANAGED_GIT_STATUS_MAX_BUFFER = 1024 * 1024;
 
 async function verifyManagedAnalysisSource(
   repoPath: string,
@@ -270,7 +267,7 @@ async function verifyManagedAnalysisSource(
     status = await execFileText('git', ['status', '--porcelain=v1', '--untracked-files=all'], {
       cwd: repoPath,
       timeoutMs: MANAGED_GIT_STATUS_TIMEOUT_MS,
-      maxBuffer: MANAGED_GIT_STATUS_MAX_BUFFER,
+      maxBuffer: null,
     });
   } catch (error) {
     throw new Error(
@@ -757,23 +754,6 @@ function createGcTelemetryTracker(): GcTelemetryTracker {
   };
 }
 
-function largeRepoFileContentDisabled(graph: KnowledgeGraph): boolean {
-  const configured = Number.parseInt(process.env.ONTOINDEX_MAX_FILE_CONTENT_CHARS ?? '', 10);
-  if (Number.isFinite(configured)) return configured <= 0;
-  return graph.nodeCount > 25_000;
-}
-
-function selectAnalyzeFTSProperties(
-  table: string,
-  properties: readonly string[],
-  graph: KnowledgeGraph,
-): string[] {
-  if (table === 'File' && largeRepoFileContentDisabled(graph)) {
-    return properties.filter((property) => property !== 'content');
-  }
-  return [...properties];
-}
-
 async function buildGraphDiffSnapshotFromDb(
   savedAt: string,
   lastCommit: string,
@@ -894,9 +874,6 @@ async function runWorkspaceAnalysis(
   dependencies: RunFullAnalysisDependencies,
   workspaceGraph: boolean,
 ): Promise<AnalyzeResult> {
-  if (overlayPaths.length > 50) {
-    throw new Error('Dirty overlay is limited to 50 source files; refusing a full scan.');
-  }
   const includePaths = await normalizeRepositoryIncludePaths(repoPath, overlayPaths);
   for (const filePath of includePaths) {
     if (!(await fs.lstat(path.join(repoPath, filePath))).isFile()) {
@@ -916,22 +893,6 @@ async function runWorkspaceAnalysis(
     await fs.readFile(path.join(overlayPath, 'CURRENT'), 'utf8').catch(() => '')
   ).trim();
   await pruneOverlayGenerations(overlayPath, previousCurrent);
-  const bytes = await overlayArtifactBytes(overlayPath);
-  const configuredBudget = Number(process.env.ONTOINDEX_OVERLAY_BUDGET_BYTES);
-  const budget =
-    Number.isSafeInteger(configuredBudget) &&
-    configuredBudget >= 0 &&
-    process.env.ONTOINDEX_OVERLAY_BUDGET_BYTES !== undefined
-      ? configuredBudget
-      : OVERLAY_ARTIFACT_BUDGET_BYTES;
-  if (bytes > budget) {
-    throw Object.assign(
-      new Error(`Overlay artifacts use ${bytes} bytes, exceeding budget ${budget} bytes.`),
-      {
-        code: 'overlay_budget_exceeded',
-      },
-    );
-  }
   const generationId = `${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2)}`;
   const generationPath = path.join(overlayPath, generationId);
   const overlayDbPath = path.join(generationPath, 'lbug');
@@ -948,21 +909,16 @@ async function runWorkspaceAnalysis(
     else if (includePaths.length > 0)
       capture = await captureWorkspaceInputs(repoPath, { includePaths });
     const inventory: Record<string, [number, number | null, number | null, string]> = {};
-    let inventoryTruncated = false;
     if (workspaceGraph) {
       const entries = capture!.manifest.workspaceCapture!.entries;
-      inventoryTruncated = entries.length > 100_000;
-      if (!inventoryTruncated) {
-        for (const entry of entries) {
-          const stat = await fs.lstat(path.join(repoPath, entry.path)).catch(() => null);
-          inventory[entry.path] = [
-            entry.byteLength,
-            stat?.mtimeMs ?? null,
-            stat?.ino ?? null,
-            entry.digest,
-          ];
-        }
-        inventoryTruncated = Buffer.byteLength(JSON.stringify(inventory)) > 64 * 1024 * 1024;
+      for (const entry of entries) {
+        const stat = await fs.lstat(path.join(repoPath, entry.path)).catch(() => null);
+        inventory[entry.path] = [
+          entry.byteLength,
+          stat?.mtimeMs ?? null,
+          stat?.ino ?? null,
+          entry.digest,
+        ];
       }
     }
     const captureAndInventoryMs = performance.now() - captureStart;
@@ -978,7 +934,7 @@ async function runWorkspaceAnalysis(
     }
     const dirtyPlan = workspaceGraph ? await planDirtyOverlay(repoPath) : undefined;
     const dirtyPathSet = new Set(dirtyPlan?.allDirtyPaths ?? includePaths);
-    let degraded = inventoryTruncated;
+    let degraded = false;
     let parseErrorCount = 0;
     const parseErrorFiles = new Set<string>();
     const overlayBase = {
@@ -991,14 +947,7 @@ async function runWorkspaceAnalysis(
       includePaths,
       ...(workspaceGraph
         ? {
-            inventory: inventoryTruncated ? undefined : inventory,
-            inventoryTruncated,
-            ...(inventoryTruncated
-              ? {
-                  inventoryReason:
-                    'workspace graph input inventory exceeds 100000 entries or 64 MiB',
-                }
-              : {}),
+            inventory,
             capability: 'workspace-graph',
             profile: 'full',
             coverage: 'complete',
@@ -1178,11 +1127,7 @@ async function runWorkspaceAnalysis(
       for (const { table, indexName, properties } of FTS_INDEXES) {
         if ((counts.get(table) ?? 0) === 0) continue;
         try {
-          await createFTSIndex(
-            table,
-            indexName,
-            selectAnalyzeFTSProperties(table, properties, pipelineResult.graph),
-          );
+          await createFTSIndex(table, indexName, [...properties]);
           ftsIndexes.push(indexName);
         } catch (error) {
           // Without the extension the generation stays valid but cannot rank lexical queries.
@@ -1252,17 +1197,6 @@ async function runWorkspaceAnalysis(
     let pruneFailed = false;
     try {
       pruneFailed = await pruneOverlayGenerations(overlayPath, generationId);
-      const publishedBytes = await overlayArtifactBytes(overlayPath);
-      if (publishedBytes > budget) {
-        // The budget is checked before a build, so one build can overshoot; say so instead of hiding it.
-        try {
-          callbacks.onLog?.(
-            `Overlay artifacts now use ${publishedBytes} bytes, above the ${budget} byte budget; the next build will be refused until older generations are released.`,
-          );
-        } catch {
-          // A logging callback must not turn housekeeping into a failed build.
-        }
-      }
       // Legacy single-file overlays are never opened by generation readers.
       await fs.rm(path.join(overlayPath, 'lbug'), { recursive: true, force: true }).catch(() => {
         pruneFailed = true;
@@ -1695,11 +1629,7 @@ export async function runFullAnalysis(
     const createEmptyFTSIndexes = process.env.ONTOINDEX_CREATE_EMPTY_FTS_INDEXES === '1';
     for (const { table, indexName, properties } of FTS_INDEXES) {
       const rowCount = nodeCountsByLabel.get(table) ?? 0;
-      const selectedProperties = selectAnalyzeFTSProperties(
-        table,
-        properties,
-        pipelineResult.graph,
-      );
+      const selectedProperties = [...properties];
       if (rowCount === 0 && !createEmptyFTSIndexes) {
         emitTelemetry({
           event: 'fts-index-skip',
@@ -2019,7 +1949,11 @@ export async function runFullAnalysis(
     const finalManifestDigest = sourceManifestDigest(finalManifest);
     if (!sourceInputsMatch(inputManifest, finalManifest)) {
       throw new Error(
-        'Source inputs changed during analysis; refusing to publish graph generation.',
+        'Source inputs changed during analysis; refusing to publish graph generation. ' +
+          'The previous active graph is unchanged. ' +
+          'For concurrent agents, use ONTOINDEX_AUTO_WORKSPACE=1 ontoindex analyze --workspace-graph <repo> ' +
+          'with an existing committed base. This prepares a captured workspace overlay, not a new base index; ' +
+          'subsequent edits can invalidate it. To publish a new base index, rerun analysis after source edits settle.',
       );
     }
     if (

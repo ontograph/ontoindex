@@ -168,7 +168,7 @@ describe('backend-overlay snapshot', () => {
   });
 
   it.each(['cached', 'reset'] as const)(
-    'preserves oversized tracked input evidence and recovers after shrinking (%s)',
+    'invalidates changed large tracked input and recovers after restoring bytes (%s)',
     async (cache) => {
       vi.stubEnv('ONTOINDEX_SCAN_MAX_FILE_KB', '1');
       vi.spyOn(Date, 'now').mockReturnValue(1_000);
@@ -182,9 +182,9 @@ describe('backend-overlay snapshot', () => {
       const excluded = await getOverlaySnapshot(handle());
       expect(excluded.usable).toBe(false);
       expect([...excluded.dirtyPaths]).toEqual(['src/a.ts']);
-      expect([...excluded.uncoveredPaths]).toEqual(['src/a.ts']);
-      expect([...excluded.overlayPaths]).toEqual([]);
-      expect(excluded.reason).toContain('unreadable inputs');
+      expect([...excluded.uncoveredPaths]).toEqual([]);
+      expect([...excluded.overlayPaths]).toEqual(['src/a.ts']);
+      expect(excluded.reason).toContain('overlay is stale');
 
       fs.writeFileSync(path.join(repo, 'src/a.ts'), contents);
       if (cache === 'reset') resetOverlaySnapshotCache();
@@ -195,20 +195,21 @@ describe('backend-overlay snapshot', () => {
     },
   );
 
-  it('keeps untracked oversized sources uncovered when reusing a symbols overlay', async () => {
+  it('invalidates a symbols overlay when a newly added large source needs indexing', async () => {
     vi.stubEnv('ONTOINDEX_SCAN_MAX_FILE_KB', '1');
     fs.writeFileSync(path.join(repo, 'src/a.ts'), 'export const a = 2;\n');
     publishFixture();
     expect((await getOverlaySnapshot(handle())).usable).toBe(true);
     fs.writeFileSync(path.join(repo, 'src/large.ts'), 'x'.repeat(2048));
     const snapshot = await getOverlaySnapshot(handle());
-    expect(snapshot.usable).toBe(true);
+    expect(snapshot.usable).toBe(false);
+    expect(snapshot.reason).toContain('overlay include paths differ');
     expect([...snapshot.dirtyPaths]).toEqual(['src/a.ts', 'src/large.ts']);
-    expect([...snapshot.overlayPaths]).toEqual(['src/a.ts']);
-    expect([...snapshot.uncoveredPaths]).toEqual(['src/large.ts']);
+    expect([...snapshot.overlayPaths]).toEqual(['src/a.ts', 'src/large.ts']);
+    expect([...snapshot.uncoveredPaths]).toEqual([]);
   });
 
-  it('lets a workspace graph cover count exclusions without clearing size exclusions', async () => {
+  it('invalidates a workspace graph when a large source is added to its inventory', async () => {
     vi.stubEnv('ONTOINDEX_SCAN_MAX_FILE_KB', '1');
     fs.writeFileSync(path.join(repo, 'src/a.ts'), 'export const a = 2;\n');
     publishWorkspaceFixture();
@@ -240,8 +241,7 @@ describe('backend-overlay snapshot', () => {
     });
     const mixed = await getOverlaySnapshot(handle());
     expect(mixed.usable).toBe(false);
-    expect([...mixed.uncoveredPaths]).toEqual(['src/large.ts']);
-    expect([...mixed.overlayPaths]).toEqual(['src/a.ts']);
+    expect(mixed.reason).toContain('workspace graph input paths changed');
   });
 
   it.each([undefined, '', '   '])(
@@ -1256,7 +1256,8 @@ describe('workspace capability selection', () => {
     [0, 'reuse-base'],
     [1, 'build-symbols-overlay'],
     [50, 'build-symbols-overlay'],
-    [51, 'build-workspace-graph'],
+    [51, 'build-symbols-overlay'],
+    [100_001, 'build-symbols-overlay'],
   ] as const)('selects for %i changes', (eligibleChangeCount, action) => {
     expect(
       backendOverlay.selectWorkspaceCapability({ ...defaults, eligibleChangeCount }).action,
