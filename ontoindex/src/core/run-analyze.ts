@@ -1949,7 +1949,11 @@ export async function runFullAnalysis(
     const finalManifestDigest = sourceManifestDigest(finalManifest);
     if (!sourceInputsMatch(inputManifest, finalManifest)) {
       throw new Error(
-        'Source inputs changed during analysis; refusing to publish graph generation.',
+        'Source inputs changed during analysis; refusing to publish graph generation. ' +
+          'The previous active graph is unchanged. ' +
+          'For concurrent agents, use ONTOINDEX_AUTO_WORKSPACE=1 ontoindex analyze --workspace-graph <repo> ' +
+          'with an existing committed base. This prepares a captured workspace overlay, not a new base index; ' +
+          'subsequent edits can invalidate it. To publish a new base index, rerun analysis after source edits settle.',
       );
     }
     if (

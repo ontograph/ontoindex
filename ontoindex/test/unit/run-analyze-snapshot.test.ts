@@ -2056,9 +2056,17 @@ describe('runFullAnalysis snapshot persistence', () => {
       });
       executeQueryMock.mockResolvedValue([]);
 
-      await expect(runFullAnalysis(repoDir, {}, { onProgress: vi.fn() })).rejects.toThrow(
-        'Source inputs changed during analysis',
+      const failure = await runFullAnalysis(repoDir, {}, { onProgress: vi.fn() }).catch(
+        (error: unknown) => error,
       );
+      expect(failure).toBeInstanceOf(Error);
+      expect((failure as Error).message).toContain('Source inputs changed during analysis');
+      expect((failure as Error).message).toContain('The previous active graph is unchanged');
+      expect((failure as Error).message).toContain(
+        'ONTOINDEX_AUTO_WORKSPACE=1 ontoindex analyze --workspace-graph <repo>',
+      );
+      expect((failure as Error).message).toContain('with an existing committed base');
+      expect((failure as Error).message).toContain('subsequent edits can invalidate it');
 
       expect(await fs.readFile(path.join(storagePath, 'lbug'), 'utf8')).toBe('active graph');
       const generationEntries = await fs.readdir(path.join(storagePath, 'generations'));

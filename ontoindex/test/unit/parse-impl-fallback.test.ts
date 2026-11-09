@@ -351,6 +351,7 @@ describe('parse-impl sequential fallback cleanup (U6)', () => {
 
     const originalMaxAstNodes = process.env.ONTOINDEX_PARSE_MAX_AST_NODES;
     process.env.ONTOINDEX_PARSE_MAX_AST_NODES = '5';
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const telemetry: any[] = [];
 
     try {
@@ -376,6 +377,15 @@ describe('parse-impl sequential fallback cleanup (U6)', () => {
       );
 
       expect(graph.nodeCount).toBe(0);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringMatching(
+          /^Skipping guarded\.ts: AST node count \d+ exceeds configured ceiling 5$/,
+        ),
+      );
+      const nodeWarning = warn.mock.calls.find(([message]) =>
+        String(message).startsWith('Skipping guarded.ts: AST node count '),
+      )!;
+      expect(Number(String(nodeWarning[0]).match(/AST node count (\d+)/)![1])).toBeGreaterThan(5);
       expect(telemetry.filter((event) => event.event === 'parse-degraded-files')).toEqual([
         expect.objectContaining({
           degradedAction: 'lightweight-fallback',
@@ -392,6 +402,7 @@ describe('parse-impl sequential fallback cleanup (U6)', () => {
       await result.scopeRetention?.dispose();
       expect(spies.astCacheClearCalls).toBeGreaterThanOrEqual(1);
     } finally {
+      warn.mockRestore();
       if (originalMaxAstNodes === undefined) {
         delete process.env.ONTOINDEX_PARSE_MAX_AST_NODES;
       } else {
@@ -410,6 +421,7 @@ describe('parse-impl sequential fallback cleanup (U6)', () => {
 
     const originalMaxAstDepth = process.env.ONTOINDEX_PARSE_MAX_AST_DEPTH;
     process.env.ONTOINDEX_PARSE_MAX_AST_DEPTH = '3';
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const telemetry: any[] = [];
 
     try {
@@ -427,6 +439,7 @@ describe('parse-impl sequential fallback cleanup (U6)', () => {
       );
 
       expect(graph.nodeCount).toBe(0);
+      expect(warn).toHaveBeenCalledWith('Skipping deep.ts: AST depth exceeds configured ceiling 3');
       expect(telemetry.filter((event) => event.event === 'parse-degraded-files')).toEqual([
         expect.objectContaining({
           degradedAction: 'lightweight-fallback',
@@ -436,6 +449,7 @@ describe('parse-impl sequential fallback cleanup (U6)', () => {
       expect(telemetry.some((event) => event.event === 'parse-error-files')).toBe(false);
       expect(spies.astCacheClearCalls).toBeGreaterThanOrEqual(1);
     } finally {
+      warn.mockRestore();
       if (originalMaxAstDepth === undefined) {
         delete process.env.ONTOINDEX_PARSE_MAX_AST_DEPTH;
       } else {

@@ -5,13 +5,12 @@
 export const TREE_SITTER_BUFFER_SIZE = 512 * 1024;
 
 /**
- * Maximum AST node count per parsed file. This catches compact generated or
- * deeply nested files that would otherwise make later
- * extractor passes walk an unbounded tree. Set ONTOINDEX_PARSE_MAX_AST_NODES=0
- * to disable the guard for diagnostics.
+ * AST limits are opt-in. Set ONTOINDEX_PARSE_MAX_AST_NODES or
+ * ONTOINDEX_PARSE_MAX_AST_DEPTH to a positive value to enable a guard;
+ * unset, blank, or zero values leave parsing unlimited.
  */
-export const DEFAULT_PARSE_MAX_AST_NODES = 750_000;
-export const DEFAULT_PARSE_MAX_AST_DEPTH = 4_000;
+export const DEFAULT_PARSE_MAX_AST_NODES: number | null = null;
+export const DEFAULT_PARSE_MAX_AST_DEPTH: number | null = null;
 
 export const getParseMaxAstNodes = (): number | null => {
   const raw = process.env.ONTOINDEX_PARSE_MAX_AST_NODES;
@@ -19,7 +18,7 @@ export const getParseMaxAstNodes = (): number | null => {
 
   const value = Number(raw);
   if (!Number.isFinite(value) || value < 0) return DEFAULT_PARSE_MAX_AST_NODES;
-  return value === 0 ? null : Math.floor(value);
+  return value === 0 ? null : Math.max(1, Math.floor(value));
 };
 
 export const getParseMaxAstDepth = (): number | null => {
@@ -28,7 +27,7 @@ export const getParseMaxAstDepth = (): number | null => {
 
   const value = Number(raw);
   if (!Number.isFinite(value) || value < 0) return DEFAULT_PARSE_MAX_AST_DEPTH;
-  return value === 0 ? null : Math.floor(value);
+  return value === 0 ? null : Math.max(1, Math.floor(value));
 };
 
 interface AstDepthNode {
