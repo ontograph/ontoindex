@@ -1169,11 +1169,10 @@ async function getSetupResource(backend: LocalBackend): Promise<string> {
   const sections: string[] = [];
 
   for (const repo of repos) {
-    const stats = repo.stats || {};
     const lines = [
       `# OntoIndex MCP — ${repo.name}`,
       '',
-      `This project is indexed by OntoIndex as **${repo.name}** (${stats.nodes || 0} symbols, ${stats.edges || 0} relationships, ${stats.processes || 0} execution flows).`,
+      `This project is indexed by OntoIndex as **${repo.name}**. Use \`discover\` action \`repos\` for current index statistics.`,
       '',
       '## Tools',
       '',
