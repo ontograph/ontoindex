@@ -1162,6 +1162,8 @@ export async function startMCPServer(
   process.stdin.on('close', () => void shutdown(0, 'stdin close'));
   process.stdin.on('error', (error) => void shutdown(0, `stdin error: ${error.message}`));
   process.stdout.on('error', (error) => void shutdown(0, `stdout error: ${error.message}`));
+  // stderr is diagnostic only; a closed reader must not interrupt server shutdown.
+  process.stderr.on('error', () => {});
   if (process.stdin.destroyed || process.stdin.readableEnded)
     void shutdown(0, 'stdin already closed');
 
