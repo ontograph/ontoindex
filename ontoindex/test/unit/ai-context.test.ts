@@ -159,6 +159,68 @@ describe('generateAIContextFiles', () => {
     expect(result.files).toBeDefined();
   });
 
+  it.each([undefined, false, true])(
+    'omits counts regardless of stats and noStats=%s',
+    async (noStats) => {
+      for (const stats of [{}, { nodes: 123, edges: 456, processes: 789 }]) {
+        await generateAIContextFiles(tmpDir, storagePath, 'TestProject', stats, undefined, {
+          noStats,
+        });
+        for (const filename of ['AGENTS.md', 'CLAUDE.md']) {
+          const content = await fs.readFile(path.join(tmpDir, filename), 'utf-8');
+          expect(content).toContain('indexed by OntoIndex as **TestProject**.');
+          expect(content).not.toContain('symbols,');
+        }
+      }
+    },
+  );
+
+  it('preserves content and mtimes on a second generation with different stats', async () => {
+    const repoPath = path.join(tmpDir, 'stable-context-repo');
+    const repoStoragePath = path.join(repoPath, '.ontoindex');
+    await fs.mkdir(repoStoragePath, { recursive: true });
+    const firstResult = await generateAIContextFiles(repoPath, repoStoragePath, 'StableProject', {
+      nodes: 10,
+      edges: 20,
+      processes: 3,
+    });
+    expect(firstResult.files).toContain('AGENTS.md (created)');
+    expect(firstResult.files).toContain('CLAUDE.md (created)');
+
+    const skillsDir = path.join(repoPath, '.claude', 'skills', 'ontoindex');
+    const skills = await fs.readdir(skillsDir);
+    expect(skills.length).toBeGreaterThan(0);
+    const files = [
+      path.join(repoPath, 'AGENTS.md'),
+      path.join(repoPath, 'CLAUDE.md'),
+      ...skills.map((skill) => path.join(skillsDir, skill, 'SKILL.md')),
+    ];
+    const before = new Map<string, { content: string; mtimeMs: number }>();
+    const oldTime = new Date('2000-01-01T00:00:00Z');
+    for (const file of files) {
+      await fs.utimes(file, oldTime, oldTime);
+      before.set(file, {
+        content: await fs.readFile(file, 'utf-8'),
+        mtimeMs: (await fs.stat(file)).mtimeMs,
+      });
+    }
+
+    const secondResult = await generateAIContextFiles(repoPath, repoStoragePath, 'StableProject', {
+      nodes: 100,
+      edges: 200,
+      processes: 30,
+    });
+    expect(secondResult.files).toContain('AGENTS.md (unchanged)');
+    expect(secondResult.files).toContain('CLAUDE.md (unchanged)');
+    expect(secondResult.files).toContain(`.claude/skills/ontoindex/ (${skills.length} skills)`);
+    for (const file of files) {
+      expect({
+        content: await fs.readFile(file, 'utf-8'),
+        mtimeMs: (await fs.stat(file)).mtimeMs,
+      }).toEqual(before.get(file));
+    }
+  });
+
   it('updates existing CLAUDE.md without duplicating', async () => {
     const stats = { nodes: 10 };
 

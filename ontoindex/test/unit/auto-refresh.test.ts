@@ -73,6 +73,81 @@ afterEach(async () => {
 });
 
 describe('automatic refresh', () => {
+  it('explains the commit-based throttle with the last attempt and next eligible time', async () => {
+    const { repo, advance } = await fixture();
+    await advance();
+    const now = Date.now();
+    const interval = 120000;
+    vi.stubEnv('ONTOINDEX_AUTO_REFRESH_INTERVAL_MS', String(interval));
+    const deps = { ensureFresh: ensureFresh as unknown as typeof gnEnsureFresh, now: () => now };
+    await maybeScheduleAutoRefresh(repo, deps);
+    const warning = await maybeScheduleAutoRefresh(repo, deps);
+    expect(warning).toContain(new Date(now).toISOString());
+    expect(warning).toContain(new Date(now + interval).toISOString());
+    expect(warning).toContain(`ONTOINDEX_AUTO_REFRESH_INTERVAL_MS=${interval}`);
+    expect(ensureFresh).toHaveBeenCalledTimes(1);
+  });
+
+  it('explains the commitless stamp and in-memory throttles', async () => {
+    const { repo } = await fixture({ commitless: true });
+    const now = Date.now();
+    const interval = 120000;
+    vi.stubEnv('ONTOINDEX_AUTO_REFRESH_INTERVAL_MS', String(interval));
+    await fs.writeFile(path.join(repo.repoPath, 'src', 'main.ts'), 'changed\n');
+    const stamp = path.join(repo.storagePath, 'auto-refresh.stamp');
+    await fs.writeFile(stamp, 'stale');
+    await fs.utimes(stamp, now / 1000, now / 1000);
+    const deps = { spawnRefresh, now: () => now + 1 };
+    for (const cachePath of ['stamp', 'in-memory']) {
+      const warning = await maybeScheduleAutoRefresh(repo, deps);
+      expect(warning, cachePath).toContain('stale');
+      expect(warning, cachePath).toContain(new Date(now).toISOString());
+      expect(warning, cachePath).toContain(new Date(now + interval).toISOString());
+      expect(warning, cachePath).toContain(`ONTOINDEX_AUTO_REFRESH_INTERVAL_MS=${interval}`);
+    }
+    expect(spawnRefresh).not.toHaveBeenCalled();
+  });
+
+  it.each(['generationId', 'indexedAt', 'stamp'])(
+    'clears a commitless stale verdict after publication (%s)',
+    async (identity) => {
+      const { repo } = await fixture({ commitless: true });
+      const now = Date.now();
+      const metaPath = path.join(repo.storagePath, 'meta.json');
+      const meta: RepoMeta = JSON.parse(await fs.readFile(metaPath, 'utf8'));
+      const publish = async (next: RepoMeta) => {
+        await fs.writeFile(metaPath, JSON.stringify(next));
+        if (next.generationId) {
+          const generationPath = path.join(repo.storagePath, 'generations', next.generationId);
+          await fs.mkdir(generationPath, { recursive: true });
+          await fs.writeFile(path.join(generationPath, 'meta.json'), JSON.stringify(next));
+          await fs.rm(path.join(repo.storagePath, 'current'), { force: true });
+          await fs.symlink(generationPath, path.join(repo.storagePath, 'current'), 'dir');
+        }
+      };
+      if (identity === 'generationId') {
+        meta.generationId = 'before';
+        await publish(meta);
+      }
+      await fs.writeFile(path.join(repo.repoPath, 'src', 'main.ts'), 'changed\n');
+      const deps = { spawnRefresh, now: () => now };
+      expect(await maybeScheduleAutoRefresh(repo, deps)).toContain('started');
+      expect(await maybeScheduleAutoRefresh(repo, deps)).toContain('stale');
+      await publish({
+        ...meta,
+        generationId: identity === 'generationId' ? 'after' : undefined,
+        // A generation identity change must invalidate even without a newer timestamp.
+        indexedAt: new Date(identity === 'generationId' ? now - 1 : now + 1).toISOString(),
+        sourceManifest: await computeSourceManifest(repo.repoPath, { includePaths: ['src'] }),
+      });
+      // A new process has no in-memory verdict and must invalidate the on-disk stamp alone.
+      const nextRepo = identity === 'stamp' ? { ...repo, id: `${repo.id}:new-process` } : repo;
+      expect(await maybeScheduleAutoRefresh(nextRepo, deps)).toBeUndefined();
+      expect(await maybeScheduleAutoRefresh(nextRepo, deps)).toBeUndefined();
+      expect(spawnRefresh).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it('schedules a new commit once and warns when the stamp suppresses another submission', async () => {
     const { repo, advance } = await fixture();
     await advance();

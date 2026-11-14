@@ -31,10 +31,17 @@ interface RefreshDeps {
 
 const pending = new Map<string, Promise<string | undefined>>();
 const pendingWorkspace = new Map<string, Promise<string | undefined>>();
-const sourceChecks = new Map<string, { expiresAt: number; warning?: string }>();
+const sourceChecks = new Map<
+  string,
+  { expiresAt: number; checkedAt: number; generationId?: string; warning?: string }
+>();
 const STALE_DETAIL =
   'This answer uses the existing index; results update after the background refresh finishes.';
 const STALE = `OntoIndex index is stale. ${STALE_DETAIL}`;
+
+function throttledWarning(warning: string, checkedAt: number, interval: number): string {
+  return `${warning} Last check/refresh attempt: ${new Date(checkedAt).toISOString()}. Next eligible: ${new Date(checkedAt + interval).toISOString()} (ONTOINDEX_AUTO_REFRESH_INTERVAL_MS=${interval}).`;
+}
 
 async function spawnRefresh(repo: RefreshRepo, options: RefreshOptions): Promise<void> {
   const cli = currentCliCommand();
@@ -98,9 +105,18 @@ async function schedule(repo: RefreshRepo, deps: RefreshDeps): Promise<string | 
   const interval = Number.isFinite(configured) && configured >= 0 ? configured : 300000;
   const now = (deps.now ?? Date.now)();
   const key = `${repo.id}:${repo.storagePath}`;
+  const cached = commitless ? sourceChecks.get(key) : undefined;
+  const generationChanged =
+    !!cached &&
+    (meta.generationId
+      ? meta.generationId !== cached.generationId
+      : Date.parse(meta.indexedAt) > cached.checkedAt);
   if (commitless) {
-    const cached = sourceChecks.get(key);
-    if (cached && cached.expiresAt > now) return cached.warning;
+    if (cached && !generationChanged && cached.expiresAt > now) {
+      return cached.warning
+        ? throttledWarning(cached.warning, cached.checkedAt, interval)
+        : undefined;
+    }
   }
   // The OS lock serializes the stamp check/touch across CLI and MCP processes,
   // and is released by the OS if a process exits during the check.
@@ -111,11 +127,20 @@ async function schedule(repo: RefreshRepo, deps: RefreshDeps): Promise<string | 
       if (error.code !== 'ENOENT') throw error;
       return undefined;
     });
-    if (stat && now - stat.mtimeMs < interval) {
-      if (!commitless) return stale;
+    if (
+      stat &&
+      now - stat.mtimeMs < interval &&
+      (!commitless || (!generationChanged && !(Date.parse(meta.indexedAt) > stat.mtimeMs)))
+    ) {
+      if (!commitless) return throttledWarning(stale, stat.mtimeMs, interval);
       const warning = (await fs.readFile(stamp, 'utf8')) === 'stale' ? stale : undefined;
-      sourceChecks.set(key, { expiresAt: stat.mtimeMs + interval, warning });
-      return warning;
+      sourceChecks.set(key, {
+        expiresAt: stat.mtimeMs + interval,
+        checkedAt: stat.mtimeMs,
+        generationId: meta.generationId,
+        warning,
+      });
+      return warning ? throttledWarning(warning, stat.mtimeMs, interval) : undefined;
     }
     await fs.writeFile(stamp, commitless ? 'checking' : 'stale', { mode: 0o600 });
     await fs.utimes(stamp, now / 1000, now / 1000);
@@ -127,7 +152,12 @@ async function schedule(repo: RefreshRepo, deps: RefreshDeps): Promise<string | 
       const isStale = health.freshnessState === 'stale';
       await fs.writeFile(stamp, isStale ? 'stale' : 'clean');
       await fs.utimes(stamp, now / 1000, now / 1000);
-      sourceChecks.set(key, { expiresAt: now + interval, warning: isStale ? stale : undefined });
+      sourceChecks.set(key, {
+        expiresAt: now + interval,
+        checkedAt: now,
+        generationId: meta.generationId,
+        warning: isStale ? stale : undefined,
+      });
       if (!isStale) return undefined;
       const analyzeLock = await readAnalyzeLock(repo.storagePath, []);
       if (analyzeLock.state === 'active' || analyzeLock.state === 'unknown') {

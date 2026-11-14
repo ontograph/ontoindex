@@ -1,4 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 
 // Mock fs/promises and os before importing the module
 vi.mock('node:fs/promises', () => ({
@@ -9,7 +14,8 @@ vi.mock('node:fs/promises', () => ({
   mkdir: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock('node:os', () => ({
+vi.mock('node:os', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('node:os')>()),
   homedir: vi.fn().mockReturnValue('/fake/home'),
 }));
 
@@ -17,9 +23,9 @@ import {
   readRecentOversizedToolCalls,
   readToolTelemetrySummary,
   recordToolCall,
+  recordToolCallStart,
 } from '../../src/mcp/local/tool-telemetry.js';
 import { appendFile, readFile, stat } from 'node:fs/promises';
-import { join } from 'node:path';
 
 const appendMock = appendFile as unknown as ReturnType<typeof vi.fn>;
 const readFileMock = readFile as unknown as ReturnType<typeof vi.fn>;
@@ -61,6 +67,105 @@ describe('recordToolCall', () => {
     expect(parsed.method).toBe('dead_code');
     expect(parsed.durationMs).toBe(123);
     expect(parsed.ok).toBe(true);
+  });
+
+  it('serializes optional diagnostic identifiers and ignores start lines in oversized reads', async () => {
+    recordToolCall({
+      ts: 'x',
+      method: 'query',
+      repo: '',
+      durationMs: 1,
+      responseSizeBytes: 2,
+      ok: false,
+      id: '1-2',
+      code: 'TOOL_FAILED',
+      reason: 'timeout',
+    });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(JSON.parse(appendMock.mock.calls[0][1])).toMatchObject({
+      id: '1-2',
+      code: 'TOOL_FAILED',
+      reason: 'timeout',
+    });
+    readFileMock.mockResolvedValue(
+      [
+        JSON.stringify({ phase: 'start', method: 'query', responseSizeBytes: 900000 }),
+        JSON.stringify({ method: 'query', responseSizeBytes: 600 * 1024 }),
+      ].join('\n'),
+    );
+    await expect(readRecentOversizedToolCalls()).resolves.toEqual(['query']);
+  });
+
+  it('writes start records synchronously and swallows write failures', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ontoindex-telemetry-'));
+    vi.stubEnv('ONTOINDEX_TELEMETRY_DIR', dir);
+    try {
+      recordToolCallStart({
+        phase: 'start',
+        ts: '2026-01-01T00:00:00.000Z',
+        id: '1-1',
+        method: 'query',
+        repo: 'r',
+        readMode: 'workspace',
+      });
+      const lines = readFileSync(join(dir, 'telemetry.jsonl'), 'utf8').trim().split('\n');
+      expect(JSON.parse(lines[0])).toEqual({
+        phase: 'start',
+        ts: '2026-01-01T00:00:00.000Z',
+        id: '1-1',
+        method: 'query',
+        repo: 'r',
+        readMode: 'workspace',
+      });
+      const regularFile = join(dir, 'not-a-directory');
+      writeFileSync(regularFile, 'occupied');
+      vi.stubEnv('ONTOINDEX_TELEMETRY_DIR', regularFile);
+      expect(() =>
+        recordToolCallStart({ phase: 'start', ts: 'x', id: 'x', method: 'query', repo: '' }),
+      ).not.toThrow();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('leaves a durable start record when the child is killed before an end record', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ontoindex-telemetry-child-'));
+    try {
+      const telemetryModule = new URL('../../src/mcp/local/tool-telemetry.ts', import.meta.url)
+        .href;
+      const tsxImport = pathToFileURL(resolve('node_modules/tsx/dist/loader.mjs')).href;
+      const script = `import { recordToolCallStart } from ${JSON.stringify(telemetryModule)}; recordToolCallStart({phase:'start',ts:'x',id:'child-1',method:'query',repo:''}); process.kill(process.pid,'SIGKILL');`;
+      const child = spawnSync(
+        process.execPath,
+        ['--import', tsxImport, '--input-type=module', '-e', script],
+        {
+          env: { ...process.env, ONTOINDEX_TELEMETRY_DIR: dir },
+        },
+      );
+      expect(child.signal).toBe('SIGKILL');
+      const lines = readFileSync(join(dir, 'telemetry.jsonl'), 'utf8').trim().split('\n');
+      expect(lines).toHaveLength(1);
+      expect(JSON.parse(lines[0]).phase).toBe('start');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps synchronous start writes below the 5 ms median stop condition', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ontoindex-telemetry-speed-'));
+    vi.stubEnv('ONTOINDEX_TELEMETRY_DIR', dir);
+    try {
+      const durations: number[] = [];
+      for (let i = 0; i < 50; i++) {
+        const before = performance.now();
+        recordToolCallStart({ phase: 'start', ts: 'x', id: `1-${i}`, method: 'query', repo: '' });
+        durations.push(performance.now() - before);
+      }
+      durations.sort((a, b) => a - b);
+      expect(durations[24]).toBeLessThan(5);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('uses the telemetry directory override for appends, rotation and reads', async () => {

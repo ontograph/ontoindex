@@ -22,7 +22,8 @@ vi.mock('../../src/core/run-analyze.js', () => {
   return { runFullAnalysis: analyze };
 });
 vi.mock('../../src/core/parent-watchdog.js', () => ({ startParentWatchdog: vi.fn() }));
-vi.mock('../../src/mcp/local/workspace-build-supervisor.js', () => ({
+vi.mock('../../src/mcp/local/workspace-build-supervisor.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/mcp/local/workspace-build-supervisor.js')>()),
   workspaceBuildExitCode: exitCode,
 }));
 

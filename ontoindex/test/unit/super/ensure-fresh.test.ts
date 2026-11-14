@@ -101,6 +101,10 @@ const CURRENT_COMMIT = 'abc123def456abc123def456abc123def456abc1';
 const INDEXED_COMMIT = 'abc123def456abc123def456abc123def456abc1'; // same = fresh
 const EMBEDDING_MODEL_HASH = 'hash-a';
 const SOURCE_MANIFEST_DIGEST = 'd'.repeat(64);
+const WORKSPACE_READINESS_WARNING =
+  'Workspace readiness was not checked: this freshness report does not prove that workspace reads (the default read_mode) can be prepared. If a workspace read fails, inspect its diagnostics; read_mode="committed" queries the last index for supported operations.';
+const WORKSPACE_READINESS_NO_COMMIT_WARNING =
+  'Workspace readiness was not checked: this freshness report does not prove that workspace reads (the default read_mode) can be prepared. If a workspace read fails, inspect its diagnostics; this index has no trusted commit, so read_mode="committed" is unavailable.';
 
 const STALE_INDEXED_COMMIT = 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef';
 
@@ -149,6 +153,11 @@ function makeRuntimeHealth(
       present: false,
     },
     warnings: [],
+    workspaceReadiness: {
+      state: 'not-checked' as const,
+      dirtyCoverageScope: 'symbol-overlay-eligibility' as const,
+      preparationChecked: false as const,
+    },
   };
 }
 
@@ -382,9 +391,20 @@ describe('gnEnsureFresh', () => {
     expect(report.dirtyFileCount).toBe(0);
     expect(report.scopeConfidence).toBe('high');
     expect(report.actionsTaken).toHaveLength(0);
-    expect(report.warnings).toHaveLength(0);
+    expect(report.warnings).toEqual([WORKSPACE_READINESS_WARNING]);
     // No stale recommendation
     expect(report.recommendations.some((r) => r.includes('stale'))).toBe(false);
+  });
+
+  it('warns that committed reads are unavailable when generation metadata has no commit', async () => {
+    setupExecFile({ currentCommit: CURRENT_COMMIT });
+    mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: CURRENT_COMMIT }) as any);
+    mockLoadMeta.mockResolvedValue(makeMeta({ lastCommit: '' }) as any);
+
+    const report = await gnEnsureFresh(REPO_ID, {});
+
+    expect(report.warnings).toContain(WORKSPACE_READINESS_NO_COMMIT_WARNING);
+    expect(report.warnings).not.toContain(WORKSPACE_READINESS_WARNING);
   });
 
   it('uses canonical dirty-worktree freshness without changing commit staleness', async () => {
@@ -441,7 +461,7 @@ describe('gnEnsureFresh', () => {
     expect(report.repoLabel).toBe('Test-Repo');
     expect(report.repoPath).toBe(REPO_PATH);
     expect(report.scopeConfidence).toBe('high');
-    expect(report.warnings).toHaveLength(0);
+    expect(report.warnings).toContain(WORKSPACE_READINESS_WARNING);
   });
 
   it('resolves absolute repo path selectors without depending on process cwd', async () => {
@@ -467,7 +487,7 @@ describe('gnEnsureFresh', () => {
     expect(report.repoLabel).toBe(REPO_ID);
     expect(report.repoPath).toBe(REPO_PATH);
     expect(report.scopeConfidence).toBe('high');
-    expect(report.warnings).toHaveLength(0);
+    expect(report.warnings).toContain(WORKSPACE_READINESS_WARNING);
   });
 
   it('falls back to the cwd repo when no selector is provided', async () => {
@@ -1164,17 +1184,31 @@ describe('gnEnsureFresh', () => {
     mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: CURRENT_COMMIT }) as any);
 
     const first = await gnEnsureFresh(REPO_ID, {});
+    expect(first.warnings).toContain(WORKSPACE_READINESS_WARNING);
     const revParseCalls = () =>
       mockExecFile.mock.calls.filter((call) => (call[1] as string[]).includes('rev-parse')).length;
     const afterFirst = revParseCalls();
     const second = await gnEnsureFresh(REPO_ID, {});
 
     expect(second).toEqual(first);
+    expect(
+      second.warnings.filter((warning) => warning === WORKSPACE_READINESS_WARNING),
+    ).toHaveLength(1);
     expect(revParseCalls()).toBe(afterFirst);
 
     resetFreshnessCache();
     await gnEnsureFresh(REPO_ID, {});
     expect(revParseCalls()).toBeGreaterThan(afterFirst);
+  });
+
+  it('omits the workspace readiness warning when automatic workspace is disabled', async () => {
+    process.env.ONTOINDEX_AUTO_WORKSPACE = '0';
+    setupExecFile({ currentCommit: CURRENT_COMMIT });
+    mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: CURRENT_COMMIT }) as any);
+
+    const report = await gnEnsureFresh(REPO_ID, {});
+
+    expect(report.warnings).not.toContain(WORKSPACE_READINESS_WARNING);
   });
 
   it('never serves an autoAnalyze request from cache', async () => {

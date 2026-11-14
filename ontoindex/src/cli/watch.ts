@@ -16,6 +16,8 @@ export interface DebouncedWatcherOptions {
   isLockHeld: () => Promise<boolean> | boolean;
   refresh: () => Promise<void>;
   shouldIgnore?: (relPath: string) => boolean;
+  shouldIgnoreDirectory?: (relPath: string) => boolean;
+  watchFiles?: boolean;
   log?: (msg: string) => void;
   watchImpl?: typeof fs.watch;
 }
@@ -130,7 +132,30 @@ export function createDebouncedWatcher(opts: DebouncedWatcherOptions): {
   };
 
   const openWatcher = () => {
-    watcher = watch(opts.root, { recursive: true }, onChange);
+    watcher = watch(
+      opts.root,
+      {
+        recursive: true,
+        ignore: (relPath) => {
+          if (typeof relPath !== 'string') return false;
+          const normalized = relPath.replaceAll('\\', '/');
+          let stat: fs.Stats | undefined;
+          try {
+            stat = fs.lstatSync(path.join(opts.root, relPath), { throwIfNoEntry: false });
+          } catch {
+            // Paths that cannot be inspected are treated as file events.
+          }
+          if (stat?.isDirectory()) {
+            return (
+              IGNORED_DIRECTORIES.has(path.posix.basename(normalized)) ||
+              opts.shouldIgnoreDirectory?.(normalized) === true
+            );
+          }
+          return isIgnoredByDefault(normalized) || opts.shouldIgnore?.(normalized) === true;
+        },
+      },
+      onChange,
+    );
     watcher.on?.('error', fail);
   };
 
@@ -141,7 +166,7 @@ export function createDebouncedWatcher(opts: DebouncedWatcherOptions): {
       maxTimer = undefined;
       timer = undefined;
       if (!checkRoot()) return;
-      if (!opts.watchImpl) {
+      if (!opts.watchImpl && opts.watchFiles !== false) {
         // Node's recursive Linux watcher can retain the old inode after an editor save.
         // Re-arm before refreshing so later saves are observed without polling.
         try {
@@ -206,7 +231,7 @@ export function createDebouncedWatcher(opts: DebouncedWatcherOptions): {
 
   return {
     start() {
-      if (watcher || stopped) return;
+      if (watcher || stopped || opts.watchFiles === false) return;
       try {
         if (!opts.watchImpl) {
           const root = path.resolve(opts.root);
@@ -260,6 +285,8 @@ export interface WatchCommandDependencies {
   maxRetryAttempts?: number;
   spawn: typeof nodeSpawn;
   createWatcher: typeof createDebouncedWatcher;
+  requireWatchIgnoreSupport: boolean;
+  watchIgnoreSupported: () => boolean;
   isLockHeld: (repoPath: string) => Promise<boolean> | boolean;
   planDirtyOverlay: typeof planDirtyOverlay;
   createIgnoreFilter: typeof createIgnoreFilter;
@@ -283,6 +310,15 @@ export interface WatchCommandDependencies {
 const EMBEDDING_ENV_PATTERN = /(?:^|_)(?:EMBEDDING|EMBEDDINGS)(?:_|$)/i;
 const WATCH_DEBOUNCE_MS = 750;
 
+export function supportsWatchIgnore(
+  version = process.versions.node,
+  platform = process.platform,
+): boolean {
+  if (platform !== 'linux') return true;
+  const [major, minor] = version.split('.').map(Number);
+  return major >= 26 || (major === 25 && minor >= 5) || (major === 24 && minor >= 14);
+}
+
 function childEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return Object.fromEntries(
     Object.entries(env).filter(([name]) => !EMBEDDING_ENV_PATTERN.test(name)),
@@ -296,6 +332,8 @@ export async function createWatchCommand(
   const deps: WatchCommandDependencies = {
     spawn: nodeSpawn,
     createWatcher: createDebouncedWatcher,
+    requireWatchIgnoreSupport: false,
+    watchIgnoreSupported: () => supportsWatchIgnore(),
     isLockHeld: async (root) => {
       const warnings: string[] = [];
       return (
@@ -579,6 +617,12 @@ export async function createWatchCommand(
   };
 
   const ignoreFilter = await deps.createIgnoreFilter(repoPath);
+  const watchFiles = !(deps.requireWatchIgnoreSupport && !deps.watchIgnoreSupported());
+  if (!watchFiles) {
+    deps.log(
+      `Recursive watch skipped: Node ${process.versions.node} lacks fs.watch ignore; changes are picked up by reads and the reconciliation timer.`,
+    );
+  }
   const watcher = deps.createWatcher({
     root: repoPath,
     debounceMs: WATCH_DEBOUNCE_MS,
@@ -586,6 +630,14 @@ export async function createWatchCommand(
     refresh,
     shouldIgnore: (relPath) =>
       ignoreFilter.ignored({ relative: () => relPath.replaceAll('\\', '/') } as never),
+    shouldIgnoreDirectory: (relPath) => {
+      const rel = relPath.replaceAll('\\', '/');
+      return ignoreFilter.childrenIgnored({
+        name: path.posix.basename(rel),
+        relative: () => rel,
+      } as never);
+    },
+    watchFiles,
     log: deps.log,
   });
 

@@ -23,7 +23,9 @@ import {
   type OverlaySnapshot,
 } from './backend-overlay.js';
 import { RepoHandle, BackendPort } from 'ontoindex-shared';
-import { recordToolCall } from './tool-telemetry.js';
+import { recordToolCall, recordToolCallStart } from './tool-telemetry.js';
+
+let toolCallTelemetryCounter = 0;
 import { maybeScheduleAutoRefresh, maybeScheduleWorkspacePrebuild } from './auto-refresh.js';
 import { planDirtyOverlay } from '../../core/analyze-delta.js';
 import { sourceManifestDigest } from '../../core/indexing/source-manifest.js';
@@ -155,6 +157,7 @@ import {
   prepareWorkspaceRead,
   WORKSPACE_PREPARATION_DEADLINE_MS,
   resolveRepoFromHandles,
+  safeRefusalPath,
   WorkspacePreparationError,
 } from './local-backend-repo-runtime.js';
 import {
@@ -1332,6 +1335,12 @@ function workspacePreparationError(error: unknown): Error & { code: string; retr
                 phase: error.failure.phase,
                 reason: error.failure.reason,
                 ...(error.failure.systemCode ? { systemCode: error.failure.systemCode } : {}),
+                ...(error.failure.reason === 'input_refused' &&
+                safeRefusalPath(error.failure.path) &&
+                (error.failure.refusalKind === 'symlink' ||
+                  error.failure.refusalKind === 'non-regular')
+                  ? { path: error.failure.path, refusalKind: error.failure.refusalKind }
+                  : {}),
               },
             }
           : {}),
@@ -2169,22 +2178,39 @@ export class LocalBackend implements BackendPort {
   async callTool(method: string, params: unknown): Promise<unknown> {
     return this.withOperation(async () => {
       const start = Date.now();
+      const id = `${process.pid}-${++toolCallTelemetryCounter}`;
+      const normalized = this.normalizeToolParams(params);
+      const repoName =
+        typeof normalized.repo === 'string' && !normalized.repo.startsWith('@')
+          ? normalized.repo
+          : '';
+      const readMode =
+        normalized.read_mode === 'committed' || normalized.read_mode === 'workspace'
+          ? normalized.read_mode
+          : undefined;
+      recordToolCallStart({
+        phase: 'start',
+        ts: new Date().toISOString(),
+        id,
+        method,
+        repo: repoName,
+        ...(readMode ? { readMode } : {}),
+      });
       let ok = true;
       let result: unknown;
+      let thrownError: { code?: unknown; diagnostics?: { reason?: unknown } } | undefined;
       try {
         const rawResult = await this._callToolImpl(method, params);
         result = rawResult;
         return result;
       } catch (err) {
         ok = false;
+        if (typeof err === 'object' && err !== null) {
+          thrownError = err as { code?: unknown; diagnostics?: { reason?: unknown } };
+        }
         throw err;
       } finally {
         const durationMs = Date.now() - start;
-        const normalized = this.normalizeToolParams(params);
-        const repoName =
-          typeof normalized.repo === 'string' && !normalized.repo.startsWith('@')
-            ? normalized.repo
-            : '';
         let responseSizeBytes = 0;
         try {
           responseSizeBytes = Buffer.byteLength(JSON.stringify(result ?? ''), 'utf8');
@@ -2198,6 +2224,15 @@ export class LocalBackend implements BackendPort {
           durationMs,
           responseSizeBytes,
           ok,
+          id,
+          ...(typeof thrownError?.code === 'string' &&
+          /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(thrownError.code)
+            ? { code: thrownError.code }
+            : {}),
+          ...(typeof thrownError?.diagnostics?.reason === 'string' &&
+          /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(thrownError.diagnostics.reason)
+            ? { reason: thrownError.diagnostics.reason }
+            : {}),
         });
       }
     });
@@ -2311,7 +2346,9 @@ export class LocalBackend implements BackendPort {
       if (options.readMode === 'committed') {
         const selected = await readActiveGenerationMeta(repo.storagePath);
         if (!selected.meta?.lastCommit || selected.authority === 'untrusted') {
-          throw new Error('Committed read unavailable: indexed commit identity is unknown.');
+          throw new Error(
+            'Committed read unavailable: indexed commit identity is unknown. This index has no trusted commit (for example, it was built with analyze --skip-git); committed reads need an index built from a git commit. Run ontoindex analyze in a git checkout to enable them.',
+          );
         }
         const databasePath =
           selected.activeGeneration?.lbugPath ?? path.join(repo.storagePath, 'lbug');

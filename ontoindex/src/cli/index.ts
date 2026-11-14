@@ -56,7 +56,7 @@ program
     'Comma-separated skill targets for --skills: claude,codex,cursor,opencode,all',
   )
   .option('--skip-agents-md', 'Skip updating the ontoindex section in AGENTS.md and CLAUDE.md')
-  .option('--no-stats', 'Omit volatile file/symbol counts from AGENTS.md and CLAUDE.md')
+  .option('--no-stats', 'Deprecated; has no effect because counts are no longer written')
   .option('--skip-git', 'Index a folder without requiring a .git directory')
   .option('--index-only', 'Deprecated alias for --symbols-only')
   .option('--large-repo-safe', 'Apply conservative analyze defaults for large repositories')

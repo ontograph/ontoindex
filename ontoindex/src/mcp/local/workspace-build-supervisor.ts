@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 
 export const WORKSPACE_INPUT_REFUSED_EXIT_CODE = 3;
+export const WORKSPACE_REFUSAL_MARKER = 'ONTOINDEX_WORKSPACE_REFUSAL ';
 
 export function workspaceBuildExitCode(error: unknown): number {
   return typeof error === 'object' &&
@@ -21,6 +22,7 @@ export class WorkspaceBuildError extends Error {
     message: string,
     options?: ErrorOptions,
     public readonly termination?: { exitCode: number | null; signal: NodeJS.Signals | null },
+    public readonly refusal?: { path: string; kind: 'symlink' | 'non-regular' },
   ) {
     super(message, options);
     this.name = 'WorkspaceBuildError';
@@ -386,6 +388,34 @@ async function runSupervised(
   }
   if (outcome.code !== 0) {
     await removeNewArtifacts(options.storagePath, before);
+    const stderrLines = stderrTail.split('\n');
+    const refusalLine =
+      !outcome.signal && outcome.code === WORKSPACE_INPUT_REFUSED_EXIT_CODE
+        ? stderrLines.filter((line) => line.startsWith(WORKSPACE_REFUSAL_MARKER)).at(-1)
+        : undefined;
+    let refusal: { path: string; kind: 'symlink' | 'non-regular' } | undefined;
+    if (refusalLine) {
+      try {
+        const parsed: unknown = JSON.parse(refusalLine.slice(WORKSPACE_REFUSAL_MARKER.length));
+        if (
+          parsed !== null &&
+          typeof parsed === 'object' &&
+          'path' in parsed &&
+          typeof parsed.path === 'string' &&
+          parsed.path.length >= 1 &&
+          parsed.path.length <= 256 &&
+          'kind' in parsed &&
+          (parsed.kind === 'symlink' || parsed.kind === 'non-regular')
+        ) {
+          refusal = { path: parsed.path, kind: parsed.kind };
+        }
+      } catch {
+        // Child stderr is untrusted; malformed metadata is ignored.
+      }
+    }
+    const messageStderr = stderrLines
+      .filter((line) => !line.startsWith(WORKSPACE_REFUSAL_MARKER))
+      .join('\n');
     const message = outcome.signal
       ? `Workspace graph build was terminated by signal ${outcome.signal}`
       : `Workspace graph build exited with code ${outcome.code}`;
@@ -393,9 +423,10 @@ async function runSupervised(
       !outcome.signal && outcome.code === WORKSPACE_INPUT_REFUSED_EXIT_CODE
         ? 'input_refused'
         : 'failed',
-      `${message}${stderrTail ? `: ${stderrTail.trim()}` : ''}`,
+      `${message}${messageStderr ? `: ${messageStderr.trim()}` : ''}`,
       undefined,
       { exitCode: outcome.code, signal: outcome.signal ?? null },
+      refusal,
     );
   }
 }

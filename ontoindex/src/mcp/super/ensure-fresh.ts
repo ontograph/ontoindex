@@ -30,6 +30,7 @@ import {
   readRuntimeHealth,
   type RuntimeHealthSnapshot,
 } from '../../core/runtime/runtime-health.js';
+import { isAutomaticWorkspaceEnabled } from '../local/backend-overlay.js';
 import {
   getGlobalRegistryPath,
   readActiveGenerationMeta,
@@ -671,6 +672,13 @@ async function buildEnsureFreshReport(
     repoLabel: entry.name ?? selector ?? repoRoot,
     meta: runtimeFallbackMeta,
   });
+  if (runtimeHealth.workspaceReadiness?.state === 'not-checked' && isAutomaticWorkspaceEnabled()) {
+    warnings.push(
+      generationMeta.authority !== 'untrusted' && Boolean(generationMeta.meta?.lastCommit)
+        ? 'Workspace readiness was not checked: this freshness report does not prove that workspace reads (the default read_mode) can be prepared. If a workspace read fails, inspect its diagnostics; read_mode="committed" queries the last index for supported operations.'
+        : 'Workspace readiness was not checked: this freshness report does not prove that workspace reads (the default read_mode) can be prepared. If a workspace read fails, inspect its diagnostics; this index has no trusted commit, so read_mode="committed" is unavailable.',
+    );
+  }
   if (
     generationMeta.authority === 'untrusted' &&
     runtimeHealth.freshnessState !== 'failed-after-partial-run'

@@ -1,7 +1,17 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { spawn } from 'node:child_process';
+import path from 'node:path';
+import { createRequire } from 'node:module';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { createMCPServer } from '../../src/mcp/server.js';
+
+const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+const require = createRequire(import.meta.url);
+const tsxImportUrl = pathToFileURL(
+  path.join(path.dirname(require.resolve('tsx/package.json')), 'dist/loader.mjs'),
+).href;
 
 /**
  * Regression: signal handlers must not receive the signal name as the
@@ -16,6 +26,81 @@ describe('MCP server graceful shutdown', () => {
     vi.doUnmock('@modelcontextprotocol/sdk/server/stdio.js');
     vi.doUnmock('../../src/mcp/local/local-backend.js');
   });
+
+  // Regression for the EPIPE loop after the client closes stderr. The stdin-end case fails
+  // deterministically without the stderr error listener; the SIGTERM case depends on whether
+  // the shutdown log write sees EPIPE before exit, so it is kept as a timing-dependent check.
+  it.each(['SIGTERM', 'stdin end'])(
+    'exits after %s when the client closes stderr',
+    async (shutdownMethod) => {
+      const child = spawn(
+        process.execPath,
+        [
+          '--import',
+          tsxImportUrl,
+          path.join(packageRoot, 'test/fixtures/mcp-stdio-cancellation-server.ts'),
+        ],
+        { cwd: packageRoot, stdio: ['pipe', 'pipe', 'pipe'] },
+      );
+      let stderr = '';
+      let stdout = '';
+      child.stderr.setEncoding('utf8');
+      child.stderr.on('data', (chunk: string) => {
+        stderr += chunk;
+      });
+      child.stdout.setEncoding('utf8');
+      child.stdout.on('data', (chunk: string) => {
+        stdout += chunk;
+      });
+
+      try {
+        child.stdin.write(
+          '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}\n',
+        );
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(
+            () => reject(new Error(`Timed out waiting for initialize; stderr: ${stderr}`)),
+            10_000,
+          );
+          child.stdout.on('data', () => {
+            if (stdout.includes('"id":1')) {
+              clearTimeout(timer);
+              resolve();
+            }
+          });
+          child.once('error', (error) => {
+            clearTimeout(timer);
+            reject(error);
+          });
+          child.once('exit', (code, signal) => {
+            clearTimeout(timer);
+            reject(
+              new Error(`Child exited before initialize (${code ?? signal}); stderr: ${stderr}`),
+            );
+          });
+        });
+
+        child.stderr.destroy();
+        if (shutdownMethod === 'SIGTERM') child.kill('SIGTERM');
+        else child.stdin.end();
+
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(() => {
+            child.kill('SIGKILL');
+            reject(new Error(`Child did not exit within 10 seconds; stderr: ${stderr}`));
+          }, 10_000);
+          child.once('exit', (code, signal) => {
+            clearTimeout(timer);
+            if (code === 0 && signal === null) resolve();
+            else reject(new Error(`Child exited with ${code ?? signal}; stderr: ${stderr}`));
+          });
+        });
+      } finally {
+        if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+      }
+    },
+    30_000,
+  );
 
   it('exits with a numeric code when a signal handler fires', async () => {
     vi.resetModules();
@@ -47,6 +132,7 @@ describe('MCP server graceful shutdown', () => {
     }) as typeof process.on);
     vi.spyOn(process.stdin, 'on').mockReturnValue(process.stdin);
     vi.spyOn(process.stdout, 'on').mockReturnValue(process.stdout);
+    vi.spyOn(process.stderr, 'on').mockReturnValue(process.stderr);
 
     const exitCodes: unknown[] = [];
     vi.spyOn(process, 'exit').mockImplementation(((code?: unknown) => {
@@ -106,6 +192,7 @@ describe('MCP server graceful shutdown', () => {
       }) as typeof process.on);
       vi.spyOn(process.stdin, 'on').mockReturnValue(process.stdin);
       vi.spyOn(process.stdout, 'on').mockReturnValue(process.stdout);
+      vi.spyOn(process.stderr, 'on').mockReturnValue(process.stderr);
       vi.spyOn(console, 'error').mockImplementation(() => {});
       vi.spyOn(process.stderr, 'write').mockReturnValue(true);
       const exit = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
@@ -167,6 +254,7 @@ describe('MCP server graceful shutdown', () => {
     }) as typeof process.on);
     vi.spyOn(process.stdin, 'on').mockReturnValue(process.stdin);
     vi.spyOn(process.stdout, 'on').mockReturnValue(process.stdout);
+    vi.spyOn(process.stderr, 'on').mockReturnValue(process.stderr);
     const exit = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
     await startMCPServer(backend as never);
     const handler = handlerSpy.mock.calls.find(
@@ -208,6 +296,7 @@ describe('MCP server graceful shutdown', () => {
       }) as typeof process.on);
       vi.spyOn(process.stdin, 'on').mockReturnValue(process.stdin);
       vi.spyOn(process.stdout, 'on').mockReturnValue(process.stdout);
+      vi.spyOn(process.stderr, 'on').mockReturnValue(process.stderr);
       const stderr = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
       const exit = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
       await startMCPServer({ dispose } as never);

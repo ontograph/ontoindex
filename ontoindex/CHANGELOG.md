@@ -4,6 +4,11 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [3.1.4] - 2026-11-11
+
+- `ontoindex analyze` no longer marks its own index stale: the generated AGENTS.md and CLAUDE.md block no longer contains symbol, relationship, and flow counts, and AGENTS.md, CLAUDE.md and the bundled skill files are rewritten only when their content changes. `--no-stats` is a deprecated no-op.
+- The throttled stale warning reports the last refresh check and the next eligible time. In repositories without commits, a cached stale verdict is dropped once a new index generation is published.
+
 ## [3.1.3] - 2026-11-09
 
 - AST node-count and nesting-depth limits are opt-in. Full extraction is attempted by default; positive `ONTOINDEX_PARSE_MAX_AST_NODES` and `ONTOINDEX_PARSE_MAX_AST_DEPTH` values retain operator control.

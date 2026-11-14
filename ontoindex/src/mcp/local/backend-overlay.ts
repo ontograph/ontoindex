@@ -45,6 +45,8 @@ export interface OverlayRepo {
 }
 
 export interface OverlaySnapshot {
+  /** Internal error retained for refusal diagnostics; never serialized. */
+  failureCause?: unknown;
   /** True only when an overlay exists and is newer than every dirty source file. */
   usable: boolean;
   capability?: 'symbols' | 'workspace-graph';
@@ -805,7 +807,11 @@ export function getOverlaySnapshot(repo: OverlayRepo): Promise<OverlaySnapshot> 
     .catch((err: unknown) => {
       // A late failure must not evict a newer probe started after reset/expiry.
       if (snapshotCache.get(repo.id)?.value === value) snapshotCache.delete(repo.id);
-      return { ...EMPTY, reason: `dirty planning failed: ${(err as Error).message}` };
+      return {
+        ...EMPTY,
+        reason: `dirty planning failed: ${(err as Error).message}`,
+        failureCause: err,
+      };
     });
   for (const [id, cached] of snapshotCache) {
     if (now - cached.at >= SNAPSHOT_TTL_MS) snapshotCache.delete(id);

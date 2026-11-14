@@ -22,6 +22,7 @@ import {
   buildWorkspaceGraph,
 } from '../../src/mcp/local/local-backend-repo-runtime.js';
 import type { OverlaySnapshot } from '../../src/mcp/local/backend-overlay.js';
+import { WorkspaceInputCaptureError } from '../../src/core/analyze-delta.js';
 import { computeSourceManifest } from '../../src/core/indexing/source-manifest.js';
 import { getOverlaySnapshot, evictOverlayState } from '../../src/mcp/local/backend-overlay.js';
 import {
@@ -1032,8 +1033,79 @@ describe('workspace read preparation', () => {
     );
     const error = await prepareWorkspaceRead(f.options).catch((cause) => cause);
     expect(error).toMatchObject({ code: 'workspace_build_failed' });
-    expect(error.failure).toEqual({ phase: 'build', reason: 'input_refused' });
+    expect(error.failure).toEqual({
+      phase: 'build',
+      reason: 'input_refused',
+    });
     expect(error.message).not.toContain('private/path.ts');
+  });
+  it('projects typed input refusals retained by a failed planning snapshot', async () => {
+    const f = fixture();
+    f.dependencies.getSnapshot.mockReset();
+    f.dependencies.getSnapshot.mockResolvedValue({
+      ...f.dirty,
+      usable: false,
+      reason: 'dirty planning failed: x',
+      failureCause: new WorkspaceInputCaptureError('unsupported', 'private refusal detail', {
+        path: 'ontoindex-packs/a/pack.yml',
+        kind: 'symlink',
+      }),
+    });
+    const error = await prepareWorkspaceRead(f.options).catch((cause) => cause);
+    expect(error.failure).toEqual({
+      phase: 'planning',
+      reason: 'input_refused',
+      path: 'ontoindex-packs/a/pack.yml',
+      refusalKind: 'symlink',
+    });
+  });
+  it('keeps generic failed planning snapshots untyped', async () => {
+    const f = fixture();
+    f.dependencies.getSnapshot.mockReset();
+    f.dependencies.getSnapshot.mockResolvedValue({
+      ...f.dirty,
+      usable: false,
+      reason: 'dirty planning failed: x',
+      failureCause: new Error('private detail'),
+    });
+    const error = await prepareWorkspaceRead(f.options).catch((cause) => cause);
+    expect(error.failure).toEqual({ phase: 'planning', reason: 'planning_failed' });
+  });
+  it('projects safe build refusal paths without exposing private build text', async () => {
+    const f = fixture();
+    f.dependencies.buildWorkspaceGraph.mockRejectedValueOnce(
+      new WorkspaceBuildError('input_refused', 'private/path.ts', undefined, undefined, {
+        path: 'GEMINI.md',
+        kind: 'symlink',
+      }),
+    );
+    const error = await prepareWorkspaceRead(f.options).catch((cause) => cause);
+    expect(error.failure).toEqual({
+      phase: 'build',
+      reason: 'input_refused',
+      path: 'GEMINI.md',
+      refusalKind: 'symlink',
+    });
+    expect(error.message).not.toContain('private/path.ts');
+  });
+  it.each([
+    ['GEMINI.md', { path: 'GEMINI.md', refusalKind: 'symlink' }],
+    ['../escape', {}],
+    ['bad\npath', {}],
+    ['bad\u2028path', {}],
+    ['bad\u0085path', {}],
+    ['C:/private/file', {}],
+  ])('reports a safe planning refusal path for %j', async (refusedPath, expected) => {
+    const f = fixture();
+    f.dependencies.getInputIdentity.mockRejectedValueOnce(
+      new WorkspaceInputCaptureError('unsupported', `Workspace capture rejects symlink: x`, {
+        path: refusedPath,
+        kind: 'symlink',
+      }),
+    );
+    const error = await prepareWorkspaceRead(f.options).catch((cause) => cause);
+    expect(error).toMatchObject({ code: 'workspace_build_failed' });
+    expect(error.failure).toEqual({ phase: 'planning', reason: 'input_refused', ...expected });
   });
   it('retains only an allowlisted immediate errno and supervisor failure kind', async () => {
     const f = fixture();

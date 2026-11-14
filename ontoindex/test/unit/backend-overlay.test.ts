@@ -972,14 +972,14 @@ describe('backend-overlay snapshot single-flight', () => {
   });
 
   it('evicts a rejected probe immediately while retaining the failure diagnostic', async () => {
-    vi.mocked(planDirtyOverlay)
-      .mockRejectedValueOnce(new Error('git failed'))
-      .mockResolvedValueOnce(cleanPlan);
+    const failure = new Error('git failed');
+    vi.mocked(planDirtyOverlay).mockRejectedValueOnce(failure).mockResolvedValueOnce(cleanPlan);
     const failed = getOverlaySnapshot(repo);
     expect(getOverlaySnapshot(repo)).toBe(failed);
     await expect(failed).resolves.toMatchObject({
       usable: false,
       reason: 'dirty planning failed: git failed',
+      failureCause: failure,
     });
     await expect(getOverlaySnapshot(repo)).resolves.toMatchObject({
       usable: false,

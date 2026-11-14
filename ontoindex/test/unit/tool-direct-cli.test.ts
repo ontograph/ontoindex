@@ -8,6 +8,7 @@ const writeSyncMock = vi.fn();
 const resolveRepoMock = vi.fn();
 const ensureRepoInitializedMock = vi.fn();
 const withPreparedRepoReadMock = vi.fn();
+const readActiveGenerationMetaMock = vi.fn();
 
 vi.mock('../../src/mcp/local/local-backend.js', () => ({
   LocalBackend: class {
@@ -28,6 +29,11 @@ vi.mock('node:fs', () => ({
   writeSync: writeSyncMock,
 }));
 
+vi.mock('../../src/storage/repo-manager.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/storage/repo-manager.js')>()),
+  readActiveGenerationMeta: readActiveGenerationMetaMock,
+}));
+
 describe('direct CLI tool commands', () => {
   beforeEach(() => {
     vi.resetModules();
@@ -37,7 +43,16 @@ describe('direct CLI tool commands', () => {
     callToolMock.mockReset();
     writeSyncMock.mockReset();
     initMock.mockResolvedValue(true);
-    resolveRepoMock.mockReset().mockResolvedValue({ id: 'ontoindex' });
+    resolveRepoMock
+      .mockReset()
+      .mockResolvedValue(
+        Object.defineProperty({ id: 'ontoindex' }, 'storagePath', { value: '/repo/.ontoindex' }),
+      );
+    readActiveGenerationMetaMock.mockReset().mockResolvedValue({
+      activeGeneration: null,
+      meta: { lastCommit: 'a'.repeat(40) },
+      authority: 'legacy-root',
+    });
     ensureRepoInitializedMock.mockReset().mockResolvedValue(undefined);
     withPreparedRepoReadMock
       .mockReset()
@@ -192,6 +207,73 @@ describe('direct CLI tool commands', () => {
       errorSpy.mockRestore();
     }
   });
+
+  it('omits committed-read advice when the index has no trusted commit', async () => {
+    readActiveGenerationMetaMock.mockResolvedValue({
+      activeGeneration: null,
+      meta: { lastCommit: '' },
+      authority: 'legacy-root',
+    });
+    callToolMock.mockRejectedValue(
+      Object.assign(new Error('workspace_preparation_failed: workspace_too_large'), {
+        code: 'workspace_too_large',
+        diagnostics: { observedIndexedFiles: 6997, maxIndexedFiles: 5000 },
+      }),
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const previousExitCode = process.exitCode;
+    try {
+      const { contextCommand } = await import('../../src/cli/tool.js');
+      await contextCommand('Symbol', { repo: 'codex' });
+
+      expect(errorSpy).toHaveBeenCalledExactlyOnceWith(
+        'OntoIndex: workspace_too_large {"observedIndexedFiles":6997,"maxIndexedFiles":5000}. ' +
+          'This index has no trusted commit (for example, it was built with analyze --skip-git), so --read-mode committed is unavailable; run ontoindex analyze in a git checkout to enable it.',
+      );
+      expect(errorSpy.mock.calls[0][0]).not.toContain('--read-mode committed to read');
+      expect(process.exitCode).toBe(1);
+    } finally {
+      process.exitCode = previousExitCode;
+      errorSpy.mockRestore();
+    }
+  });
+
+  it.each([
+    {
+      lastCommit: '',
+      suggestion: 'Try reducing --depth or using ontoindex context <symbol> as a fallback',
+    },
+    {
+      lastCommit: 'a'.repeat(40),
+      suggestion:
+        'Explicitly select ontoindex impact <symbol> --repo <name> --read-mode committed; uncommitted changes are excluded',
+    },
+  ])(
+    'checks commit availability on the open backend for raw impact size errors ($lastCommit)',
+    async ({ lastCommit, suggestion }) => {
+      readActiveGenerationMetaMock.mockResolvedValue({
+        activeGeneration: null,
+        meta: { lastCommit },
+        authority: 'legacy-root',
+      });
+      callToolMock.mockRejectedValue(
+        Object.assign(new Error('workspace too large'), { code: 'workspace_too_large' }),
+      );
+      const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+      try {
+        const { impactCommand } = await import('../../src/cli/tool.js');
+        await impactCommand('Symbol', { repo: 'codex' });
+
+        const written = JSON.parse(String(writeSyncMock.mock.calls[0][1]));
+        expect(written.suggestion).toBe(suggestion);
+        expect(constructorMock).toHaveBeenCalledOnce();
+        expect(disposeMock).toHaveBeenCalledOnce();
+        expect(exitSpy).toHaveBeenCalledWith(1);
+      } finally {
+        exitSpy.mockRestore();
+      }
+    },
+  );
 
   it.each([undefined, '', '@group'])(
     'rejects committed reads without a single repo: %s',

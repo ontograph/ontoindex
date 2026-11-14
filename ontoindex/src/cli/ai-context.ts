@@ -26,6 +26,7 @@ interface RepoStats {
 
 interface AIContextOptions {
   skipAgentsMd?: boolean;
+  /** @deprecated Counts are no longer written; this option has no effect. */
   noStats?: boolean;
 }
 
@@ -64,10 +65,8 @@ async function findGroupsContainingRegistryName(registryName: string): Promise<s
 
 function generateOntoIndexContent(
   projectName: string,
-  stats: RepoStats,
   generatedSkills?: GeneratedSkillInfo[],
   groupNames?: string[],
-  noStats?: boolean,
   cliCommand = 'ontoindex',
 ): string {
   const generatedRows =
@@ -97,7 +96,7 @@ function generateOntoIndexContent(
   return `${ONTOINDEX_START_MARKER}
 # OntoIndex — Code Intelligence
 
-This project is indexed by OntoIndex as **${projectName}**${noStats ? '' : ` (${stats.nodes || 0} symbols, ${stats.edges || 0} relationships, ${stats.processes || 0} execution flows)`}. Use the OntoIndex MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by OntoIndex as **${projectName}**. Use the OntoIndex MCP tools to understand code, assess impact, and navigate safely.
 
 > Always query OntoIndex first. Repo queries refresh stale indexes in the background; dirty edits use the automatic overlay. Use stale/refreshing results with freshness labels; verify edited or new code from source. Never fall back to grep-only because the index is stale. Manual \`${analyzeCommand}\` is only for immediate refresh with no active job. Sub-agents never start reindex jobs; refresh-on-query covers them.
 
@@ -172,15 +171,16 @@ async function fileExists(filePath: string): Promise<boolean> {
 async function upsertOntoIndexSection(
   filePath: string,
   content: string,
-): Promise<'created' | 'updated' | 'appended'> {
+): Promise<'created' | 'updated' | 'appended' | 'unchanged'> {
   const exists = await fileExists(filePath);
 
   if (!exists) {
-    await fs.writeFile(filePath, content, 'utf-8');
+    await fs.writeFile(filePath, content + '\n', 'utf-8');
     return 'created';
   }
 
-  const existingContent = stripMalformedOntoIndexBlocks(await fs.readFile(filePath, 'utf-8'));
+  const originalContent = await fs.readFile(filePath, 'utf-8');
+  const existingContent = stripMalformedOntoIndexBlocks(originalContent);
 
   // Check if OntoIndex section already exists
   let replaced = false;
@@ -190,15 +190,13 @@ async function upsertOntoIndexSection(
     return `${content}\n`;
   });
 
-  if (replaced) {
-    await fs.writeFile(filePath, newContent.trim() + '\n', 'utf-8');
-    return 'updated';
-  }
+  const finalContent = replaced
+    ? newContent.trim() + '\n'
+    : existingContent.trim() + '\n\n' + content + '\n';
+  if (finalContent === originalContent) return 'unchanged';
 
-  // Append new section
-  const appendedContent = existingContent.trim() + '\n\n' + content + '\n';
-  await fs.writeFile(filePath, appendedContent, 'utf-8');
-  return 'appended';
+  await fs.writeFile(filePath, finalContent, 'utf-8');
+  return replaced ? 'updated' : 'appended';
 }
 
 function stripMalformedOntoIndexBlocks(content: string): string {
@@ -323,7 +321,12 @@ Use OntoIndex tools to accomplish this task.
 `;
       }
 
-      await fs.writeFile(skillPath, skillContent, 'utf-8');
+      const existingContent = (await fileExists(skillPath))
+        ? await fs.readFile(skillPath, 'utf-8')
+        : undefined;
+      if (existingContent !== skillContent) {
+        await fs.writeFile(skillPath, skillContent, 'utf-8');
+      }
       installedSkills.push(skill.name);
     } catch (err) {
       // Skip on error, don't fail the whole process
@@ -341,20 +344,13 @@ export async function generateAIContextFiles(
   repoPath: string,
   _storagePath: string,
   projectName: string,
-  stats: RepoStats,
+  _stats: RepoStats,
   generatedSkills?: GeneratedSkillInfo[],
   options?: AIContextOptions,
 ): Promise<{ files: string[] }> {
   const groupNames = await findGroupsContainingRegistryName(projectName);
   const cliCommand = await resolveGeneratedCliCommand(repoPath);
-  const content = generateOntoIndexContent(
-    projectName,
-    stats,
-    generatedSkills,
-    groupNames,
-    options?.noStats,
-    cliCommand,
-  );
+  const content = generateOntoIndexContent(projectName, generatedSkills, groupNames, cliCommand);
   const createdFiles: string[] = [];
 
   if (!options?.skipAgentsMd) {

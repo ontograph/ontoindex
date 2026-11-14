@@ -1,4 +1,5 @@
 import { isAutomaticWorkspaceEnabled } from './local/backend-overlay.js';
+import { readActiveGenerationMeta } from '../storage/repo-manager.js';
 /**
  * MCP Server (Multi-Repo)
  *
@@ -60,8 +61,8 @@ const MAX_PROMPT_ARGUMENT_BYTES = 4096;
 
 const COMMITTED_READ_OPERATIONS: ReadonlyArray<{ tool: string; actions?: readonly string[] }> = [
   { tool: 'inspect', actions: ['context', 'related', 'explore'] },
-  { tool: 'impact', actions: ['symbol'] },
-  { tool: 'search', actions: ['semantic'] },
+  { tool: 'impact', actions: ['symbol', 'batch'] },
+  { tool: 'search', actions: ['semantic', 'cypher'] },
   { tool: 'audit', actions: ['safe_edit_check', 'can_delete'] },
   { tool: 'gn_explore' },
   { tool: 'gn_find_related' },
@@ -188,6 +189,14 @@ function formatToolCallErrorMessage(
     'coverage_degraded',
   ];
   const systemCodes = ['EACCES', 'EPERM', 'ENOSPC', 'ENOENT', 'EMFILE', 'ENFILE', 'EIO', 'EROFS'];
+  const safeRefusalPath = (value: unknown): value is string =>
+    typeof value === 'string' &&
+    value.length > 0 &&
+    value.length <= 256 &&
+    !value.startsWith('/') &&
+    !/[\\\u0000-\u001f\u007f-\u009f\u2028\u2029]/.test(value) &&
+    !/^[A-Za-z]:/.test(value) &&
+    value.split('/').every((part) => part !== '' && part !== '.' && part !== '..');
   const diagnostics =
     code === 'workspace_too_large' &&
     diagnostic &&
@@ -214,6 +223,15 @@ function formatToolCallErrorMessage(
           reason: failureDiagnostic.reason,
           ...(systemCodes.includes(failureDiagnostic.systemCode as string)
             ? { systemCode: failureDiagnostic.systemCode }
+            : {}),
+          ...(failureDiagnostic.reason === 'input_refused' &&
+          safeRefusalPath(failureDiagnostic.path) &&
+          (failureDiagnostic.refusalKind === 'symlink' ||
+            failureDiagnostic.refusalKind === 'non-regular')
+            ? {
+                path: failureDiagnostic.path,
+                refusalKind: failureDiagnostic.refusalKind,
+              }
             : {}),
         }
       : undefined;
@@ -259,7 +277,10 @@ function formatToolCallErrorMessage(
                           ? ' To prepare a separate bounded workspace graph while preserving the committed index, explicitly run `ONTOINDEX_AUTO_WORKSPACE=1 ontoindex analyze --workspace-graph` in the repository. Rerun this command after workspace inputs change.'
                           : '') +
                         (failure?.reason === 'input_refused'
-                          ? ' The working tree contains an input the workspace capture refuses, such as a tracked symlink or a file over the scan cap; exclude it with .ontoindexignore where allowed or run ontoindex analyze.'
+                          ? ' The working tree contains an input the workspace capture refuses, such as a tracked symlink or non-regular input; exclude it with .ontoindexignore where allowed or run ontoindex analyze.' +
+                            (failure.path && failure.refusalKind
+                              ? ` Refused input: ${failure.path} (${failure.refusalKind}).`
+                              : '')
                           : '') +
                         (failure?.reason === 'coverage_degraded'
                           ? ' The published workspace graph reports degraded coverage. Inspect the analysis diagnostics and correct the reported issues before explicitly rebuilding.'
@@ -876,6 +897,41 @@ export function createMCPServer(
           };
         } catch (error) {
           const scopedRepoIdentity = repoIdentity ?? readRepoIdentity(error);
+          let errorCommittedFallbackAvailable = committedFallbackAvailable;
+          const errorCandidate =
+            error !== null && typeof error === 'object'
+              ? (error as Record<string, unknown>)
+              : undefined;
+          if (
+            committedFallbackAvailable &&
+            !extra?.signal?.aborted &&
+            (errorCandidate?.code === 'workspace_too_large' ||
+              errorCandidate?.code === 'workspace_build_failed')
+          ) {
+            let timeout: ReturnType<typeof setTimeout> | undefined;
+            const lookupTimedOut = Symbol('generation metadata lookup timed out');
+            try {
+              const generation = await Promise.race([
+                (async () => {
+                  const repo = await backend.resolveRepo(typedArgs.repo as string);
+                  return readActiveGenerationMeta(repo.storagePath);
+                })(),
+                new Promise<typeof lookupTimedOut>((resolve) => {
+                  timeout = setTimeout(() => resolve(lookupTimedOut), 1000);
+                }),
+              ]);
+              if (
+                generation !== lookupTimedOut &&
+                (!generation?.meta?.lastCommit || generation.authority === 'untrusted')
+              ) {
+                errorCommittedFallbackAvailable = false;
+              }
+            } catch {
+              // Preserve the existing remediation when generation metadata cannot be read.
+            } finally {
+              if (timeout) clearTimeout(timeout);
+            }
+          }
           return {
             content: [
               {
@@ -883,7 +939,7 @@ export function createMCPServer(
                 text: formatToolCallErrorMessage(
                   error,
                   scopedRepoIdentity,
-                  committedFallbackAvailable,
+                  errorCommittedFallbackAvailable,
                 ),
               },
             ],
@@ -1106,6 +1162,8 @@ export async function startMCPServer(
   process.stdin.on('close', () => void shutdown(0, 'stdin close'));
   process.stdin.on('error', (error) => void shutdown(0, `stdin error: ${error.message}`));
   process.stdout.on('error', (error) => void shutdown(0, `stdout error: ${error.message}`));
+  // stderr is diagnostic only; a closed reader must not interrupt server shutdown.
+  process.stderr.on('error', () => {});
   if (process.stdin.destroyed || process.stdin.readableEnded)
     void shutdown(0, 'stdin already closed');
 

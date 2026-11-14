@@ -530,14 +530,45 @@ describe('explicit committed navigation over MCP', () => {
     expect(analysisSpy).not.toHaveBeenCalled();
   });
 
-  it('lists supported operations when committed cypher reads are rejected', async () => {
+  it('serves committed read-only cypher and rejects committed cypher writes', async () => {
     const result = await client.callTool({
       name: 'search',
-      arguments: { repo: repoName, action: 'cypher', query: 'RETURN 1', read_mode: 'committed' },
+      arguments: {
+        repo: repoName,
+        action: 'cypher',
+        query: 'MATCH (n) RETURN count(n) AS c LIMIT 1',
+        read_mode: 'committed',
+      },
     });
-    expect(result.isError).toBe(true);
-    expect(JSON.stringify(result)).toContain('Received search/cypher.');
-    expect(JSON.stringify(result)).toContain('search semantic');
+    expect(result.isError, JSON.stringify(result)).not.toBe(true);
+    expect(payloadOf(result).readContext).toMatchObject({ mode: 'committed' });
+    expect(analysisSpy).not.toHaveBeenCalled();
+
+    const write = await client.callTool({
+      name: 'search',
+      arguments: {
+        repo: repoName,
+        action: 'cypher',
+        query: 'CREATE (n:X) RETURN n',
+        read_mode: 'committed',
+      },
+    });
+    expect(JSON.stringify(write)).toContain('Read-only Cypher rejected: forbidden keyword CREATE');
+  });
+
+  it('serves committed batch impact with committed read context', async () => {
+    const result = await client.callTool({
+      name: 'impact',
+      arguments: {
+        repo: repoName,
+        action: 'batch',
+        targets: ['baseline', 'caller'],
+        maxDepth: 1,
+        read_mode: 'committed',
+      },
+    });
+    expect(result.isError, JSON.stringify(result)).not.toBe(true);
+    expect(payloadOf(result).readContext).toMatchObject({ mode: 'committed' });
     expect(analysisSpy).not.toHaveBeenCalled();
   });
 

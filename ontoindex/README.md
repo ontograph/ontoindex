@@ -215,6 +215,12 @@ capture is verified within finite retries; it is not an atomic filesystem
 snapshot. Unsaved editor buffers and dynamic or external resolver inputs are
 outside its coverage. Parse failures and unsupported capabilities remain explicit.
 
+The MCP server also watches the repository so saved edits refresh the overlay
+early. The watch skips directories excluded by ignore rules. On Linux with
+Node.js 22.x, 24.0–24.13 or 25.0–25.4, which cannot skip them, the server does
+not watch and logs `Recursive watch skipped`; reads and a 30-second check still
+pick up changes.
+
 Logical pagination is bound to the admitted generation and input manifest; restart
 the query when that binding changes. Saved response pages replay their original
 bytes. Group reads prepare each repository independently and do not promise an

@@ -516,6 +516,44 @@ describe('can delete facade mapping', () => {
 });
 
 describe('safe edit check facade mapping', () => {
+  it('maps target to symbol and rejects conflicting aliases for supported audit actions', async () => {
+    for (const action of ['safe_edit_check', 'can_delete', 'test_gap'] as const) {
+      dispatchSuperMock.mockReset().mockResolvedValue({ verdict: 'PASS' });
+      const resolveRepo = vi.fn().mockResolvedValue({ id: 'fixture', repoPath: '/tmp/fixture' });
+      const callTool = vi.fn();
+      const targetOnly = { target: 'parseToken' };
+
+      await dispatchFacade('audit', action, targetOnly, {
+        ...graphReadBackend,
+        resolveRepo,
+        callTool,
+      } as unknown as LocalBackend);
+      expect(dispatchSuperMock).toHaveBeenCalledOnce();
+      expect(dispatchSuperMock.mock.calls[0][0]).toBe(`gn_${action}`);
+      expect(dispatchSuperMock.mock.calls[0][1]).toMatchObject({
+        target: 'parseToken',
+        symbol: 'parseToken',
+      });
+
+      dispatchSuperMock.mockReset().mockResolvedValue({ verdict: 'PASS' });
+      await dispatchFacade('audit', action, { target: 'same', symbol: 'same' }, {
+        ...graphReadBackend,
+        resolveRepo,
+        callTool,
+      } as unknown as LocalBackend);
+      expect(dispatchSuperMock.mock.calls[0][1]).toMatchObject({ target: 'same', symbol: 'same' });
+
+      await expect(
+        dispatchFacade('audit', action, { target: 'one', symbol: 'two' }, {
+          ...graphReadBackend,
+          resolveRepo,
+          callTool,
+        } as unknown as LocalBackend),
+      ).rejects.toThrow('different target and symbol values');
+      expect(dispatchSuperMock).toHaveBeenCalledTimes(1);
+    }
+  });
+
   it('preserves advertised edit safety metadata in the serialized contract', () => {
     const registry = getPublicToolRegistry({ includeFacades: true });
     const audit = registry.find((tool) => tool.name === 'audit')!;

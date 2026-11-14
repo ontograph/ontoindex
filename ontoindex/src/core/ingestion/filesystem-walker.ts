@@ -257,6 +257,8 @@ export const walkRepositoryPaths = async (
     const results = await Promise.allSettled(
       currentBatch.map(async (relativePath) => {
         const fullPath = path.join(repoPath, relativePath);
+        const linkStat = await fs.lstat(fullPath);
+        if (linkStat.isSymbolicLink()) return null;
         const stat = await fs.stat(fullPath);
         const skippedPath = relativePath.replace(/\\/g, '/');
         if (seenEntries.has(skippedPath)) {

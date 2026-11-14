@@ -19,6 +19,7 @@ import { writeSync } from 'node:fs';
 import { parseTypedQueryDocument } from '../core/search/typed-query-document.js';
 import { LocalBackend } from '../mcp/local/local-backend.js';
 import { projectResponseSourceLines } from '../mcp/shared/response-source-lines.js';
+import { readActiveGenerationMeta } from '../storage/repo-manager.js';
 
 let _backend: LocalBackend | null = null;
 const NAVIGATION_PREPARATION_FAILED = Symbol('navigation-preparation-failed');
@@ -27,6 +28,30 @@ const NAVIGATION_ROUTES = {
   context: ['inspect', 'context'],
   impact: ['impact', 'symbol'],
 } as const;
+
+async function committedReadAvailable(
+  backend: LocalBackend,
+  repo: string | undefined,
+): Promise<boolean> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const result = await Promise.race([
+      (async () => {
+        const resolved = await backend.resolveRepo(repo);
+        const { meta, authority } = await readActiveGenerationMeta(resolved.storagePath);
+        return !meta?.lastCommit || authority === 'untrusted' ? false : true;
+      })(),
+      new Promise<undefined>((resolve) => {
+        timeout = setTimeout(() => resolve(undefined), 1000);
+      }),
+    ]);
+    return result ?? true;
+  } catch {
+    return true;
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
 
 async function getBackend(): Promise<LocalBackend> {
   if (_backend) return _backend;
@@ -69,8 +94,9 @@ async function callNavigationTool(
   }
   // Report the same 1-based source lines as the equivalent MCP facade route.
   const [tool, action] = NAVIGATION_ROUTES[name];
+  let backend: LocalBackend | undefined;
   try {
-    const backend = await getBackend();
+    backend = await getBackend();
     if (params.read_mode === 'committed' || params.read_mode === 'workspace') {
       const repo = await backend.resolveRepo(params.repo as string);
       await backend.ensureRepoInitialized(repo.id);
@@ -95,11 +121,16 @@ async function callNavigationTool(
       throw err;
     }
     const diagnostics = recordField(err, 'diagnostics');
+    const committedAvailable = backend
+      ? await committedReadAvailable(backend, params.repo as string | undefined)
+      : true;
     console.error(
       `OntoIndex: ${code}${diagnostics ? ` ${JSON.stringify(diagnostics)}` : ''}. ` +
-        (params.read_mode === 'workspace'
-          ? 'As an explicit alternative, use --repo <name> --read-mode committed to read the last index; readContext.sourceProvenance reports whether it includes uncommitted changes.'
-          : 'Use --repo <name> --read-mode committed to read the last index; readContext.sourceProvenance reports whether it includes uncommitted changes.'),
+        (!committedAvailable
+          ? 'This index has no trusted commit (for example, it was built with analyze --skip-git), so --read-mode committed is unavailable; run ontoindex analyze in a git checkout to enable it.'
+          : params.read_mode === 'workspace'
+            ? 'As an explicit alternative, use --repo <name> --read-mode committed to read the last index; readContext.sourceProvenance reports whether it includes uncommitted changes.'
+            : 'Use --repo <name> --read-mode committed to read the last index; readContext.sourceProvenance reports whether it includes uncommitted changes.'),
     );
     process.exitCode = 1;
     return NAVIGATION_PREPARATION_FAILED;
@@ -291,6 +322,7 @@ export async function impactCommand(
     process.exit(1);
   }
 
+  let committedAvailable = true;
   try {
     try {
       const result = await callNavigationTool('impact', {
@@ -304,6 +336,12 @@ export async function impactCommand(
       });
       if (result === NAVIGATION_PREPARATION_FAILED) return;
       output(result);
+    } catch (err: unknown) {
+      // Check while the backend from this command is still open; never start a new one here.
+      if (thrownCode(err) === 'workspace_too_large' && _backend) {
+        committedAvailable = await committedReadAvailable(_backend, options?.repo);
+      }
+      throw err;
     } finally {
       await disposeBackend();
     }
@@ -316,7 +354,7 @@ export async function impactCommand(
       target: { name: target },
       direction: options?.direction || 'upstream',
       suggestion:
-        thrownCode(err) === 'workspace_too_large'
+        thrownCode(err) === 'workspace_too_large' && committedAvailable
           ? 'Explicitly select ontoindex impact <symbol> --repo <name> --read-mode committed; uncommitted changes are excluded'
           : 'Try reducing --depth or using ontoindex context <symbol> as a fallback',
     });

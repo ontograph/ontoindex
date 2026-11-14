@@ -1,4 +1,5 @@
 import { appendFile, mkdir, readFile, rename, stat } from 'node:fs/promises';
+import { appendFileSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -11,9 +12,32 @@ interface TelemetryRecord {
   durationMs: number;
   responseSizeBytes: number;
   ok: boolean;
+  id?: string;
+  code?: string;
+  reason?: string;
+}
+
+interface ToolCallStartRecord {
+  phase: 'start';
+  ts: string;
+  id: string;
+  method: string;
+  repo: string;
+  readMode?: 'committed' | 'workspace';
 }
 
 export const TOOL_TELEMETRY_OVERSIZED_BYTES = 512 * 1024;
+
+export function recordToolCallStart(record: ToolCallStartRecord): void {
+  try {
+    const telemetryDir = process.env.ONTOINDEX_TELEMETRY_DIR ?? join(homedir(), '.ontoindex');
+    const telemetryPath = join(telemetryDir, 'telemetry.jsonl');
+    mkdirSync(telemetryDir, { recursive: true });
+    appendFileSync(telemetryPath, JSON.stringify(record) + '\n', 'utf8');
+  } catch {
+    // A start record must never fail a tool call.
+  }
+}
 
 async function rotateIfNeeded(telemetryPath: string): Promise<void> {
   try {
@@ -53,8 +77,9 @@ export async function readRecentOversizedToolCalls(
     const lines = content.trim().split('\n').reverse();
     for (const line of lines) {
       if (result.length >= limit) break;
-      const parsed = JSON.parse(line) as Partial<TelemetryRecord>;
+      const parsed = JSON.parse(line) as Partial<TelemetryRecord> & { phase?: string };
       if (
+        parsed.phase !== 'start' &&
         typeof parsed.method === 'string' &&
         typeof parsed.responseSizeBytes === 'number' &&
         parsed.responseSizeBytes >= TOOL_TELEMETRY_OVERSIZED_BYTES &&

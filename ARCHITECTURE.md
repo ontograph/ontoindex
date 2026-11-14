@@ -305,7 +305,9 @@ CLI (analyze.ts) → runFullAnalysis(repoPath, options, callbacks)
  10. Generate AI context files (AGENTS.md, CLAUDE.md)      [100%]
 ```
 
-**Options:** `--force` (rebuild regardless), `--embeddings` (opt-in, skipped if >50k nodes), `--skipGit`, `--noStats`.
+**Options:** `--force` (rebuild regardless), `--embeddings` (opt-in, skipped if >50k nodes), `--skipGit`, `--noStats` (deprecated no-op; generated context files no longer contain counts).
+
+Step 10 writes AGENTS.md, CLAUDE.md, and `.claude/skills/ontoindex/*` only when their content changes, so an unchanged rerun does not invalidate the source manifest recorded in step 9.
 
 ## Storage
 
