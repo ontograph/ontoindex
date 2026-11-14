@@ -89,9 +89,10 @@ describe('MCP server graceful shutdown', () => {
             child.kill('SIGKILL');
             reject(new Error(`Child did not exit within 10 seconds; stderr: ${stderr}`));
           }, 10_000);
-          child.once('exit', () => {
+          child.once('exit', (code, signal) => {
             clearTimeout(timer);
-            resolve();
+            if (code === 0 && signal === null) resolve();
+            else reject(new Error(`Child exited with ${code ?? signal}; stderr: ${stderr}`));
           });
         });
       } finally {
