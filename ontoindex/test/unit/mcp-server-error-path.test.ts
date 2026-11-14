@@ -19,6 +19,7 @@ async function createHarness(
     callToolError?: string | Error;
     dispatchError?: string | Error;
     resolveRepoError?: string;
+    generationMeta?: unknown;
   } = {},
 ): Promise<{ backend: MockBackend; handler: ToolCallHandler }> {
   vi.resetModules();
@@ -36,6 +37,18 @@ async function createHarness(
     }));
   }
 
+  vi.doMock('../../src/storage/repo-manager.js', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('../../src/storage/repo-manager.js')>()),
+    readActiveGenerationMeta: vi.fn(
+      async () =>
+        options.generationMeta ?? {
+          activeGeneration: null,
+          meta: { lastCommit: 'a'.repeat(40) },
+          authority: 'legacy-root',
+        },
+    ),
+  }));
+
   const setRequestHandlerSpy = vi.spyOn(Server.prototype, 'setRequestHandler');
   const { createMCPServer } = await import('../../src/mcp/server.js');
 
@@ -50,7 +63,12 @@ async function createHarness(
     }),
     resolveRepo: vi.fn(async () => {
       if (options.resolveRepoError) throw new Error(options.resolveRepoError);
-      return { id: 'repo-1', name: 'fixture', repoPath: '/repo/fixture' };
+      return {
+        id: 'repo-1',
+        name: 'fixture',
+        repoPath: '/repo/fixture',
+        storagePath: '/repo/fixture/.ontoindex',
+      };
     }),
     ensureRepoInitialized: vi.fn(async () => undefined),
     withPreparedRepoRead: vi.fn(async (_repo, _options, operation) => operation()),
@@ -661,6 +679,40 @@ describe('MCP server tool-call errors', () => {
       error: 'dispatch failed',
       repoLabel: 'fixture',
       repoPath: '/repo/fixture',
+    });
+  });
+
+  it.each([
+    { activeGeneration: null, meta: { lastCommit: '' }, authority: 'legacy-root' },
+    { activeGeneration: null, meta: null, authority: 'untrusted' },
+  ])('omits committed remediation without a trusted commit: %o', async (generationMeta) => {
+    const error = Object.assign(new Error('workspace unavailable'), {
+      code: 'workspace_build_failed',
+    });
+    const { handler } = await createHarness({ dispatchError: error, generationMeta });
+    const response = await handler({
+      params: { name: 'gn_explore', arguments: { repo: 'fixture' } },
+    });
+    expect(readErrorPayload(response.content[0].text)).not.toHaveProperty('remediation');
+  });
+
+  it('keeps committed remediation when indexed commit identity is trusted', async () => {
+    const error = Object.assign(new Error('workspace unavailable'), {
+      code: 'workspace_build_failed',
+    });
+    const { handler } = await createHarness({
+      dispatchError: error,
+      generationMeta: {
+        activeGeneration: null,
+        meta: { lastCommit: 'a'.repeat(40) },
+        authority: 'legacy-root',
+      },
+    });
+    const response = await handler({
+      params: { name: 'gn_explore', arguments: { repo: 'fixture' } },
+    });
+    expect(readErrorPayload(response.content[0].text).remediation).toMatchObject({
+      read_mode: 'committed',
     });
   });
 

@@ -2346,7 +2346,9 @@ export class LocalBackend implements BackendPort {
       if (options.readMode === 'committed') {
         const selected = await readActiveGenerationMeta(repo.storagePath);
         if (!selected.meta?.lastCommit || selected.authority === 'untrusted') {
-          throw new Error('Committed read unavailable: indexed commit identity is unknown.');
+          throw new Error(
+            'Committed read unavailable: indexed commit identity is unknown. This index has no trusted commit (for example, it was built with analyze --skip-git); committed reads need an index built from a git commit. Run ontoindex analyze in a git checkout to enable them.',
+          );
         }
         const databasePath =
           selected.activeGeneration?.lbugPath ?? path.join(repo.storagePath, 'lbug');

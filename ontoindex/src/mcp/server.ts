@@ -1,4 +1,5 @@
 import { isAutomaticWorkspaceEnabled } from './local/backend-overlay.js';
+import { readActiveGenerationMeta } from '../storage/repo-manager.js';
 /**
  * MCP Server (Multi-Repo)
  *
@@ -896,6 +897,41 @@ export function createMCPServer(
           };
         } catch (error) {
           const scopedRepoIdentity = repoIdentity ?? readRepoIdentity(error);
+          let errorCommittedFallbackAvailable = committedFallbackAvailable;
+          const errorCandidate =
+            error !== null && typeof error === 'object'
+              ? (error as Record<string, unknown>)
+              : undefined;
+          if (
+            committedFallbackAvailable &&
+            !extra?.signal?.aborted &&
+            (errorCandidate?.code === 'workspace_too_large' ||
+              errorCandidate?.code === 'workspace_build_failed')
+          ) {
+            let timeout: ReturnType<typeof setTimeout> | undefined;
+            const lookupTimedOut = Symbol('generation metadata lookup timed out');
+            try {
+              const generation = await Promise.race([
+                (async () => {
+                  const repo = await backend.resolveRepo(typedArgs.repo as string);
+                  return readActiveGenerationMeta(repo.storagePath);
+                })(),
+                new Promise<typeof lookupTimedOut>((resolve) => {
+                  timeout = setTimeout(() => resolve(lookupTimedOut), 1000);
+                }),
+              ]);
+              if (
+                generation !== lookupTimedOut &&
+                (!generation?.meta?.lastCommit || generation.authority === 'untrusted')
+              ) {
+                errorCommittedFallbackAvailable = false;
+              }
+            } catch {
+              // Preserve the existing remediation when generation metadata cannot be read.
+            } finally {
+              if (timeout) clearTimeout(timeout);
+            }
+          }
           return {
             content: [
               {
@@ -903,7 +939,7 @@ export function createMCPServer(
                 text: formatToolCallErrorMessage(
                   error,
                   scopedRepoIdentity,
-                  committedFallbackAvailable,
+                  errorCommittedFallbackAvailable,
                 ),
               },
             ],
