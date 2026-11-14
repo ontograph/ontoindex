@@ -322,6 +322,7 @@ export async function impactCommand(
     process.exit(1);
   }
 
+  let committedAvailable = true;
   try {
     try {
       const result = await callNavigationTool('impact', {
@@ -335,25 +336,18 @@ export async function impactCommand(
       });
       if (result === NAVIGATION_PREPARATION_FAILED) return;
       output(result);
+    } catch (err: unknown) {
+      // Check while the backend from this command is still open; never start a new one here.
+      if (thrownCode(err) === 'workspace_too_large' && _backend) {
+        committedAvailable = await committedReadAvailable(_backend, options?.repo);
+      }
+      throw err;
     } finally {
       await disposeBackend();
     }
   } catch (err: unknown) {
     // Belt-and-suspenders: catch infrastructure failures (getBackend, callTool transport)
     // The backend's impact() already returns structured errors for graph query failures
-    let committedAvailable = true;
-    if (thrownCode(err) === 'workspace_too_large') {
-      try {
-        try {
-          const backend = await getBackend();
-          committedAvailable = await committedReadAvailable(backend, options?.repo);
-        } catch {
-          committedAvailable = true;
-        }
-      } finally {
-        await disposeBackend();
-      }
-    }
     output({
       error:
         (err instanceof Error ? err.message : String(err)) || 'Impact analysis failed unexpectedly',

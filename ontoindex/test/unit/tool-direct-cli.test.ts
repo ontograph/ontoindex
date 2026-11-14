@@ -238,6 +238,43 @@ describe('direct CLI tool commands', () => {
     }
   });
 
+  it.each([
+    {
+      lastCommit: '',
+      suggestion: 'Try reducing --depth or using ontoindex context <symbol> as a fallback',
+    },
+    {
+      lastCommit: 'a'.repeat(40),
+      suggestion:
+        'Explicitly select ontoindex impact <symbol> --repo <name> --read-mode committed; uncommitted changes are excluded',
+    },
+  ])(
+    'checks commit availability on the open backend for raw impact size errors ($lastCommit)',
+    async ({ lastCommit, suggestion }) => {
+      readActiveGenerationMetaMock.mockResolvedValue({
+        activeGeneration: null,
+        meta: { lastCommit },
+        authority: 'legacy-root',
+      });
+      callToolMock.mockRejectedValue(
+        Object.assign(new Error('workspace too large'), { code: 'workspace_too_large' }),
+      );
+      const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+      try {
+        const { impactCommand } = await import('../../src/cli/tool.js');
+        await impactCommand('Symbol', { repo: 'codex' });
+
+        const written = JSON.parse(String(writeSyncMock.mock.calls[0][1]));
+        expect(written.suggestion).toBe(suggestion);
+        expect(constructorMock).toHaveBeenCalledOnce();
+        expect(disposeMock).toHaveBeenCalledOnce();
+        expect(exitSpy).toHaveBeenCalledWith(1);
+      } finally {
+        exitSpy.mockRestore();
+      }
+    },
+  );
+
   it.each([undefined, '', '@group'])(
     'rejects committed reads without a single repo: %s',
     async (repo) => {
