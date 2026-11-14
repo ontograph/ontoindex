@@ -705,7 +705,7 @@ export const ONTOINDEX_FACADE_TOOLS: ToolDefinition[] = [
         target: {
           type: 'string',
           description:
-            'For ingest: target git ref; alias for targetRef. Defaults to HEAD in the handler.',
+            'For ingest: target git ref; alias for targetRef. Defaults to HEAD in the handler. For safe_edit_check, can_delete or test_gap: alias for symbol.',
         },
         targetRef: {
           type: 'string',

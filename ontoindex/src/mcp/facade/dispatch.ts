@@ -309,6 +309,19 @@ function normalizeFacadeArgs(
     if (action === 'replace' && !normalized.uid) normalized.uid = target;
   }
 
+  if (
+    tool === 'audit' &&
+    (action === 'safe_edit_check' || action === 'can_delete' || action === 'test_gap') &&
+    target !== undefined
+  ) {
+    if (normalized.symbol === undefined) normalized.symbol = target;
+    else if (normalized.symbol !== target) {
+      throw new Error(
+        `audit(action: "${action}") received different target and symbol values; pass only one.`,
+      );
+    }
+  }
+
   if (tool === 'docs' && !normalized.action) {
     normalized.action = action;
   }

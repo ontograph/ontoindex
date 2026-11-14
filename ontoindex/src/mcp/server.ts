@@ -60,8 +60,8 @@ const MAX_PROMPT_ARGUMENT_BYTES = 4096;
 
 const COMMITTED_READ_OPERATIONS: ReadonlyArray<{ tool: string; actions?: readonly string[] }> = [
   { tool: 'inspect', actions: ['context', 'related', 'explore'] },
-  { tool: 'impact', actions: ['symbol'] },
-  { tool: 'search', actions: ['semantic'] },
+  { tool: 'impact', actions: ['symbol', 'batch'] },
+  { tool: 'search', actions: ['semantic', 'cypher'] },
   { tool: 'audit', actions: ['safe_edit_check', 'can_delete'] },
   { tool: 'gn_explore' },
   { tool: 'gn_find_related' },
@@ -188,6 +188,14 @@ function formatToolCallErrorMessage(
     'coverage_degraded',
   ];
   const systemCodes = ['EACCES', 'EPERM', 'ENOSPC', 'ENOENT', 'EMFILE', 'ENFILE', 'EIO', 'EROFS'];
+  const safeRefusalPath = (value: unknown): value is string =>
+    typeof value === 'string' &&
+    value.length > 0 &&
+    value.length <= 256 &&
+    !value.startsWith('/') &&
+    !/[\\\u0000-\u001f\u007f-\u009f\u2028\u2029]/.test(value) &&
+    !/^[A-Za-z]:/.test(value) &&
+    value.split('/').every((part) => part !== '' && part !== '.' && part !== '..');
   const diagnostics =
     code === 'workspace_too_large' &&
     diagnostic &&
@@ -214,6 +222,15 @@ function formatToolCallErrorMessage(
           reason: failureDiagnostic.reason,
           ...(systemCodes.includes(failureDiagnostic.systemCode as string)
             ? { systemCode: failureDiagnostic.systemCode }
+            : {}),
+          ...(failureDiagnostic.reason === 'input_refused' &&
+          safeRefusalPath(failureDiagnostic.path) &&
+          (failureDiagnostic.refusalKind === 'symlink' ||
+            failureDiagnostic.refusalKind === 'non-regular')
+            ? {
+                path: failureDiagnostic.path,
+                refusalKind: failureDiagnostic.refusalKind,
+              }
             : {}),
         }
       : undefined;
@@ -259,7 +276,10 @@ function formatToolCallErrorMessage(
                           ? ' To prepare a separate bounded workspace graph while preserving the committed index, explicitly run `ONTOINDEX_AUTO_WORKSPACE=1 ontoindex analyze --workspace-graph` in the repository. Rerun this command after workspace inputs change.'
                           : '') +
                         (failure?.reason === 'input_refused'
-                          ? ' The working tree contains an input the workspace capture refuses, such as a tracked symlink or a file over the scan cap; exclude it with .ontoindexignore where allowed or run ontoindex analyze.'
+                          ? ' The working tree contains an input the workspace capture refuses, such as a tracked symlink or non-regular input; exclude it with .ontoindexignore where allowed or run ontoindex analyze.' +
+                            (failure.path && failure.refusalKind
+                              ? ` Refused input: ${failure.path} (${failure.refusalKind}).`
+                              : '')
                           : '') +
                         (failure?.reason === 'coverage_degraded'
                           ? ' The published workspace graph reports degraded coverage. Inspect the analysis diagnostics and correct the reported issues before explicitly rebuilding.'

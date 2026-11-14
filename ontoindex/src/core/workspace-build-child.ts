@@ -3,7 +3,11 @@
  * group so a deadline can kill the build and reclaim its memory. The parent holds the analyze lock.
  */
 import { startParentWatchdog } from './parent-watchdog.js';
-import { workspaceBuildExitCode } from '../mcp/local/workspace-build-supervisor.js';
+import {
+  WORKSPACE_INPUT_REFUSED_EXIT_CODE,
+  WORKSPACE_REFUSAL_MARKER,
+  workspaceBuildExitCode,
+} from '../mcp/local/workspace-build-supervisor.js';
 import {
   MAX_SCOPE_RETENTION_BYTES,
   MAX_SCOPE_RETENTION_TIMEOUT_MS,
@@ -100,6 +104,25 @@ import {
   }
   process.exit(0);
 })().catch((error: unknown) => {
+  if (
+    workspaceBuildExitCode(error) === WORKSPACE_INPUT_REFUSED_EXIT_CODE &&
+    typeof error === 'object' &&
+    error !== null &&
+    'refusal' in error &&
+    error.refusal !== null &&
+    typeof error.refusal === 'object' &&
+    'path' in error.refusal &&
+    typeof error.refusal.path === 'string' &&
+    'kind' in error.refusal &&
+    (error.refusal.kind === 'symlink' || error.refusal.kind === 'non-regular')
+  ) {
+    process.stderr.write(
+      `${WORKSPACE_REFUSAL_MARKER}${JSON.stringify({
+        path: error.refusal.path,
+        kind: error.refusal.kind,
+      })}\n`,
+    );
+  }
   console.error(error instanceof Error ? error.message : String(error));
   process.exit(workspaceBuildExitCode(error));
 });

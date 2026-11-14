@@ -61,6 +61,26 @@ describe('filesystem-walker', () => {
       expect(paths.some((p) => p.includes('components/Button.tsx'))).toBe(true);
     });
 
+    it('skips file, dangling, and directory symlinks without reporting unreadable files', async () => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-walker-symlinks-'));
+      const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-walker-outside-'));
+      const unreadable = vi.fn();
+      try {
+        await fs.writeFile(path.join(outside, 'secret.ts'), 'export const secret = true;');
+        await fs.mkdir(path.join(outside, 'nested'));
+        await fs.writeFile(path.join(outside, 'nested', 'child.ts'), 'export const child = true;');
+        await fs.symlink(path.join(outside, 'secret.ts'), path.join(root, 'outside.ts'));
+        await fs.symlink('missing-target', path.join(root, 'dangling.ts'));
+        await fs.symlink(path.join(outside, 'nested'), path.join(root, 'linked-dir'));
+        const files = await walkRepositoryPaths(root, undefined, { onUnreadableFile: unreadable });
+        expect(files.map((file) => file.path)).toEqual([]);
+        expect(unreadable).not.toHaveBeenCalled();
+      } finally {
+        await fs.rm(root, { recursive: true, force: true });
+        await fs.rm(outside, { recursive: true, force: true });
+      }
+    });
+
     it('skips node_modules', async () => {
       const files = await walkRepositoryPaths(tmpDir);
       const paths = files.map((f) => f.path.replace(/\\/g, '/'));

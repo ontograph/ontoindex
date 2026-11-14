@@ -323,10 +323,43 @@ describe('MCP server tool-call errors', () => {
     expect(payload.remediation).toEqual({
       read_mode: 'committed',
       message:
-        'Explicitly set read_mode="committed" to query the last index. Check readContext.sourceProvenance and readContext.workingTreeIncluded to determine whether uncommitted source is included. Manual overlays and live enrichment are excluded. Do not automatically retry or reindex. The working tree contains an input the workspace capture refuses, such as a tracked symlink or a file over the scan cap; exclude it with .ontoindexignore where allowed or run ontoindex analyze.',
+        'Explicitly set read_mode="committed" to query the last index. Check readContext.sourceProvenance and readContext.workingTreeIncluded to determine whether uncommitted source is included. Manual overlays and live enrichment are excluded. Do not automatically retry or reindex. The working tree contains an input the workspace capture refuses, such as a tracked symlink or non-regular input; exclude it with .ontoindexignore where allowed or run ontoindex analyze.',
     });
     expect(payload).not.toHaveProperty('privatePath');
     expect(response.content[0].text).not.toMatch(/privatePath|private\/workspace|private stderr/);
+  });
+
+  it('passes safe refusal details and drops unsafe paths and unapproved fields', async () => {
+    for (const path of ['GEMINI.md', '../x', '/etc/passwd', 'x'.repeat(300), 'bad\npath']) {
+      const error = Object.assign(new Error('Working-tree graph build failed.'), {
+        code: 'workspace_build_failed',
+        diagnostics: {
+          phase: 'planning',
+          reason: 'input_refused',
+          path,
+          refusalKind: 'symlink',
+          systemCode: 'EIO',
+          privateMetadata: 'secret',
+        },
+      });
+      const { handler } = await createHarness({ dispatchError: error });
+      const response = await handler({
+        params: { name: 'gn_explore', arguments: { repo: 'fixture' } },
+      });
+      const payload = readErrorPayload(response.content[0].text);
+      expect(payload.diagnostics).toEqual({
+        phase: 'planning',
+        reason: 'input_refused',
+        systemCode: 'EIO',
+        ...(path === 'GEMINI.md' ? { path, refusalKind: 'symlink' } : {}),
+      });
+      expect((payload.remediation as { message: string }).message).toContain(
+        path === 'GEMINI.md'
+          ? ' Refused input: GEMINI.md (symlink).'
+          : 'input the workspace capture refuses',
+      );
+      expect(JSON.stringify(payload)).not.toContain('privateMetadata');
+    }
   });
 
   it.each([
@@ -430,8 +463,7 @@ describe('MCP server tool-call errors', () => {
   it.each(
     [
       { name: 'inspect', arguments: { repo: 'fixture', action: 'shape' } },
-      { name: 'impact', arguments: { repo: 'fixture', action: 'batch' } },
-      { name: 'search', arguments: { repo: 'fixture', action: 'cypher' } },
+      { name: 'inspect', arguments: { repo: 'fixture', action: 'module' } },
       { name: 'gn_explore', arguments: {} },
     ].flatMap((params) =>
       ['workspace_build_failed', 'workspace_too_large'].map((code) => ({ params, code })),
@@ -450,6 +482,27 @@ describe('MCP server tool-call errors', () => {
     const payload = readErrorPayload(response.content[0].text);
     expect(payload).toMatchObject({ code, retryable: false });
     expect(payload).not.toHaveProperty('remediation');
+    expect(backend.callTool.mock.calls.length).toBeLessThanOrEqual(1);
+  });
+
+  it.each([
+    { name: 'impact', arguments: { repo: 'fixture', action: 'batch', targets: ['baseline'] } },
+    { name: 'search', arguments: { repo: 'fixture', action: 'cypher', query: 'RETURN 1' } },
+  ])('includes committed fallback advice for supported $params', async (params) => {
+    const error = Object.assign(new Error('workspace unavailable'), {
+      code: 'workspace_build_failed',
+      retryable: false,
+    });
+    const { backend, handler } = await createHarness({
+      dispatchError: error,
+      callToolError: error,
+    });
+    const response = await handler({ params });
+    expect(response.isError).toBe(true);
+    expect(readErrorPayload(response.content[0].text)).toMatchObject({
+      code: 'workspace_build_failed',
+      remediation: { read_mode: 'committed' },
+    });
     expect(backend.callTool.mock.calls.length).toBeLessThanOrEqual(1);
   });
 

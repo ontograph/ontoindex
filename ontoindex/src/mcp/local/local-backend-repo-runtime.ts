@@ -59,6 +59,8 @@ export interface WorkspaceFailureDiagnostics {
   phase: WorkspacePreparationPhase;
   reason: WorkspacePreparationReason;
   systemCode?: WorkspaceSystemCode;
+  path?: string;
+  refusalKind?: 'symlink' | 'non-regular';
 }
 export interface WorkspaceTimeoutDiagnostics {
   phase: 'planning' | 'build' | 'wait';
@@ -77,11 +79,26 @@ const SYSTEM_CODES = new Set<WorkspaceSystemCode>([
   'EIO',
   'EROFS',
 ]);
+export function safeRefusalPath(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    value.length > 0 &&
+    value.length <= 256 &&
+    !value.startsWith('/') &&
+    !/[\\\u0000-\u001f\u007f-\u009f\u2028\u2029]/.test(value) &&
+    !/^[A-Za-z]:/.test(value) &&
+    value.split('/').every((part) => part !== '' && part !== '.' && part !== '..')
+  );
+}
 function failureDiagnostics(
   phase: WorkspacePreparationPhase,
   reason: WorkspacePreparationReason,
   cause?: unknown,
 ): WorkspaceFailureDiagnostics {
+  const refusal =
+    cause instanceof WorkspaceInputCaptureError || cause instanceof WorkspaceBuildError
+      ? cause.refusal
+      : undefined;
   let code =
     cause !== null && typeof cause === 'object' ? (cause as { code?: unknown }).code : undefined;
   if (
@@ -99,6 +116,12 @@ function failureDiagnostics(
     reason,
     ...(typeof code === 'string' && SYSTEM_CODES.has(code as WorkspaceSystemCode)
       ? { systemCode: code as WorkspaceSystemCode }
+      : {}),
+    ...(reason === 'input_refused' &&
+    refusal &&
+    safeRefusalPath(refusal.path) &&
+    (refusal.kind === 'symlink' || refusal.kind === 'non-regular')
+      ? { path: refusal.path, refusalKind: refusal.kind }
       : {}),
   };
 }
@@ -550,12 +573,17 @@ export async function prepareWorkspaceRead(options: {
     }
     assertCallerActive();
     if (snapshot.reason?.startsWith('dirty planning failed:')) {
+      const planningRefusal =
+        snapshot.failureCause instanceof WorkspaceInputCaptureError &&
+        (snapshot.failureCause.code === 'unsupported' || snapshot.failureCause.code === 'limit');
       throw new WorkspacePreparationError(
         'workspace_build_failed',
         undefined,
         undefined,
         undefined,
-        failureDiagnostics('planning', 'planning_failed'),
+        planningRefusal
+          ? failureDiagnostics('planning', 'input_refused', snapshot.failureCause)
+          : failureDiagnostics('planning', 'planning_failed'),
       );
     }
     const configPaths = snapshot.configPaths ?? new Set<string>();

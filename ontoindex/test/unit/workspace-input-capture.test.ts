@@ -184,10 +184,44 @@ describe('workspace input capture', () => {
       }
       await expect(capture(root, { includePaths: ['src/main.ts'] })).rejects.toMatchObject({
         code: 'unsupported',
+        refusal: {
+          path: kind === 'ancestor' ? 'ontoindex-packs' : 'ontoindex-packs/core/pack.yml',
+          kind: 'symlink',
+        },
       });
       expect(await pendingCaptures(root)).toEqual([]);
     },
   );
+
+  it('skips a dangling tracked configuration symlink', async () => {
+    const root = await makeRepo(true);
+    await fs.symlink('missing-target', path.join(root, 'GEMINI.md'));
+    execFileSync('git', ['add', 'GEMINI.md'], { cwd: root });
+    const result = await capture(root);
+    expect(result.capturedPaths).not.toContain('GEMINI.md');
+  });
+
+  it('captures configuration while skipping a tracked symlink', async () => {
+    const root = await makeRepo(true);
+    await fs.writeFile(path.join(root, 'AGENTS.md'), '# Agent rules\n');
+    await fs.symlink('AGENTS.md', path.join(root, 'GEMINI.md'));
+    execFileSync('git', ['add', 'AGENTS.md', 'GEMINI.md'], { cwd: root });
+    const result = await capture(root);
+    expect(result.capturedPaths).toContain('AGENTS.md');
+    expect(result.capturedPaths).not.toContain('GEMINI.md');
+  });
+
+  it('keeps source manifest identity unchanged by adding a symlink', async () => {
+    const firstRoot = await makeRepo();
+    const secondRoot = await makeRepo();
+    await fs.symlink(path.join(firstRoot, 'src/main.ts'), path.join(firstRoot, 'link.ts'));
+    const [first, second] = await Promise.all([
+      computeSourceManifest(firstRoot),
+      computeSourceManifest(secondRoot),
+    ]);
+    expect(first.sourceDigest).toBe(second.sourceDigest);
+    expect(first.sourceEntryCount).toBe(second.sourceEntryCount);
+  });
 
   it('captures ignored, off-scope catalog manifests regardless of legacy limits', async () => {
     const root = await makeRepo();
@@ -262,14 +296,16 @@ describe('workspace input capture', () => {
     },
   );
 
-  it('refuses symlink paths without publishing a partial capture', async () => {
+  it('skips symlink paths without publishing them to the capture', async () => {
     const root = await makeRepo();
     for (const filename of ['link-a.ts', 'link-b.ts']) {
       await fs.symlink(path.join(root, 'src/main.ts'), path.join(root, filename));
     }
-    const error = await capture(root).catch((error: unknown) => error);
-    expect(error).toMatchObject({ code: 'unsupported' });
-    expect(error).toHaveProperty('message', expect.stringContaining('link-'));
+    const result = await capture(root);
+    expect(result.capturedPaths).not.toContain('link-a.ts');
+    expect(result.capturedPaths).not.toContain('link-b.ts');
+    expect(result.capturedPaths).toContain('src/main.ts');
+    await result.dispose();
     expect(await pendingCaptures(root)).toEqual([]);
   });
 
@@ -610,14 +646,16 @@ describe('workspace input capture', () => {
     expect(await pendingCaptures(root)).toEqual([]);
   });
 
-  it('rejects symlink files, directory escapes and a symlink capture parent', async () => {
+  it('skips symlink files and directory escapes while rejecting a symlink capture parent', async () => {
     const root = await makeRepo();
     const outside = await makeRepo();
     await fs.symlink(path.join(outside, 'src/main.ts'), path.join(root, 'src/link.ts'));
-    await expect(capture(root)).rejects.toMatchObject({ code: 'unsupported' });
+    const linkedFileCapture = await capture(root);
+    expect(linkedFileCapture.capturedPaths).not.toContain('src/link.ts');
     await fs.rm(path.join(root, 'src/link.ts'));
     await fs.symlink(path.join(outside, 'src'), path.join(root, 'escape'));
-    await expect(capture(root)).rejects.toMatchObject({ code: 'unsupported' });
+    const escapedDirectoryCapture = await capture(root);
+    expect(escapedDirectoryCapture.capturedPaths).not.toContain('escape');
     await fs.rm(path.join(root, 'escape'));
     await fs.rm(path.join(root, '.ontoindex/workspace-inputs'), { recursive: true });
     await fs.symlink(outside, path.join(root, '.ontoindex/workspace-inputs'));

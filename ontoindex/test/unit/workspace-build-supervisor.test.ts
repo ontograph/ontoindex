@@ -9,6 +9,7 @@ import {
   superviseWorkspaceBuild,
   sweepOrphanedWorkspaceBuild,
   workspaceBuildExitCode,
+  WORKSPACE_REFUSAL_MARKER,
   WorkspaceBuildError,
 } from '../../src/mcp/local/workspace-build-supervisor.js';
 
@@ -439,6 +440,36 @@ describe('superviseWorkspaceBuild', () => {
       'CURRENT',
       'old-gen',
     ]);
+  });
+
+  it('preserves structured refusal metadata and removes marker lines from stderr', async () => {
+    const script = `
+      process.stderr.write(${JSON.stringify(`${WORKSPACE_REFUSAL_MARKER}{"path":"GEMINI.md","kind":"symlink"}\n`)});
+      process.stderr.write('human detail\\n');
+      process.exit(3);`;
+    const error = (await run(script).catch((e: unknown) => e)) as WorkspaceBuildError;
+    expect(error.kind).toBe('input_refused');
+    expect(error.refusal).toEqual({ path: 'GEMINI.md', kind: 'symlink' });
+    expect(error.message).toContain('human detail');
+    expect(error.message).not.toContain(WORKSPACE_REFUSAL_MARKER);
+  });
+
+  it.each(['not-json', '{"path":"GEMINI.md","kind":"unknown"}', '{"path":12,"kind":"symlink"}'])(
+    'ignores malformed refusal marker %s',
+    async (payload) => {
+      const script = `process.stderr.write(${JSON.stringify(`${WORKSPACE_REFUSAL_MARKER}${payload}\n`)}); process.exit(3);`;
+      const error = (await run(script).catch((e: unknown) => e)) as WorkspaceBuildError;
+      expect(error.refusal).toBeUndefined();
+      expect(error.message).not.toContain(WORKSPACE_REFUSAL_MARKER);
+    },
+  );
+
+  it('ignores valid refusal metadata on ordinary build failure', async () => {
+    const script = `process.stderr.write(${JSON.stringify(`${WORKSPACE_REFUSAL_MARKER}{"path":"GEMINI.md","kind":"symlink"}\n`)}); process.exit(1);`;
+    const error = (await run(script).catch((e: unknown) => e)) as WorkspaceBuildError;
+    expect(error.kind).toBe('failed');
+    expect(error.refusal).toBeUndefined();
+    expect(error.message).not.toContain(WORKSPACE_REFUSAL_MARKER);
   });
 
   it('reports a build signal with its stderr and cleans partial artifacts', async () => {

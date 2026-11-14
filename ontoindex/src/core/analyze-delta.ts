@@ -533,6 +533,7 @@ export class WorkspaceInputCaptureError extends Error {
   constructor(
     readonly code: WorkspaceInputCaptureCode,
     message: string,
+    readonly refusal?: { path: string; kind: 'symlink' | 'non-regular' },
   ) {
     super(message);
     this.name = 'WorkspaceInputCaptureError';
@@ -602,9 +603,11 @@ async function checkCapturePath(root: string, relativePath: string): Promise<voi
     current = path.join(current, components[index]);
     const stat = await fs.lstat(current);
     if (stat.isSymbolicLink() || (index < components.length - 1 && !stat.isDirectory())) {
+      const refusalPath = components.slice(0, index + 1).join('/');
       throw new WorkspaceInputCaptureError(
         'unsupported',
         `Workspace capture rejects symlinks and non-directory ancestors: ${relativePath}`,
+        { path: refusalPath, kind: stat.isSymbolicLink() ? 'symlink' : 'non-regular' },
       );
     }
   }
@@ -762,6 +765,7 @@ async function workspaceConfigurationPaths(
       throw new WorkspaceInputCaptureError(
         'unsupported',
         `Workspace capture requires regular input: ${relativePath}`,
+        { path: relativePath, kind: 'non-regular' },
       );
     catalogPaths.push(relativePath);
   }
@@ -818,6 +822,7 @@ async function workspaceConfigurationPaths(
           throw new WorkspaceInputCaptureError(
             'unsupported',
             `Workspace capture requires regular input: ${relativePath}`,
+            { path: relativePath, kind: 'non-regular' },
           );
         paths.push(relativePath);
       }
@@ -842,17 +847,13 @@ async function workspaceConfigurationPaths(
     check();
     const relativePath = String(entry);
     const stat = await fs.lstat(captureInputPath(root, relativePath));
-    if (stat.isSymbolicLink()) {
-      throw new WorkspaceInputCaptureError(
-        'unsupported',
-        `Workspace capture rejects symlink: ${relativePath}`,
-      );
-    }
+    if (stat.isSymbolicLink()) continue;
     await checkCapturePath(root, relativePath);
     if (!stat.isDirectory() && !stat.isFile()) {
       throw new WorkspaceInputCaptureError(
         'unsupported',
         `Workspace capture requires regular input: ${relativePath}`,
+        { path: relativePath, kind: 'non-regular' },
       );
     }
     if (stat.isFile() && CAPTURE_CONFIGURATION.test(path.basename(relativePath)))
