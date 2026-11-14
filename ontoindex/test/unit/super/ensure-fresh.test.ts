@@ -103,6 +103,8 @@ const EMBEDDING_MODEL_HASH = 'hash-a';
 const SOURCE_MANIFEST_DIGEST = 'd'.repeat(64);
 const WORKSPACE_READINESS_WARNING =
   'Workspace readiness was not checked: this freshness report does not prove that workspace reads (the default read_mode) can be prepared. If a workspace read fails, inspect its diagnostics; read_mode="committed" queries the last index for supported operations.';
+const WORKSPACE_READINESS_NO_COMMIT_WARNING =
+  'Workspace readiness was not checked: this freshness report does not prove that workspace reads (the default read_mode) can be prepared. If a workspace read fails, inspect its diagnostics; this index has no trusted commit, so read_mode="committed" is unavailable.';
 
 const STALE_INDEXED_COMMIT = 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef';
 
@@ -392,6 +394,17 @@ describe('gnEnsureFresh', () => {
     expect(report.warnings).toEqual([WORKSPACE_READINESS_WARNING]);
     // No stale recommendation
     expect(report.recommendations.some((r) => r.includes('stale'))).toBe(false);
+  });
+
+  it('warns that committed reads are unavailable when generation metadata has no commit', async () => {
+    setupExecFile({ currentCommit: CURRENT_COMMIT });
+    mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: CURRENT_COMMIT }) as any);
+    mockLoadMeta.mockResolvedValue(makeMeta({ lastCommit: '' }) as any);
+
+    const report = await gnEnsureFresh(REPO_ID, {});
+
+    expect(report.warnings).toContain(WORKSPACE_READINESS_NO_COMMIT_WARNING);
+    expect(report.warnings).not.toContain(WORKSPACE_READINESS_WARNING);
   });
 
   it('uses canonical dirty-worktree freshness without changing commit staleness', async () => {
