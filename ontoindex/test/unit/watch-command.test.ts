@@ -78,6 +78,7 @@ function makeHarness(
     leasePath,
     child,
     spawn,
+    createWatcher,
     log,
     error,
     planDirtyOverlay,
@@ -126,6 +127,37 @@ afterEach(() => {
 });
 
 describe('watch command', () => {
+  it('skips recursive watching on unsupported Node runtimes and forwards directory ignores', async () => {
+    const harness = makeHarness();
+    const childrenIgnored = vi.fn(({ name }: { name: string }) => name === 'vendor');
+    const command = await harness.start({
+      requireWatchIgnoreSupport: true,
+      watchIgnoreSupported: () => false,
+      createIgnoreFilter: vi.fn(async () => ({ ignored: () => false, childrenIgnored })) as never,
+    });
+    const watcherOptions = harness.createWatcher.mock.calls[0][0];
+    expect(watcherOptions.watchFiles).toBe(false);
+    expect(harness.log).toHaveBeenCalledWith(
+      `Recursive watch skipped: Node ${process.versions.node} lacks fs.watch ignore; changes are picked up by reads and the reconciliation timer.`,
+    );
+    expect(watcherOptions.shouldIgnoreDirectory?.('vendor')).toBe(true);
+    expect(childrenIgnored).toHaveBeenCalledWith({
+      name: 'vendor',
+      relative: expect.any(Function),
+    });
+    await command.stop();
+
+    const supported = makeHarness();
+    const supportedCommand = await supported.start({
+      requireWatchIgnoreSupport: true,
+      watchIgnoreSupported: () => true,
+    });
+    const supportedOptions = supported.createWatcher.mock.calls[0][0];
+    expect(supportedOptions.watchFiles).toBe(true);
+    expect(supportedOptions.shouldIgnoreDirectory).toEqual(expect.any(Function));
+    await supportedCommand.stop();
+  });
+
   it('refreshes a changed HEAD once before rebuilding the overlay', async () => {
     vi.useFakeTimers();
     const options = { head: 'head', commit: 'head' };

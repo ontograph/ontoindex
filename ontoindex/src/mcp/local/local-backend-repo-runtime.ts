@@ -369,6 +369,7 @@ export async function acquireWorkspaceWatch(
       ready: Promise.resolve().then(async () => {
         const { createWatchCommand } = await import('../../cli/watch.js');
         return createWatchCommand(canonicalPath, {
+          requireWatchIgnoreSupport: true,
           refreshCallback: async () => {
             evictOverlayState(repo.id);
             await prepareWorkspaceRead({

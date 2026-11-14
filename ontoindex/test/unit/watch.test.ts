@@ -1,6 +1,9 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createDebouncedWatcher } from '../../src/cli/watch.js';
+import { createDebouncedWatcher, supportsWatchIgnore } from '../../src/cli/watch.js';
 
 function makeWatchHarness() {
   let onChange: ((eventType: string, filename: string) => void) | undefined;
@@ -24,6 +27,69 @@ afterEach(() => {
 });
 
 describe('createDebouncedWatcher', () => {
+  it('filters ignored directories without applying file rules to directories', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-ignore-'));
+    try {
+      for (const name of ['target', 'node_modules', 'scratch.tmp', 'archive~'])
+        fs.mkdirSync(path.join(root, name));
+      for (const name of ['a.ts', 'x.log']) fs.writeFileSync(path.join(root, name), '');
+      let options: fs.WatchOptions | undefined;
+      const watcher = createDebouncedWatcher({
+        root,
+        isLockHeld: () => false,
+        refresh: async () => {},
+        shouldIgnoreDirectory: (rel) => rel === 'target',
+        watchImpl: ((_root: string, opts: fs.WatchOptions) => {
+          options = opts;
+          return { close: vi.fn() } as never;
+        }) as unknown as typeof fs.watch,
+      });
+      watcher.start();
+      expect(options?.recursive).toBe(true);
+      const ignore = options?.ignore as (relPath: string) => boolean;
+      expect(ignore('target')).toBe(true);
+      expect(ignore('node_modules')).toBe(true);
+      expect(ignore('x.log')).toBe(true);
+      expect(ignore('scratch.tmp')).toBe(false);
+      expect(ignore('archive~')).toBe(false);
+      expect(ignore('a.ts')).toBe(false);
+      watcher.stop();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('skips watcher startup but keeps requestRefresh active when watchFiles is false', async () => {
+    const watchImpl = vi.fn();
+    const refresh = vi.fn(async () => {});
+    const watcher = createDebouncedWatcher({
+      root: '/repo',
+      isLockHeld: () => false,
+      refresh,
+      watchImpl: watchImpl as unknown as typeof fs.watch,
+      watchFiles: false,
+    });
+    watcher.start();
+    watcher.requestRefresh();
+    await Promise.resolve();
+    expect(watchImpl).not.toHaveBeenCalled();
+    expect(refresh).toHaveBeenCalledOnce();
+    watcher.stop();
+  });
+
+  it.each([
+    ['22.22.0', 'linux', false],
+    ['24.13.0', 'linux', false],
+    ['24.14.0', 'linux', true],
+    ['24.21.0', 'linux', true],
+    ['25.4.0', 'linux', false],
+    ['25.5.0', 'linux', true],
+    ['26.0.0', 'linux', true],
+    ['22.12.0', 'darwin', true],
+  ])('reports fs.watch ignore support for Node %s on %s', (version, platform, expected) => {
+    expect(supportsWatchIgnore(version, platform as NodeJS.Platform)).toBe(expected);
+  });
+
   it('bounds continuous saves to five seconds per burst', async () => {
     vi.useFakeTimers();
     const events = makeWatchHarness();
