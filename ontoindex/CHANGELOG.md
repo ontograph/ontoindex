@@ -4,6 +4,18 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [3.1.5] - 2026-11-15
+
+- Refused workspace inputs report a safe repository-relative path and whether the input is a symlink or non-regular file, when those details are available.
+- Workspace capture and `ontoindex analyze` skip symlinks discovered during scanning. Explicit analysis-pack manifest inputs still reject symlinks.
+- `ensure_fresh` warns when workspace readiness has not been checked, so index freshness does not imply that default workspace reads can be prepared.
+- Committed reads support `impact` batch operations and `search` Cypher queries.
+- Tool telemetry records calls when they start, including the selected read mode, and links completion records by call ID. Failed calls include validated error codes and diagnostic reasons.
+- MCP errors, `ensure_fresh` and CLI hints no longer recommend committed reads when the index has no trusted commit. Explicit committed-read failures explain how to enable them by running `ontoindex analyze` in a Git checkout.
+- `audit` accepts `target` as an alias for `symbol` in `safe_edit_check`, `can_delete` and `test_gap`, and rejects conflicting values.
+- The MCP overlay watcher no longer watches ignored directories, so a large ignored build tree such as `target/` cannot exhaust the server heap. On Linux with Node.js 22.x, 24.0–24.13 or 25.0–25.4, which cannot skip them, recursive watching is skipped and logged; reads and the 30-second check still pick up changes.
+- The MCP server exits on SIGTERM or end of input even when the client has already closed its stderr. Previously it could spin at full CPU until killed.
+
 ## [3.1.4] - 2026-11-11
 
 - `ontoindex analyze` no longer marks its own index stale: the generated AGENTS.md and CLAUDE.md block no longer contains symbol, relationship, and flow counts, and AGENTS.md, CLAUDE.md and the bundled skill files are rewritten only when their content changes. `--no-stats` is a deprecated no-op.
