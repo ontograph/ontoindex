@@ -307,6 +307,51 @@ it('publishes a partial captured workspace graph with parse-error paths without 
   }
 }, 120_000);
 
+it('validates resolver configuration symlinks and detects changed target bytes', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ontoindex-workspace-config-link-'));
+  try {
+    vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
+    await fs.mkdir(path.join(root, 'configs'));
+    await fs.writeFile(path.join(root, '.gitignore'), '.ontoindex/\n');
+    await fs.writeFile(path.join(root, 'configs/aliases.json'), '{"compilerOptions":{}}\n');
+    await fs.symlink('configs/aliases.json', path.join(root, 'tsconfig.json'));
+    await fs.writeFile(path.join(root, 'a.ts'), 'export function linkedConfig() { return 1; }\n');
+    const git = (...args: string[]) => execFileSync('git', ['-C', root, ...args]);
+    git('init', '-q');
+    git('add', '.');
+    git(
+      '-c',
+      'user.name=Fixture',
+      '-c',
+      'user.email=fixture@example.invalid',
+      'commit',
+      '-qm',
+      'baseline',
+    );
+    await runFullAnalysis(
+      root,
+      { workspaceGraph: true, skipNativeClose: true },
+      { onProgress: () => {} },
+    );
+    const { storagePath } = repoManager.getStoragePaths(root);
+    const repo = { id: 'config-link-test', repoPath: root, storagePath };
+    expect(await getOverlaySnapshot(repo)).toMatchObject({ usable: true, reason: null });
+    expect(await queryOverlay(repo, 'MATCH (n:Function) RETURN n.name AS name')).toContainEqual({
+      name: 'linkedConfig',
+    });
+    await fs.writeFile(
+      path.join(root, 'configs/aliases.json'),
+      '{"compilerOptions":{"strict":true}}\n',
+    );
+    resetOverlaySnapshotCache();
+    expect(await getOverlaySnapshot(repo)).toMatchObject({ usable: false });
+  } finally {
+    resetOverlaySnapshotCache();
+    vi.unstubAllEnvs();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+}, 120_000);
+
 it('builds full-text indexes into the published workspace generation', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ontoindex-workspace-graph-fts-'));
   try {

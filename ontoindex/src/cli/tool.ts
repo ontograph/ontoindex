@@ -61,8 +61,10 @@ async function getBackend(): Promise<LocalBackend> {
   _backend = new LocalBackend({ preferredProjectPath: process.cwd() });
   const ok = await _backend.init();
   if (!ok) {
-    console.error('OntoIndex: No indexed repositories found. Run: ontoindex analyze');
-    process.exit(1);
+    throw Object.assign(
+      new Error('OntoIndex: No indexed repositories found. Run: ontoindex analyze'),
+      { code: 'NO_INDEXED_REPOSITORIES' },
+    );
   }
   return _backend;
 }
@@ -70,8 +72,20 @@ async function getBackend(): Promise<LocalBackend> {
 async function callNavigationTool(
   name: 'query' | 'context' | 'impact',
   params: Record<string, unknown>,
+  prepare?: () => void,
 ): Promise<unknown> {
   return withToolCallTelemetry(name, params, async (scope) => {
+    const input =
+      name === 'query' ? params.query : name === 'context' ? params.name : params.target;
+    if (!(typeof input === 'string' && input.trim()) && !(name === 'context' && params.uid)) {
+      const usage = {
+        query: 'Usage: ontoindex query <search_query>',
+        context: 'Usage: ontoindex context <symbol_name> [--uid <uid>] [--file <path>]',
+        impact: 'Usage: ontoindex impact <symbol_name> [--direction upstream|downstream]',
+      };
+      throw Object.assign(new Error(usage[name]), { code: 'CLI_USAGE' });
+    }
+    prepare?.();
     if (params.read_mode !== undefined) {
       if (
         (params.read_mode !== 'committed' && params.read_mode !== 'workspace') ||
@@ -142,6 +156,13 @@ async function callNavigationTool(
       process.exitCode = 1;
       return NAVIGATION_PREPARATION_FAILED;
     }
+  }).catch((err: unknown) => {
+    if (thrownCode(err) !== 'CLI_USAGE' && thrownCode(err) !== 'NO_INDEXED_REPOSITORIES') {
+      throw err;
+    }
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exitCode = 1;
+    return NAVIGATION_PREPARATION_FAILED;
   });
 }
 
@@ -240,12 +261,6 @@ export async function queryCommand(
     includeMarkdownPpr?: boolean;
   },
 ): Promise<void> {
-  if (!queryText?.trim()) {
-    console.error('Usage: ontoindex query <search_query>');
-    process.exit(1);
-  }
-
-  const query = options?.typed ? parseTypedQueryDocument(queryText) : queryText;
   try {
     const params: Record<string, unknown> = {
       task_context: options?.context,
@@ -258,11 +273,7 @@ export async function queryCommand(
     if (options?.includePath?.length) params.include_paths = options.includePath;
     if (options?.readMode !== undefined) params.read_mode = options.readMode;
     if (options?.excludePath?.length) params.exclude_paths = options.excludePath;
-    if (options?.typed) {
-      params.typedQuery = query;
-    } else {
-      params.query = query;
-    }
+    params.query = queryText;
     if (options?.consumeEnrichmentFacts !== undefined) {
       params.consume_enrichment_facts = options.consumeEnrichmentFacts;
     }
@@ -275,7 +286,12 @@ export async function queryCommand(
     if (options?.includeMarkdownPpr !== undefined) {
       params.include_markdown_ppr = options.includeMarkdownPpr;
     }
-    const result = await callNavigationTool('query', params);
+    const result = await callNavigationTool('query', params, () => {
+      if (options?.typed) {
+        params.typedQuery = parseTypedQueryDocument(queryText);
+        delete params.query;
+      }
+    });
     if (result === NAVIGATION_PREPARATION_FAILED) return;
     output(result);
   } finally {
@@ -293,11 +309,6 @@ export async function contextCommand(
     content?: boolean;
   },
 ): Promise<void> {
-  if (!name?.trim() && !options?.uid) {
-    console.error('Usage: ontoindex context <symbol_name> [--uid <uid>] [--file <path>]');
-    process.exit(1);
-  }
-
   try {
     const result = await callNavigationTool('context', {
       name: name || undefined,
@@ -325,11 +336,6 @@ export async function impactCommand(
     uid?: string;
   },
 ): Promise<void> {
-  if (!target?.trim()) {
-    console.error('Usage: ontoindex impact <symbol_name> [--direction upstream|downstream]');
-    process.exit(1);
-  }
-
   let committedAvailable: 'available' | 'unavailable' | 'unknown' = 'unknown';
   try {
     try {
@@ -367,8 +373,14 @@ export async function impactCommand(
           ? 'Explicitly select ontoindex impact <symbol> --repo <name> --read-mode committed; uncommitted changes are excluded'
           : 'Try reducing --depth or using ontoindex context <symbol> as a fallback',
     });
-    process.exit(1);
+    process.exitCode = 1;
   }
+}
+
+function handleMissingRepositories(err: unknown): void {
+  if (thrownCode(err) !== 'NO_INDEXED_REPOSITORIES') throw err;
+  console.error(err instanceof Error ? err.message : String(err));
+  process.exitCode = 1;
 }
 
 export async function cypherCommand(
@@ -389,6 +401,8 @@ export async function cypherCommand(
       repo: options?.repo,
     });
     output(result);
+  } catch (err) {
+    return handleMissingRepositories(err);
   } finally {
     await disposeBackend();
   }
@@ -470,6 +484,8 @@ export async function detectChangesCommand(options?: {
     if (options?.includePath?.length) params.include_paths = options.includePath;
     const result = await backend.callTool('detect_changes', params);
     output(formatDetectChangesResult(result));
+  } catch (err) {
+    return handleMissingRepositories(err);
   } finally {
     await disposeBackend();
   }

@@ -28,7 +28,7 @@ describe('gnGraphWalk', () => {
 
   it('rejects changed admitted generations before status or step changes state', async () => {
     vi.mocked(getPinnedGenerationDir).mockReturnValue('/generation/a');
-    mockExecute.mockResolvedValueOnce([{ n: { id: 'seed-id' } }]);
+    mockExecute.mockResolvedValueOnce([{ id: 'seed-id', name: 'seed' }]);
     const started = await gnGraphWalk('repo1', { action: 'start', seedSymbol: 'seed-id' });
     expect((await gnGraphWalk('repo1', { action: 'status', walkId: started.state.id })).ok).toBe(
       true,
@@ -48,7 +48,7 @@ describe('gnGraphWalk', () => {
 
   it('checks a queued step binding when its serialized operation begins', async () => {
     vi.mocked(getPinnedGenerationDir).mockReturnValue('/generation/a');
-    mockExecute.mockResolvedValueOnce([{ n: { id: 'seed-id' } }]);
+    mockExecute.mockResolvedValueOnce([{ id: 'seed-id', name: 'seed' }]);
     const started = await gnGraphWalk('repo1', { action: 'start', seedSymbol: 'seed-id' });
     let release!: (rows: any[]) => void;
     mockExecute.mockImplementationOnce(
@@ -70,7 +70,7 @@ describe('gnGraphWalk', () => {
   });
 
   it('starts a walk', async () => {
-    mockExecute.mockResolvedValueOnce([{ n: { id: 'seed-id' } }]);
+    mockExecute.mockResolvedValueOnce([{ id: 'seed-id', name: 'seed' }]);
     const result = await gnGraphWalk('repo1', { action: 'start', seedSymbol: 'seed-id' });
 
     expect(result.version).toBe(1);
@@ -80,10 +80,27 @@ describe('gnGraphWalk', () => {
     expect(result.state.maxSteps).toBe(10);
     expect(result.state.maxFrontier).toBe(100);
     expect(result.state.maxExpansionPerStep).toBe(5);
+    expect(mockExecute).toHaveBeenCalledWith(
+      'repo1',
+      'MATCH (n {id: $sym}) RETURN n.id AS id, n.name AS name LIMIT 1',
+      { sym: 'seed-id' },
+    );
+  });
+
+  it('resolves a seed by name from positional metadata rows', async () => {
+    mockExecute.mockResolvedValueOnce([]).mockResolvedValueOnce([['seed-id', 'seed']]);
+    const result = await gnGraphWalk('repo1', { action: 'start', seedSymbol: 'seed' });
+    expect(result.ok).toBe(true);
+    expect(result.state.frontier).toEqual(['seed-id']);
+    expect(mockExecute).toHaveBeenLastCalledWith(
+      'repo1',
+      'MATCH (n) WHERE n.name = $sym RETURN n.id AS id, n.name AS name LIMIT 1',
+      { sym: 'seed' },
+    );
   });
 
   it('assigns independent identities to walks with the same seed', async () => {
-    mockExecute.mockResolvedValue([{ n: { id: 'seed-id' } }]);
+    mockExecute.mockResolvedValue([{ id: 'seed-id', name: 'seed' }]);
 
     const [first, second] = await Promise.all([
       gnGraphWalk('repo1', { action: 'start', seedSymbol: 'seed-id' }),
@@ -94,7 +111,7 @@ describe('gnGraphWalk', () => {
   });
 
   it('steps through a walk', async () => {
-    mockExecute.mockResolvedValueOnce([{ n: { id: 'seed-id' } }]);
+    mockExecute.mockResolvedValueOnce([{ id: 'seed-id', name: 'seed' }]);
     const startResult = await gnGraphWalk('repo1', { action: 'start', seedSymbol: 'seed-id' });
     const walkId = startResult.state.id;
 
@@ -108,7 +125,7 @@ describe('gnGraphWalk', () => {
   });
 
   it('returns status', async () => {
-    mockExecute.mockResolvedValueOnce([{ n: { id: 'seed-id' } }]);
+    mockExecute.mockResolvedValueOnce([{ id: 'seed-id', name: 'seed' }]);
     const startResult = await gnGraphWalk('repo1', { action: 'start', seedSymbol: 'seed-id' });
     const walkId = startResult.state.id;
 
@@ -143,7 +160,7 @@ describe('gnGraphWalk', () => {
   });
 
   it('does not expose a walk to another repository', async () => {
-    mockExecute.mockResolvedValueOnce([{ n: { id: 'seed-id' } }]);
+    mockExecute.mockResolvedValueOnce([{ id: 'seed-id', name: 'seed' }]);
     const startResult = await gnGraphWalk('repo1', { action: 'start', seedSymbol: 'seed-id' });
 
     const result = await gnGraphWalk('repo2', { action: 'status', walkId: startResult.state.id });
@@ -152,7 +169,7 @@ describe('gnGraphWalk', () => {
   });
 
   it('keeps progress intact when an expansion query fails', async () => {
-    mockExecute.mockResolvedValueOnce([{ n: { id: 'seed-id' } }]);
+    mockExecute.mockResolvedValueOnce([{ id: 'seed-id', name: 'seed' }]);
     const startResult = await gnGraphWalk('repo1', { action: 'start', seedSymbol: 'seed-id' });
     mockExecute.mockRejectedValueOnce(new Error('temporary query failure'));
 
@@ -175,7 +192,7 @@ describe('gnGraphWalk', () => {
   });
 
   it('serializes concurrent steps for one walk', async () => {
-    mockExecute.mockResolvedValueOnce([{ n: { id: 'seed-id' } }]);
+    mockExecute.mockResolvedValueOnce([{ id: 'seed-id', name: 'seed' }]);
     const startResult = await gnGraphWalk('repo1', {
       action: 'start',
       seedSymbol: 'seed-id',
@@ -203,7 +220,7 @@ describe('gnGraphWalk', () => {
   });
 
   it('caps max steps and expansion limits on start', async () => {
-    mockExecute.mockResolvedValueOnce([{ n: { id: 'seed-id' } }]);
+    mockExecute.mockResolvedValueOnce([{ id: 'seed-id', name: 'seed' }]);
 
     const result = await gnGraphWalk('repo1', {
       action: 'start',
@@ -219,7 +236,7 @@ describe('gnGraphWalk', () => {
   });
 
   it('limits frontier growth during expansion', async () => {
-    mockExecute.mockResolvedValueOnce([{ n: { id: 'seed-id' } }]);
+    mockExecute.mockResolvedValueOnce([{ id: 'seed-id', name: 'seed' }]);
     const startResult = await gnGraphWalk('repo1', {
       action: 'start',
       seedSymbol: 'seed-id',
@@ -246,7 +263,7 @@ describe('gnGraphWalk', () => {
   });
 
   it('completes instead of stepping beyond maxSteps', async () => {
-    mockExecute.mockResolvedValueOnce([{ n: { id: 'seed-id' } }]);
+    mockExecute.mockResolvedValueOnce([{ id: 'seed-id', name: 'seed' }]);
     const startResult = await gnGraphWalk('repo1', {
       action: 'start',
       seedSymbol: 'seed-id',
@@ -298,7 +315,7 @@ describe('gnGraphWalk', () => {
     expect(generalTools).toContain('gn_graph_walk');
     expect(queryTools).not.toContain('gn_graph_walk');
 
-    mockExecute.mockResolvedValueOnce([{ n: { id: 'seed-id' } }]);
+    mockExecute.mockResolvedValueOnce([{ id: 'seed-id', name: 'seed' }]);
     const dispatched = await dispatchSuper(
       'gn_graph_walk',
       { action: 'start', seedSymbol: 'seed-id' },

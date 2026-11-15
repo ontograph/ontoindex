@@ -222,8 +222,8 @@ describe('watch command', () => {
     const command = await harness.start();
     try {
       await vi.waitFor(() => expect(harness.spawn).toHaveBeenCalledTimes(1));
-      harness.child.emit('close', 1, null);
-      expect(harness.error).toHaveBeenCalledWith('Watch overlay analyze failed with code 1.');
+      harness.child.emit('close', 3, null);
+      expect(harness.error).toHaveBeenCalledWith('Watch overlay analyze failed with code 3.');
       await vi.advanceTimersByTimeAsync(90000);
       await harness.createWatcher.mock.calls[0][0].refresh();
       await vi.advanceTimersByTimeAsync(100);
@@ -232,6 +232,24 @@ describe('watch command', () => {
       fs.writeFileSync(configPath, '{"changed":true}');
       await vi.advanceTimersByTimeAsync(30000);
       await vi.waitFor(() => expect(harness.spawn).toHaveBeenCalledTimes(2));
+    } finally {
+      await command.stop();
+    }
+  });
+
+  it('retries a transient workspace graph failure without changing configuration', async () => {
+    vi.useFakeTimers();
+    const harness = makeHarness({ configPaths: ['tsconfig.json'] });
+    fs.writeFileSync(path.join(harness.repoPath, 'tsconfig.json'), '{}');
+    const command = await harness.start({ retryDelaysMs: [100] });
+    try {
+      await vi.waitFor(() => expect(harness.spawn).toHaveBeenCalledTimes(1));
+      harness.child.emit('close', 1, null);
+      expect(harness.error).toHaveBeenCalledWith('Watch overlay analyze failed with code 1.');
+      await vi.advanceTimersByTimeAsync(200);
+      await vi.waitFor(() => expect(harness.spawn).toHaveBeenCalledTimes(2));
+      expect(harness.spawn.mock.calls[1][1]).toEqual(harness.spawn.mock.calls[0][1]);
+      harness.child.emit('close', 0, null);
     } finally {
       await command.stop();
     }

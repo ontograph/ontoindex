@@ -33,7 +33,8 @@ interface ImpactBatchUnion {
   totalAffectedNodes: number;
   totalRelationships: number;
   maxDepth: number;
-  risk: 'NONE' | 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+  risk: 'NONE' | 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL' | 'UNKNOWN';
+  failedTargets?: string[];
   sharedNodes: number;
 }
 
@@ -237,9 +238,11 @@ export async function runImpactBatch(
     }
 
     const totalAffectedNodes = hits.size;
+    const failedTargets = results.filter(({ result }) => result?.error).map(({ target }) => target);
+    const allFailed = failedTargets.length === results.length;
 
     return {
-      status: 'success',
+      status: allFailed ? 'error' : 'success',
       tool: 'impact_batch',
       repo: repo.name,
       direction,
@@ -249,9 +252,11 @@ export async function runImpactBatch(
         totalAffectedNodes,
         totalRelationships,
         maxDepth: unionMaxDepth,
-        risk: classifyRisk(totalAffectedNodes),
+        risk: failedTargets.length > 0 ? 'UNKNOWN' : classifyRisk(totalAffectedNodes),
+        ...(failedTargets.length > 0 ? { failedTargets } : {}),
         sharedNodes,
       },
+      ...(allFailed ? { error: 'Impact analysis failed for every target.' } : {}),
     };
   } catch (err: unknown) {
     return {

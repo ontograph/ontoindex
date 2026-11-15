@@ -24,6 +24,49 @@ async function main() {
   );
 
   const recordsPath = path.join(dir, 'records.csv');
+  const batchesPath = path.join(dir, 'batches.csv');
+  const batches = createCsvRowWriter(batchesPath, 'id,name');
+  const batchRows = Array.from({ length: 1201 }, (_, i) => `${i},row-${i}`);
+  for (const [i, row] of batchRows.entries()) {
+    assert.equal(batches.addRow(row), undefined);
+    assert.equal(batches._rows.length, (i + 1) % 500);
+    assert.ok(batches._rows.length < 500);
+    if (i === 499 || i === 999) {
+      assert.equal(
+        fs.readFileSync(batchesPath, 'utf8'),
+        `id,name\n${batchRows.slice(0, i + 1).join('\n')}\n`,
+      );
+    }
+  }
+  await batches.finish();
+  assert.equal(batches.rows, 1201);
+  assert.equal(batches._chars, 0);
+  assert.equal(fs.readFileSync(batchesPath, 'utf8'), `id,name\n${batchRows.join('\n')}\n`);
+
+  const emptyPath = path.join(dir, 'empty.csv');
+  const empty = createCsvRowWriter(emptyPath, 'id,name');
+  await empty.finish();
+  assert.equal(empty.rows, 0);
+  assert.equal(fs.readFileSync(emptyPath, 'utf8'), 'id,name\n');
+
+  const limitedPath = path.join(dir, 'limited.csv');
+  const limited = createCsvRowWriter(limitedPath, 'value', 6);
+  limited.addRow('ab');
+  limited.addRow('cd');
+  assert.equal(limited._chars, 6);
+  assert.ok(!fs.existsSync(limitedPath));
+  limited.addRow('e');
+  assert.equal(fs.readFileSync(limitedPath, 'utf8'), 'value\nab\ncd\n');
+  assert.deepEqual(limited._rows, ['e']);
+  limited.addRow('oversized');
+  assert.equal(limited._chars, 0);
+  assert.deepEqual(limited._rows, []);
+  assert.equal(fs.readFileSync(limitedPath, 'utf8'), 'value\nab\ncd\ne\noversized\n');
+  limited.addRow('z');
+  await limited.finish();
+  assert.equal(limited.rows, 5);
+  assert.equal(fs.readFileSync(limitedPath, 'utf8'), 'value\nab\ncd\ne\noversized\nz\n');
+
   const written = native.writeCsvRecords(
     recordsPath,
     ['id', 'name', 'content'],

@@ -7,13 +7,14 @@
  * "no callers" or "zero impact".
  */
 import fs from 'node:fs/promises';
-import { readFileSync, realpathSync } from 'node:fs';
+import { constants, readFileSync, realpathSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { getCurrentCommit } from '../../storage/git.js';
 import {
   CAPTURE_CONFIGURATION,
+  captureReadPath,
   planDirtyOverlay,
   workspaceConfigurationIdentity,
   type DirtyOverlayPlan,
@@ -614,6 +615,7 @@ async function computeSnapshot(
       return { ...base, usable: false, reason: 'workspace graph has no input inventory; rebuild' };
     }
     try {
+      const canonicalRepoPath = await fs.realpath(repo.repoPath);
       let unreadable = false;
       const scanned = await walkRepositoryPaths(repo.repoPath, undefined, {
         onUnreadableFile: () => {
@@ -631,7 +633,8 @@ async function computeSnapshot(
       for (const rel of Object.keys(inventory)) {
         if (
           isResolverConfigPath(rel) &&
-          (await fs.lstat(path.join(repo.repoPath, rel)).catch(() => null))?.isFile()
+          (await fs.lstat(path.join(repo.repoPath, rel)).catch(() => null)) &&
+          (await captureReadPath(canonicalRepoPath, rel, true))
         )
           current.add(rel);
       }
@@ -659,25 +662,45 @@ async function computeSnapshot(
                 reason: `workspace graph has malformed inventory for ${rel}; rebuild`,
               };
             }
-            const stat = await fs.lstat(path.join(repo.repoPath, rel));
-            if (!stat.isFile())
+            const filename = isResolverConfigPath(rel)
+              ? await captureReadPath(canonicalRepoPath, rel, true)
+              : path.join(repo.repoPath, rel);
+            const notRegular = {
+              rel,
+              digest: null,
+              reason: `workspace graph input is not a regular file: ${rel}; rebuild`,
+            };
+            if (!filename) return notRegular;
+            const beforeOpen = await fs.lstat(filename);
+            let handle;
+            try {
+              handle = await fs.open(
+                filename,
+                constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+              );
+            } catch (error) {
+              if ((error as NodeJS.ErrnoException).code === 'ELOOP') return notRegular;
+              throw error;
+            }
+            try {
+              const stat = await handle.stat();
+              if (!stat.isFile() || stat.dev !== beforeOpen.dev || stat.ino !== beforeOpen.ino)
+                return notRegular;
+              // Metadata can be preserved across byte changes, so every input needs a digest.
+              const digest = createHash('sha256')
+                .update(await handle.readFile())
+                .digest('hex');
               return {
                 rel,
-                digest: null,
-                reason: `workspace graph input is not a regular file: ${rel}; rebuild`,
+                digest,
+                reason:
+                  digest !== recorded[3]
+                    ? `overlay is stale for ${rel}; rebuild: ontoindex analyze --dirty-overlay`
+                    : null,
               };
-            // Metadata can be preserved across byte changes, so every input needs a digest.
-            const digest = createHash('sha256')
-              .update(await fs.readFile(path.join(repo.repoPath, rel)))
-              .digest('hex');
-            return {
-              rel,
-              digest,
-              reason:
-                digest !== recorded[3]
-                  ? `overlay is stale for ${rel}; rebuild: ontoindex analyze --dirty-overlay`
-                  : null,
-            };
+            } finally {
+              await handle.close();
+            }
           }),
         );
         for (const result of results) {

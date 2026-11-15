@@ -15,22 +15,8 @@ const MAX_CONTEXT_PROCESS_ROWS = (() => {
 })();
 const MAX_CONTEXT_RELATIONSHIP_ROWS = 30;
 const MAX_CONTEXT_CONCEPT_ROWS = 10;
-const METHOD_METADATA_KEYS = new Set([
-  'visibility',
-  'isStatic',
-  'isAbstract',
-  'isFinal',
-  'isVirtual',
-  'isOverride',
-  'isAsync',
-  'isPartial',
-  'returnType',
-  'parameterCount',
-  'isVariadic',
-  'requiredParameterCount',
-  'parameterTypes',
-  'annotations',
-]);
+// Only Method has metadata columns in the native schema.
+const METHOD_METADATA_KEYS = ['returnType', 'parameterCount'] as const;
 
 interface ContextRepoHandle {
   id: string;
@@ -77,12 +63,6 @@ function logContextQueryError(context: string, err: unknown): void {
 function rowValue(row: QueryRow, key: string, index: number): unknown {
   const namedValue = !Array.isArray(row) ? row[key] : undefined;
   return namedValue || row[index];
-}
-
-function rowEntries(row: QueryRow): Array<[string, unknown]> {
-  return Array.isArray(row)
-    ? row.map((value, index) => [String(index), value])
-    : Object.entries(row);
 }
 
 function symbolTupleValue(sym: ResolvedContextSymbol, index: number): unknown {
@@ -206,25 +186,26 @@ async function expandClassLikeIncomingRefs(
 async function fetchMethodMetadata(
   graphQuery: GraphQuery,
   symId: string,
+  symKind: 'Method' | 'Function' | 'Constructor',
 ): Promise<{ metadata?: Record<string, unknown>; queryFailed: boolean }> {
+  if (symKind !== 'Method') return { queryFailed: false };
   try {
     const metaRows = (await graphQuery(
       `
-      MATCH (n {id: $symId})
-      RETURN n
+      MATCH (n:Method {id: $symId})
+      RETURN ${METHOD_METADATA_KEYS.map((key) => `n.${key} AS ${key}`).join(', ')}
       LIMIT 1
     `,
       { symId },
     )) as MethodMetadataRow[];
     if (metaRows.length === 0) return { queryFailed: false };
 
-    const node = rowValue(metaRows[0], 'n', 0);
-    if (!node || typeof node !== 'object') return { queryFailed: false };
     const meta: Record<string, unknown> = {};
-    // Optional fields vary by node schema; never project them across all labels.
-    for (const [key, val] of rowEntries(node as QueryRow)) {
-      if (METHOD_METADATA_KEYS.has(key) && val !== null && val !== undefined) meta[key] = val;
-    }
+    METHOD_METADATA_KEYS.forEach((key, index) => {
+      const row = metaRows[0];
+      const val = Array.isArray(row) ? row[index] : row[key];
+      if (val !== null && val !== undefined) meta[key] = val;
+    });
     return { metadata: Object.keys(meta).length > 0 ? meta : undefined, queryFailed: false };
   } catch {
     return { queryFailed: true };
@@ -407,7 +388,9 @@ export async function context(
   // Method/Function/Constructor enrichment: fetch method-specific properties
   const symKind = classLike.isClassLike ? resolvedLabel || 'Class' : sym.type;
   const isMethodLike = symKind === 'Method' || symKind === 'Function' || symKind === 'Constructor';
-  const metadataResult = isMethodLike ? await fetchMethodMetadata(graphQuery, symId) : undefined;
+  const metadataResult = isMethodLike
+    ? await fetchMethodMetadata(graphQuery, symId, symKind)
+    : undefined;
   if (metadataResult?.queryFailed) missingReasons.push('method-metadata-query-failed');
 
   // Concepts (B11)

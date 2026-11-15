@@ -271,15 +271,19 @@ async function resolveSeedSymbol(
   repoId: string,
   seedSymbol: string,
 ): Promise<{ id: string; name?: string } | undefined> {
-  const rows = await executeParameterized(repoId, `MATCH (n {id: $sym}) RETURN n LIMIT 1`, {
-    sym: seedSymbol,
-  });
+  const rows = await executeParameterized(
+    repoId,
+    `MATCH (n {id: $sym}) RETURN n.id AS id, n.name AS name LIMIT 1`,
+    {
+      sym: seedSymbol,
+    },
+  );
   const direct = firstNode(rows);
   if (direct) return direct;
 
   const nameRows = await executeParameterized(
     repoId,
-    `MATCH (n) WHERE n.name = $sym RETURN n LIMIT 1`,
+    `MATCH (n) WHERE n.name = $sym RETURN n.id AS id, n.name AS name LIMIT 1`,
     { sym: seedSymbol },
   );
   return firstNode(nameRows);
@@ -288,10 +292,10 @@ async function resolveSeedSymbol(
 function firstNode(rows: unknown[]): { id: string; name?: string } | undefined {
   for (const row of rows) {
     const record = row as any;
-    const node = record.n ?? record[0] ?? record;
-    const id = node?.id ?? record.id;
+    const id = record.id ?? record[0];
+    const name = record.name ?? record[1];
     if (typeof id === 'string' && id.length > 0) {
-      return { id, name: typeof node?.name === 'string' ? node.name : undefined };
+      return { id, name: typeof name === 'string' ? name : undefined };
     }
   }
   return undefined;
