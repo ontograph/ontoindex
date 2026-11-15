@@ -24,6 +24,7 @@ function makeHarness(
     commit?: string;
     generationId?: string;
     headFails?: boolean;
+    configPaths?: string[];
   } = {},
 ) {
   const repoPath = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-repo-'));
@@ -56,6 +57,7 @@ function makeHarness(
         uncoveredPaths: [],
         allDirtyPaths: options.initiallyDirty ? ['src/dirty.ts'] : [],
         tombstones: [],
+        configPaths: options.configPaths ?? [],
         tooMany: false,
         skipped: [],
       }) as unknown as Awaited<
@@ -83,6 +85,7 @@ function makeHarness(
     error,
     planDirtyOverlay,
     emit(filename: string) {
+      options.initiallyDirty = true;
       emit?.(filename);
     },
     async start(overrides: Parameters<typeof createWatchCommand>[1] = {}) {
@@ -127,6 +130,144 @@ afterEach(() => {
 });
 
 describe('watch command', () => {
+  it.each([true, false])(
+    'launches config-only startup and reconciliation with recursive watching %s',
+    async (recursive) => {
+      vi.useFakeTimers();
+      const options = { configPaths: ['tsconfig.json'] };
+      const harness = makeHarness(options);
+      const configPath = path.join(harness.repoPath, 'tsconfig.json');
+      fs.writeFileSync(configPath, '{}');
+      const command = await harness.start({
+        requireWatchIgnoreSupport: true,
+        watchIgnoreSupported: () => recursive,
+      });
+      try {
+        await vi.waitFor(() => expect(harness.spawn).toHaveBeenCalledTimes(1));
+        expect(harness.createWatcher.mock.calls[0][0].watchFiles).toBe(recursive);
+        expect(harness.spawn.mock.calls[0][1]).toEqual([
+          '/cli/index.js',
+          'analyze',
+          '--workspace-graph',
+          '--skip-agents-md',
+          '--no-stats',
+          harness.repoPath,
+        ]);
+        harness.child.emit('close', 0, null);
+        fs.writeFileSync(configPath, '{"changed":true}');
+        await vi.advanceTimersByTimeAsync(30000);
+        await vi.waitFor(() => expect(harness.spawn).toHaveBeenCalledTimes(2));
+      } finally {
+        await command.stop();
+      }
+    },
+  );
+
+  it.each(['size', 'mtime', 'appear', 'disappear'])(
+    'changes the config signature when a path changes: %s',
+    async (change) => {
+      vi.useFakeTimers();
+      const harness = makeHarness({ configPaths: ['tsconfig.json'] });
+      const configPath = path.join(harness.repoPath, 'tsconfig.json');
+      if (change !== 'appear') fs.writeFileSync(configPath, '{}');
+      const command = await harness.start();
+      try {
+        await vi.waitFor(() => expect(harness.spawn).toHaveBeenCalledTimes(1));
+        harness.child.emit('close', 0, null);
+        await vi.advanceTimersByTimeAsync(30000);
+        await vi.waitFor(() =>
+          expect(harness.planDirtyOverlay.mock.calls.length).toBeGreaterThan(2),
+        );
+        expect(harness.spawn).toHaveBeenCalledTimes(1);
+        if (change === 'disappear') fs.unlinkSync(configPath);
+        else if (change === 'mtime') {
+          const stat = fs.statSync(configPath);
+          fs.utimesSync(configPath, stat.atime, new Date(stat.mtimeMs + 10000));
+        } else if (change === 'size') {
+          const stat = fs.statSync(configPath);
+          fs.writeFileSync(configPath, '{"changed":true}');
+          fs.utimesSync(configPath, stat.atime, stat.mtime);
+        } else fs.writeFileSync(configPath, '{}');
+        await vi.advanceTimersByTimeAsync(30000);
+        await vi.waitFor(() => expect(harness.spawn).toHaveBeenCalledTimes(2));
+      } finally {
+        await command.stop();
+      }
+    },
+  );
+
+  it('uses the workspace graph for mixed source and config changes', async () => {
+    const harness = makeHarness({ initiallyDirty: true, configPaths: ['tsconfig.json'] });
+    const command = await harness.start();
+    try {
+      await vi.waitFor(() => expect(harness.spawn).toHaveBeenCalledTimes(1));
+      expect(harness.spawn.mock.calls[0][1]).toEqual([
+        '/cli/index.js',
+        'analyze',
+        '--workspace-graph',
+        '--skip-agents-md',
+        '--no-stats',
+        harness.repoPath,
+      ]);
+    } finally {
+      await command.stop();
+    }
+  });
+
+  it('retains a refused workspace signature until configuration changes', async () => {
+    vi.useFakeTimers();
+    const harness = makeHarness({ configPaths: ['tsconfig.json'] });
+    const configPath = path.join(harness.repoPath, 'tsconfig.json');
+    fs.writeFileSync(configPath, '{}');
+    const command = await harness.start();
+    try {
+      await vi.waitFor(() => expect(harness.spawn).toHaveBeenCalledTimes(1));
+      harness.child.emit('close', 1, null);
+      expect(harness.error).toHaveBeenCalledWith('Watch overlay analyze failed with code 1.');
+      await vi.advanceTimersByTimeAsync(90000);
+      await harness.createWatcher.mock.calls[0][0].refresh();
+      await vi.advanceTimersByTimeAsync(100);
+      expect(harness.planDirtyOverlay.mock.calls.length).toBeGreaterThanOrEqual(4);
+      expect(harness.spawn).toHaveBeenCalledTimes(1);
+      fs.writeFileSync(configPath, '{"changed":true}');
+      await vi.advanceTimersByTimeAsync(30000);
+      await vi.waitFor(() => expect(harness.spawn).toHaveBeenCalledTimes(2));
+    } finally {
+      await command.stop();
+    }
+  });
+
+  it('invokes the full-preparation callback for a config-only reconcile', async () => {
+    vi.useFakeTimers();
+    const options = { configPaths: [] as string[] };
+    const harness = makeHarness(options);
+    const callback = vi.fn(async () => {});
+    const command = await harness.start({ refreshCallback: callback });
+    try {
+      expect(callback).not.toHaveBeenCalled();
+      options.configPaths = ['tsconfig.json'];
+      await vi.advanceTimersByTimeAsync(30000);
+      await vi.waitFor(() => expect(callback).toHaveBeenCalledWith('reconcile'));
+      expect(callback).toHaveBeenCalledTimes(1);
+      expect(harness.spawn).not.toHaveBeenCalled();
+    } finally {
+      await command.stop();
+    }
+  });
+
+  it('does not launch for an empty plan at startup, events or reconciliation', async () => {
+    vi.useFakeTimers();
+    const harness = makeHarness();
+    const command = await harness.start();
+    try {
+      harness.createWatcher.mock.calls[0][0].refresh();
+      await vi.advanceTimersByTimeAsync(60000);
+      expect(harness.spawn).not.toHaveBeenCalled();
+    } finally {
+      await command.stop();
+    }
+  });
+
   it('skips recursive watching on unsupported Node runtimes and forwards directory ignores', async () => {
     const harness = makeHarness();
     const childrenIgnored = vi.fn(({ name }: { name: string }) => name === 'vendor');
@@ -176,6 +317,7 @@ describe('watch command', () => {
     options.commit = 'next';
     harness.child.emit('close', 0, null);
     await vi.advanceTimersByTimeAsync(0);
+    await vi.waitFor(() => expect(harness.spawn).toHaveBeenCalledTimes(2));
     expect(harness.spawn.mock.calls[1]?.[1]).toEqual([
       '/cli/index.js',
       'analyze',
@@ -214,7 +356,7 @@ describe('watch command', () => {
       const options = {
         head: 'next',
         commit: kind === 'base' ? 'old' : 'next',
-        initiallyDirty: kind === 'overlay',
+        initiallyDirty: true,
       };
       const harness = makeHarness(options);
       const command = await harness.start({ retryDelaysMs: [1000], maxRetryAttempts: 2 });
@@ -282,11 +424,13 @@ describe('watch command', () => {
 
   it('refreshes only the overlay when the base generation changes', async () => {
     vi.useFakeTimers();
-    const options = { generationId: 'one' };
+    const options = { generationId: 'one', initiallyDirty: false };
     const harness = makeHarness(options);
     const command = await harness.start();
     options.generationId = 'two';
+    options.initiallyDirty = true;
     await vi.advanceTimersByTimeAsync(30000);
+    await vi.waitFor(() => expect(harness.spawn).toHaveBeenCalledTimes(1));
     expect(harness.spawn.mock.calls[0]?.[1]).toEqual([
       '/cli/index.js',
       'analyze',
@@ -301,11 +445,12 @@ describe('watch command', () => {
 
   it('rebuilds exactly one overlay when the generation changes during reconciliation', async () => {
     vi.useFakeTimers();
-    const options = { generationId: 'one' };
+    const options = { generationId: 'one', initiallyDirty: false };
     const harness = makeHarness(options);
     const command = await harness.start();
 
     options.generationId = 'two';
+    options.initiallyDirty = true;
     await vi.advanceTimersByTimeAsync(30000);
     await vi.waitFor(() => expect(harness.spawn).toHaveBeenCalledTimes(1));
 
@@ -485,6 +630,7 @@ describe('watch command', () => {
     const command = await harness.start();
     for (let i = 0; i < 10; i++) harness.emit(`src/file-${i}.ts`);
     await vi.advanceTimersByTimeAsync(100);
+    await vi.waitFor(() => expect(harness.spawn).toHaveBeenCalledTimes(1));
 
     expect(harness.spawn).toHaveBeenCalledTimes(1);
     expect(harness.spawn).toHaveBeenCalledWith(
@@ -505,6 +651,7 @@ describe('watch command', () => {
     const command = await harness.start();
     harness.emit('src/one.ts');
     await vi.advanceTimersByTimeAsync(100);
+    await vi.waitFor(() => expect(harness.spawn).toHaveBeenCalledTimes(1));
     harness.emit('src/two.ts');
     harness.emit('src/three.ts');
     await vi.advanceTimersByTimeAsync(100);
@@ -512,6 +659,7 @@ describe('watch command', () => {
 
     harness.child.emit('close', 0, null);
     await vi.advanceTimersByTimeAsync(0);
+    await vi.waitFor(() => expect(harness.spawn).toHaveBeenCalledTimes(2));
     expect(harness.spawn).toHaveBeenCalledTimes(2);
     command.stop();
   });
@@ -566,6 +714,7 @@ describe('watch command', () => {
     const command = await harness.start();
     harness.emit('src/first.ts');
     await vi.advanceTimersByTimeAsync(100);
+    await vi.waitFor(() => expect(harness.spawn).toHaveBeenCalledTimes(1));
     harness.child.emit('close', 1, null);
     await vi.advanceTimersByTimeAsync(0);
 
@@ -574,6 +723,7 @@ describe('watch command', () => {
     await vi.advanceTimersByTimeAsync(100);
     expect(harness.spawn).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(900);
+    await vi.waitFor(() => expect(harness.spawn).toHaveBeenCalledTimes(2));
     expect(harness.spawn).toHaveBeenCalledTimes(2);
     command.stop();
   });
@@ -773,7 +923,7 @@ describe('watch command', () => {
 
   it('builds the covered subset and reports uncovered paths for an over-limit dirty tree', async () => {
     const harness = makeHarness();
-    harness.planDirtyOverlay.mockResolvedValueOnce({
+    harness.planDirtyOverlay.mockResolvedValue({
       includePaths: ['src/covered.ts'],
       uncoveredPaths: ['src/uncovered.ts'],
       allDirtyPaths: ['src/covered.ts', 'src/uncovered.ts'],
@@ -786,6 +936,7 @@ describe('watch command', () => {
     expect(harness.log).toHaveBeenCalledWith(
       `Watching ${harness.repoPath} (debounce 750 ms); 2 dirty source path(s), covering 1 file(s) and leaving 1 uncovered`,
     );
+    await vi.waitFor(() => expect(harness.spawn).toHaveBeenCalledTimes(1));
     expect(harness.spawn).toHaveBeenCalledTimes(1);
     command.stop();
   });

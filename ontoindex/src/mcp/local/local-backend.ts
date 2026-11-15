@@ -23,9 +23,8 @@ import {
   type OverlaySnapshot,
 } from './backend-overlay.js';
 import { RepoHandle, BackendPort } from 'ontoindex-shared';
-import { recordToolCall, recordToolCallStart } from './tool-telemetry.js';
+import { hasToolCallTelemetryScope, withToolCallTelemetry } from './tool-telemetry.js';
 
-let toolCallTelemetryCounter = 0;
 import { maybeScheduleAutoRefresh, maybeScheduleWorkspacePrebuild } from './auto-refresh.js';
 import { planDirtyOverlay } from '../../core/analyze-delta.js';
 import { sourceManifestDigest } from '../../core/indexing/source-manifest.js';
@@ -2177,64 +2176,17 @@ export class LocalBackend implements BackendPort {
 
   async callTool(method: string, params: unknown): Promise<unknown> {
     return this.withOperation(async () => {
-      const start = Date.now();
-      const id = `${process.pid}-${++toolCallTelemetryCounter}`;
-      const normalized = this.normalizeToolParams(params);
-      const repoName =
-        typeof normalized.repo === 'string' && !normalized.repo.startsWith('@')
-          ? normalized.repo
-          : '';
-      const readMode =
-        normalized.read_mode === 'committed' || normalized.read_mode === 'workspace'
-          ? normalized.read_mode
-          : undefined;
-      recordToolCallStart({
-        phase: 'start',
-        ts: new Date().toISOString(),
-        id,
-        method,
-        repo: repoName,
-        ...(readMode ? { readMode } : {}),
-      });
-      let ok = true;
-      let result: unknown;
-      let thrownError: { code?: unknown; diagnostics?: { reason?: unknown } } | undefined;
-      try {
-        const rawResult = await this._callToolImpl(method, params);
-        result = rawResult;
-        return result;
-      } catch (err) {
-        ok = false;
-        if (typeof err === 'object' && err !== null) {
-          thrownError = err as { code?: unknown; diagnostics?: { reason?: unknown } };
-        }
-        throw err;
-      } finally {
-        const durationMs = Date.now() - start;
-        let responseSizeBytes = 0;
+      if (hasToolCallTelemetryScope()) return this._callToolImpl(method, params);
+      return withToolCallTelemetry(method, this.normalizeToolParams(params), async (scope) => {
+        scope.setResponseSize(Buffer.byteLength(JSON.stringify(''), 'utf8'));
+        const result = await this._callToolImpl(method, params);
         try {
-          responseSizeBytes = Buffer.byteLength(JSON.stringify(result ?? ''), 'utf8');
+          scope.setResponseSize(Buffer.byteLength(JSON.stringify(result ?? ''), 'utf8'));
         } catch {
-          // ignore serialisation errors
+          scope.setResponseSize(0);
         }
-        recordToolCall({
-          ts: new Date().toISOString(),
-          method,
-          repo: repoName,
-          durationMs,
-          responseSizeBytes,
-          ok,
-          id,
-          ...(typeof thrownError?.code === 'string' &&
-          /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(thrownError.code)
-            ? { code: thrownError.code }
-            : {}),
-          ...(typeof thrownError?.diagnostics?.reason === 'string' &&
-          /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(thrownError.diagnostics.reason)
-            ? { reason: thrownError.diagnostics.reason }
-            : {}),
-        });
-      }
+        return result;
+      });
     });
   }
 

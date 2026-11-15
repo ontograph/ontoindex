@@ -628,6 +628,53 @@ function assertCaptureInputIdentity(relativePath: string, expected: Stats, actua
   }
 }
 
+async function captureReadPath(
+  root: string,
+  relativePath: string,
+  configuration: boolean,
+): Promise<string | null> {
+  const filename = captureInputPath(root, relativePath);
+  if (
+    configuration &&
+    CAPTURE_CONFIGURATION.test(path.basename(relativePath)) &&
+    !['.gitignore', '.ontoindexignore'].includes(path.basename(relativePath)) &&
+    (await fs.lstat(filename)).isSymbolicLink()
+  ) {
+    const directory = path.posix.dirname(relativePath);
+    if (directory !== '.') await checkCapturePath(root, directory);
+    let target: string;
+    try {
+      target = await fs.realpath(filename);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw error;
+    }
+    const targetRelative = path.relative(root, target);
+    if (
+      targetRelative === '..' ||
+      targetRelative.startsWith(`..${path.sep}`) ||
+      path.isAbsolute(targetRelative)
+    ) {
+      throw new WorkspaceInputCaptureError(
+        'unsupported',
+        `Workspace configuration symlink escapes its repository: ${relativePath}`,
+        { path: relativePath, kind: 'symlink' },
+      );
+    }
+    if (targetRelative) await checkCapturePath(root, targetRelative);
+    if (!(await fs.lstat(target)).isFile()) {
+      throw new WorkspaceInputCaptureError(
+        'unsupported',
+        `Workspace capture requires regular input: ${relativePath}`,
+        { path: relativePath, kind: 'non-regular' },
+      );
+    }
+    return target;
+  }
+  await checkCapturePath(root, relativePath);
+  return filename;
+}
+
 /** Category-specific resolver root validation for workspace capture. */
 function checkResolverConfiguration(relativePath: string, content: Buffer): void {
   if (!/^(?:ts|js)config.*\.json$/.test(path.basename(relativePath))) return;
@@ -750,6 +797,13 @@ async function workspaceConfigurationPaths(
   includePaths: readonly string[] | undefined,
   check: () => void,
 ): Promise<string[]> {
+  for (const filename of ['.gitignore', '.ontoindexignore']) {
+    try {
+      await checkCapturePath(root, filename);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+  }
   // Catalog manifests are consumed independently of source scopes and ignore rules.
   // Stream the catalog's exact patterns through the same path-safety checks.
   const catalogPaths: string[] = [];
@@ -816,8 +870,9 @@ async function workspaceConfigurationPaths(
         check();
         if (!CAPTURE_CONFIGURATION.test(name)) continue;
         const relativePath = directory === '.' ? name : `${directory}/${name}`;
-        await checkCapturePath(root, relativePath);
-        const stat = await fs.lstat(captureInputPath(root, relativePath));
+        const filename = await captureReadPath(root, relativePath, true);
+        if (filename === null) continue;
+        const stat = await fs.lstat(filename);
         if (!stat.isFile())
           throw new WorkspaceInputCaptureError(
             'unsupported',
@@ -847,7 +902,14 @@ async function workspaceConfigurationPaths(
     check();
     const relativePath = String(entry);
     const stat = await fs.lstat(captureInputPath(root, relativePath));
-    if (stat.isSymbolicLink()) continue;
+    if (stat.isSymbolicLink()) {
+      if (
+        CAPTURE_CONFIGURATION.test(path.basename(relativePath)) &&
+        (await captureReadPath(root, relativePath, true)) !== null
+      )
+        paths.push(relativePath);
+      continue;
+    }
     await checkCapturePath(root, relativePath);
     if (!stat.isDirectory() && !stat.isFile()) {
       throw new WorkspaceInputCaptureError(
@@ -889,10 +951,15 @@ export async function workspaceConfigurationIdentity(
   const entries: CapturedSourceEntry[] = [];
   for (const relativePath of inputPaths) {
     check();
-    await checkCapturePath(root, relativePath);
-    const beforeOpen = await fs.lstat(captureInputPath(root, relativePath));
+    const filename = await captureReadPath(root, relativePath, configPaths.has(relativePath));
+    if (filename === null)
+      throw new WorkspaceInputCaptureError(
+        'changed-input',
+        `Configuration disappeared: ${relativePath}`,
+      );
+    const beforeOpen = await fs.lstat(filename);
     const handle = await fs.open(
-      captureInputPath(root, relativePath),
+      filename,
       constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
     );
     try {
@@ -916,12 +983,12 @@ export async function workspaceConfigurationIdentity(
           'changed-input',
           `Workspace input changed during read: ${relativePath}`,
         );
-      await checkCapturePath(root, relativePath);
-      assertCaptureInputIdentity(
-        relativePath,
-        stat,
-        await fs.lstat(captureInputPath(root, relativePath)),
-      );
+      if ((await captureReadPath(root, relativePath, configPaths.has(relativePath))) !== filename)
+        throw new WorkspaceInputCaptureError(
+          'changed-input',
+          `Configuration changed: ${relativePath}`,
+        );
+      assertCaptureInputIdentity(relativePath, stat, await fs.lstat(filename));
       const value = content.subarray(0, length);
       if (configPaths.has(relativePath)) checkResolverConfiguration(relativePath, value);
       entries.push({
@@ -1073,10 +1140,19 @@ export async function captureWorkspaceInputs(
             read: async (relativePath) => {
               check();
               await options.hooks?.beforeRead?.(relativePath, attempt);
-              await checkCapturePath(root, relativePath);
-              const beforeOpen = await fs.lstat(captureInputPath(root, relativePath));
+              const filename = await captureReadPath(
+                root,
+                relativePath,
+                configs.includes(relativePath),
+              );
+              if (filename === null)
+                throw new WorkspaceInputCaptureError(
+                  'changed-input',
+                  `Configuration disappeared: ${relativePath}`,
+                );
+              const beforeOpen = await fs.lstat(filename);
               const handle = await fs.open(
-                captureInputPath(root, relativePath),
+                filename,
                 constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
               );
               try {
@@ -1101,12 +1177,15 @@ export async function captureWorkspaceInputs(
                     'changed-input',
                     `Workspace input changed during read: ${relativePath}`,
                   );
-                await checkCapturePath(root, relativePath);
-                assertCaptureInputIdentity(
-                  relativePath,
-                  stat,
-                  await fs.lstat(captureInputPath(root, relativePath)),
-                );
+                if (
+                  (await captureReadPath(root, relativePath, configs.includes(relativePath))) !==
+                  filename
+                )
+                  throw new WorkspaceInputCaptureError(
+                    'changed-input',
+                    `Configuration changed: ${relativePath}`,
+                  );
+                assertCaptureInputIdentity(relativePath, stat, await fs.lstat(filename));
                 const value = content.subarray(0, length);
                 if (configs.includes(relativePath)) checkResolverConfiguration(relativePath, value);
                 return {

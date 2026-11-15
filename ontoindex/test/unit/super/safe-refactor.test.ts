@@ -54,7 +54,8 @@ vi.mock('../../../src/mcp/local/backend-detect-changes.js', () => ({
   detectChanges: vi.fn(),
 }));
 
-vi.mock('../../../src/mcp/local/backend-symbol-resolution.js', () => ({
+vi.mock('../../../src/mcp/local/backend-symbol-resolution.js', async () => ({
+  ...(await vi.importActual('../../../src/mcp/local/backend-symbol-resolution.js')),
   resolveSymbolCandidates: vi.fn(),
 }));
 

@@ -19,6 +19,19 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
+import {
+  withToolCallTelemetry,
+  recordToolCallStart,
+  recordToolCall,
+} from '../../src/mcp/local/tool-telemetry.js';
+
+vi.mock('../../src/mcp/local/tool-telemetry.js', async () => ({
+  ...(await vi.importActual<typeof import('../../src/mcp/local/tool-telemetry.js')>(
+    '../../src/mcp/local/tool-telemetry.js',
+  )),
+  recordToolCallStart: vi.fn(),
+  recordToolCall: vi.fn(),
+}));
 
 // We need to mock the LadybugDB adapter and repo-manager BEFORE importing LocalBackend.
 // local-backend.ts imports from core/lbug/pool-adapter.js; the mcp/core/lbug-adapter.js
@@ -206,6 +219,83 @@ describe('request workspace gate', () => {
     backend = new LocalBackend();
     setupSingleRepo();
     await backend.init();
+  });
+
+  it('suppresses backend records inside an outer telemetry scope', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'ontoindex-outer-telemetry-'));
+    tmpDirs.push(dir);
+    vi.stubEnv('ONTOINDEX_TELEMETRY_DIR', dir);
+    try {
+      await withToolCallTelemetry('outer', {}, () => backend.callTool('list_repos', {}));
+      expect(recordToolCallStart).not.toHaveBeenCalled();
+      expect(recordToolCall).not.toHaveBeenCalled();
+      await vi.waitFor(async () => {
+        const records = (await fs.readFile(path.join(dir, 'telemetry.jsonl'), 'utf8'))
+          .trim()
+          .split('\n')
+          .map((line) => JSON.parse(line));
+        expect(records).toHaveLength(2);
+        expect(records.every((record) => record.method === 'outer')).toBe(true);
+        expect(records[1]).toMatchObject({ id: records[0].id, ok: true });
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('records size zero for an unserializable backend result', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'ontoindex-bigint-telemetry-'));
+    tmpDirs.push(dir);
+    vi.stubEnv('ONTOINDEX_TELEMETRY_DIR', dir);
+    try {
+      (backend as any).repoToolHandlers.overview = vi.fn(async () => ({ value: 1n }));
+      const result = await backend.callTool('overview', { repo: 'test-project' });
+      expect(result).toMatchObject({ value: 1n });
+      await vi.waitFor(async () => {
+        const records = (await fs.readFile(path.join(dir, 'telemetry.jsonl'), 'utf8'))
+          .trim()
+          .split('\n')
+          .map((line) => JSON.parse(line));
+        expect(records).toHaveLength(2);
+        expect(records[0]).toMatchObject({ phase: 'start', method: 'overview' });
+        expect(records[1]).toMatchObject({
+          id: records[0].id,
+          ok: true,
+          responseSizeBytes: 0,
+        });
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('records its own pair for work inherited from a closed scope', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'ontoindex-late-telemetry-'));
+    tmpDirs.push(dir);
+    vi.stubEnv('ONTOINDEX_TELEMETRY_DIR', dir);
+    let release!: () => void;
+    let background!: Promise<unknown>;
+    try {
+      await withToolCallTelemetry('outer', {}, async () => {
+        background = new Promise<void>((resolve) => {
+          release = resolve;
+        }).then(() => backend.callTool('list_repos', {}));
+      });
+      release();
+      await background;
+      await vi.waitFor(async () => {
+        const records = (await fs.readFile(path.join(dir, 'telemetry.jsonl'), 'utf8'))
+          .trim()
+          .split('\n')
+          .map((line) => JSON.parse(line));
+        const own = records.filter((record) => record.method === 'list_repos');
+        expect(own).toHaveLength(2);
+        expect(own.find((record) => record.phase === 'start')).toBeDefined();
+        expect(own.find((record) => record.ok === true)).toMatchObject({ id: own[0].id });
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it.each([false, true])(

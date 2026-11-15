@@ -85,6 +85,77 @@ afterEach(async () => {
 });
 
 describe('workspace input capture', () => {
+  describe.each<unknown>([undefined, ['src/main.ts']])(
+    'configuration symlinks with scope %j',
+    (includePaths: readonly string[] | undefined) => {
+      it('captures an internal config target as regular bytes under the link path', async () => {
+        const root = await makeRepo();
+        await fs.mkdir(path.join(root, 'shared'));
+        const target = path.join(root, 'shared/tsconfig.base.json');
+        const content = '{"compilerOptions":{"strict":true}}';
+        await fs.writeFile(target, content);
+        await fs.symlink('shared/tsconfig.base.json', path.join(root, 'tsconfig.json'));
+        const options = { includePaths };
+        const before = await workspaceConfigurationIdentity(root, options);
+        const result = await capture(root, { ...options, parserIdentity: undefined });
+        expect(result.capturedPaths).toContain('tsconfig.json');
+        expect(result.manifest.workspaceCapture!.entries.map((entry) => entry.path)).toContain(
+          'tsconfig.json',
+        );
+        const copied = path.join(result.captureRoot, 'tsconfig.json');
+        expect((await fs.lstat(copied)).isFile()).toBe(true);
+        expect(await fs.readFile(copied, 'utf8')).toBe(content);
+        expect(before.configurationDigest).toBe(result.configurationDigest);
+        await fs.writeFile(target, '{"compilerOptions":{"strict":false}}');
+        expect((await workspaceConfigurationIdentity(root, options)).configurationDigest).not.toBe(
+          before.configurationDigest,
+        );
+      });
+
+      it('treats a dangling config link as absent', async () => {
+        const root = await makeRepo();
+        const options = { includePaths };
+        const before = await workspaceConfigurationIdentity(root, options);
+        await fs.symlink('missing.json', path.join(root, 'tsconfig.json'));
+        expect(await workspaceConfigurationIdentity(root, options)).toEqual(before);
+        const result = await capture(root, options);
+        expect(result.capturedPaths).not.toContain('tsconfig.json');
+        expect(result.manifest.workspaceCapture!.entries.map((entry) => entry.path)).not.toContain(
+          'tsconfig.json',
+        );
+      });
+
+      it('refuses an escaping config link with its relative path and kind', async () => {
+        const root = await makeRepo();
+        const outside = await makeRepo();
+        await fs.writeFile(path.join(outside, 'config.json'), '{}');
+        await fs.symlink(path.join(outside, 'config.json'), path.join(root, 'tsconfig.json'));
+        const refusal = {
+          code: 'unsupported',
+          refusal: { path: 'tsconfig.json', kind: 'symlink' },
+        };
+        await expect(workspaceConfigurationIdentity(root, { includePaths })).rejects.toMatchObject(
+          refusal,
+        );
+        await expect(capture(root, { includePaths })).rejects.toMatchObject(refusal);
+      });
+
+      it.each(['.gitignore', '.ontoindexignore'])(
+        'still refuses symlinked %s',
+        async (filename) => {
+          const root = await makeRepo();
+          await fs.writeFile(path.join(root, 'ignore.txt'), 'dist\n');
+          await fs.symlink('ignore.txt', path.join(root, filename));
+          const refusal = { code: 'unsupported', refusal: { path: filename, kind: 'symlink' } };
+          await expect(
+            workspaceConfigurationIdentity(root, { includePaths }),
+          ).rejects.toMatchObject(refusal);
+          await expect(capture(root, { includePaths })).rejects.toMatchObject(refusal);
+        },
+      );
+    },
+  );
+
   it.each([undefined, ['src/main.ts']])(
     'captures ignored catalog manifests independently of source scope %j',
     async (includePaths) => {

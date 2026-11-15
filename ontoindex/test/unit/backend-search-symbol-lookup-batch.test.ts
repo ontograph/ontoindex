@@ -106,7 +106,7 @@ function lookupRows(cypher: string, nodeId?: string): object[] {
     return [
       { content: 'beta body', nodeId: nodeIds[1] },
       { content: 'alpha body', nodeId: nodeIds[0] },
-    ];
+    ].filter((row) => !nodeId || row.nodeId === nodeId);
   if (cypher.includes('callerPath'))
     return [
       { caller: 'main', type: 'CALLS', callerPath: 'src/main.ts', nodeId: nodeIds[0] },
@@ -127,16 +127,25 @@ describe('batched search symbol lookup', () => {
     vi.mocked(semanticSearch).mockResolvedValue(symbols);
     setResults(symbols);
     vi.mocked(executeParameterized).mockImplementation(async (_repo, cypher, params) =>
-      lookupRows(cypher, params.nodeId as string),
+      lookupRows(cypher, (params.id ?? params.nodeId) as string),
     );
   });
 
-  it('batches all enrichment and keeps the first community and citation per node', async () => {
+  it('batches metadata, reads labeled content and keeps the first community and citation per node', async () => {
     const result = await query(repo, options);
     const calls = enrichmentCalls();
-    expect(calls).toHaveLength(4);
-    for (const kind of ['STEP_IN_PROCESS', 'MEMBER_OF', 'n.content AS content', 'callerPath']) {
+    expect(calls).toHaveLength(3);
+    for (const kind of ['STEP_IN_PROCESS', 'MEMBER_OF', 'callerPath']) {
       expect(calls.filter(([, cypher]) => cypher.includes(kind))).toHaveLength(1);
+    }
+    const contentCalls = vi
+      .mocked(executeParameterized)
+      .mock.calls.filter(([, cypher]) => cypher.includes('n.content AS content'));
+    expect(contentCalls).toHaveLength(symbols.length);
+    for (const [index, [graphId, cypher, params]] of contentCalls.entries()) {
+      expect(graphId).toBe(repo.id);
+      expect(cypher).toContain('MATCH (n:`Function` {id: $id})');
+      expect(params).toEqual({ id: nodeIds[index] });
     }
     const citationQuery = calls.find(([, cypher]) => cypher.includes('callerPath'))![1];
     expect(citationQuery.match(/n\.id IN \$nodeIds/g)).toHaveLength(2);
@@ -187,17 +196,34 @@ describe('batched search symbol lookup', () => {
     expect((result as unknown as Record<string, any>).definitions).toEqual([]);
   });
 
+  it('returns content without warnings when unlabeled content projections exhaust the pool', async () => {
+    vi.mocked(executeParameterized).mockImplementation(async (_repo, cypher, params) => {
+      if (/MATCH \(n\)/.test(cypher) && cypher.includes('.content')) {
+        throw new Error(
+          'Buffer manager exception: buffer pool is full and no memory could be freed',
+        );
+      }
+      return lookupRows(cypher, (params.id ?? params.nodeId) as string);
+    });
+    const result = (await query(repo, options)) as Record<string, any>;
+    expect(result.process_symbols.map((symbol: any) => symbol.content)).toEqual([
+      'alpha body',
+      'beta body',
+    ]);
+    expect(result.warning).toBeUndefined();
+  });
+
   it('preserves complete enrichment within a single shared query memory budget', async () => {
     let active = 0;
     let peakActive = 0;
     vi.mocked(executeParameterized).mockImplementation(async (_repo, cypher, params) => {
-      if (!('nodeIds' in params || 'nodeId' in params)) return lookupRows(cypher);
+      if (!('nodeIds' in params || 'nodeId' in params || 'id' in params)) return lookupRows(cypher);
       active += 1;
       peakActive = Math.max(peakActive, active);
       try {
         if (active > 1) throw resourceErrors[0];
         await new Promise<void>((resolve) => setImmediate(resolve));
-        return lookupRows(cypher, params.nodeId as string);
+        return lookupRows(cypher, (params.id ?? params.nodeId) as string);
       } finally {
         active -= 1;
       }
@@ -207,7 +233,7 @@ describe('batched search symbol lookup', () => {
 
     expect(peakActive).toBe(1);
     expect(active).toBe(0);
-    expect(enrichmentCalls()).toHaveLength(4);
+    expect(enrichmentCalls()).toHaveLength(3);
     expect(result.warning).toBeUndefined();
     expect(result.processes).toEqual([
       {
@@ -245,10 +271,10 @@ describe('batched search symbol lookup', () => {
     async (failedKind) => {
       vi.mocked(executeParameterized).mockImplementation(async (_repo, cypher, params) => {
         if (cypher.includes(failedKind)) throw new Error('lookup unavailable');
-        return lookupRows(cypher, params.nodeId as string);
+        return lookupRows(cypher, (params.id ?? params.nodeId) as string);
       });
       const result = await query(repo, options);
-      expect(enrichmentCalls()).toHaveLength(4);
+      expect(enrichmentCalls()).toHaveLength(3);
       const output =
         failedKind === 'STEP_IN_PROCESS'
           ? (result as unknown as Record<string, any>).definitions
@@ -272,7 +298,7 @@ describe('batched search symbol lookup', () => {
         if (cypher.includes(failedKind) && ('nodeIds' in params || params.nodeId === nodeIds[0])) {
           throw new Error('alpha unavailable');
         }
-        return lookupRows(cypher, params.nodeId as string);
+        return lookupRows(cypher, (params.id ?? params.nodeId) as string);
       });
       const result = await query(repo, options);
       expect((result as unknown as Record<string, any>).process_symbols![0]).not.toHaveProperty(
@@ -284,7 +310,7 @@ describe('batched search symbol lookup', () => {
         content: 'beta body',
         citation_path: 'src/beta-main.ts:betaMain -> IMPORTS -> beta',
       });
-      expect(enrichmentCalls()).toHaveLength(4);
+      expect(enrichmentCalls()).toHaveLength(3);
       const fallbackCalls = vi
         .mocked(executeParameterized)
         .mock.calls.filter(([, , params]) => 'nodeId' in params);
@@ -303,6 +329,9 @@ describe('batched search symbol lookup', () => {
     ]);
     const result = await query(repo, { ...options, include_content: false });
     expect(enrichmentCalls()).toHaveLength(3);
+    expect(
+      vi.mocked(executeParameterized).mock.calls.some(([, cypher]) => cypher.includes('.content')),
+    ).toBe(false);
     for (const [, , params] of enrichmentCalls()) expect(params).toEqual({ nodeIds });
     const perNodeCalls = vi
       .mocked(executeParameterized)
@@ -332,7 +361,7 @@ describe('batched search symbol lookup', () => {
         if (cypher.includes('MEMBER_OF') || cypher.includes('callerPath')) {
           throw Object.assign(new Error('Lookup timed out'), { name });
         }
-        return lookupRows(cypher, params.nodeId as string);
+        return lookupRows(cypher, (params.id ?? params.nodeId) as string);
       });
       const result = await query(repo, options);
       expect((result as unknown as Record<string, any>).process_symbols).toHaveLength(
@@ -354,7 +383,7 @@ describe('batched search symbol lookup', () => {
   it.each(resourceErrors)('does not retry resource-exhausted batches: %s', async (error) => {
     vi.mocked(executeParameterized).mockImplementation(async (_repo, cypher, params) => {
       if (cypher.includes('MEMBER_OF') || cypher.includes('callerPath')) throw error;
-      return lookupRows(cypher, params.nodeId as string);
+      return lookupRows(cypher, (params.id ?? params.nodeId) as string);
     });
 
     const result = (await query(repo, options)) as Record<string, any>;
@@ -378,7 +407,7 @@ describe('batched search symbol lookup', () => {
           if ('nodeIds' in params) throw new Error('unsupported batch');
           throw resourceErrors[0];
         }
-        return lookupRows(cypher, params.nodeId as string);
+        return lookupRows(cypher, (params.id ?? params.nodeId) as string);
       });
 
       const result = (await query(repo, options)) as Record<string, any>;
@@ -410,7 +439,7 @@ describe('batched search symbol lookup', () => {
     async ({ kind, label, error }) => {
       vi.mocked(executeParameterized).mockImplementation(async (_repo, cypher, params) => {
         if (cypher.includes(kind)) throw error;
-        return lookupRows(cypher, params.nodeId as string);
+        return lookupRows(cypher, (params.id ?? params.nodeId) as string);
       });
 
       const result = (await query(repo, {
@@ -433,7 +462,9 @@ describe('batched search symbol lookup', () => {
         expect(result.process_symbols[0]).toHaveProperty('content', 'alpha body');
       }
       expect(result.warning).toBe(warnings.join(' | '));
-      expect(enrichmentCalls()).toHaveLength(labels.indexOf(label) + 1);
+      expect(enrichmentCalls()).toHaveLength(
+        label === 'Content' ? 2 : label === 'Citation' ? 3 : labels.indexOf(label) + 1,
+      );
       for (const skippedWarning of warnings) {
         expect(result.structured_retrieval.capabilityState.warnings).toContain(skippedWarning);
         expect(result.retrieval_diagnostics.warnings).toContain(skippedWarning);
@@ -461,7 +492,7 @@ describe('batched search symbol lookup', () => {
         if ('nodeIds' in params) throw new Error('batch unavailable');
         throw Object.assign(new Error('Lookup timed out'), { name });
       }
-      return lookupRows(cypher, params.nodeId as string);
+      return lookupRows(cypher, (params.id ?? params.nodeId) as string);
     });
     const result = await query(repo, options);
     expect((result as unknown as Record<string, any>).process_symbols).toHaveLength(symbols.length);
@@ -469,7 +500,7 @@ describe('batched search symbol lookup', () => {
       id: nodeIds[1],
       ...(failedKind === 'callerPath' ? { content: 'beta body' } : {}),
     });
-    expect(enrichmentCalls()).toHaveLength(failedKind === 'MEMBER_OF' ? 2 : 4);
+    expect(enrichmentCalls()).toHaveLength(failedKind === 'MEMBER_OF' ? 2 : 3);
     const retries = vi
       .mocked(executeParameterized)
       .mock.calls.filter(([, , params]) => 'nodeId' in params);
@@ -497,10 +528,10 @@ describe('batched search symbol lookup', () => {
 
       vi.mocked(executeParameterized).mockClear();
       vi.mocked(executeParameterized).mockImplementation(async (_repo, cypher, params) =>
-        lookupRows(cypher, params.nodeId as string),
+        lookupRows(cypher, (params.id ?? params.nodeId) as string),
       );
       const next = (await query(repo, options)) as Record<string, any>;
-      expect(executeParameterized).toHaveBeenCalledTimes(4);
+      expect(executeParameterized).toHaveBeenCalledTimes(5);
       expect(next.warning).toBeUndefined();
       expect(next.process_symbols).toHaveLength(symbols.length);
     },
@@ -537,7 +568,7 @@ describe('batched search symbol lookup', () => {
     async ({ kind, error }) => {
       vi.mocked(executeParameterized).mockImplementation(async (_repo, cypher, params) => {
         if (cypher.includes(kind)) throw error;
-        return lookupRows(cypher, params.nodeId as string);
+        return lookupRows(cypher, (params.id ?? params.nodeId) as string);
       });
 
       const result = (await query(repo, {
@@ -573,7 +604,7 @@ describe('batched search symbol lookup', () => {
         if ('nodeIds' in params) throw new Error('unsupported batch');
         if (params.nodeId === nodeIds[1]) throw error;
       }
-      return lookupRows(cypher, params.nodeId as string);
+      return lookupRows(cypher, (params.id ?? params.nodeId) as string);
     });
 
     const result = (await query(repo, options)) as Record<string, any>;
@@ -607,8 +638,8 @@ describe('batched search symbol lookup', () => {
       cypher.includes('MEMBER_OF') || cypher.includes('callerPath') ? [] : lookupRows(cypher),
     );
     const result = await query(repo, options);
-    expect(executeParameterized).toHaveBeenCalledTimes(4);
-    expect(enrichmentCalls()).toHaveLength(4);
+    expect(executeParameterized).toHaveBeenCalledTimes(5);
+    expect(enrichmentCalls()).toHaveLength(3);
     expect((result as unknown as Record<string, any>).process_symbols).toHaveLength(symbols.length);
     for (const symbol of (result as unknown as Record<string, any>).process_symbols!) {
       expect(symbol).not.toHaveProperty('module');
@@ -620,7 +651,7 @@ describe('batched search symbol lookup', () => {
   it('deduplicates candidate ids before every enrichment batch', async () => {
     setResults([...symbols, { ...symbols[0], name: 'alpha duplicate' }]);
     await query(repo, options);
-    expect(executeParameterized).toHaveBeenCalledTimes(4);
+    expect(executeParameterized).toHaveBeenCalledTimes(5);
     for (const [, , params] of enrichmentCalls()) expect(params).toEqual({ nodeIds });
   });
 
@@ -642,7 +673,7 @@ describe('batched search symbol lookup', () => {
       return [];
     });
     const result = await query(repo, { ...options, limit: 100 });
-    expect(executeParameterized).toHaveBeenCalledTimes(4);
+    expect(executeParameterized).toHaveBeenCalledTimes(3 + candidates.length);
     for (const [, , params] of enrichmentCalls()) {
       expect(params).toEqual({ nodeIds: candidates.map((candidate) => candidate.nodeId) });
     }
@@ -674,7 +705,7 @@ describe('batched search symbol lookup', () => {
       expect((result as unknown as Record<string, any>).process_symbols![0]).not.toHaveProperty(
         'citation_path',
       );
-      expect(enrichmentCalls()).toHaveLength(4);
+      expect(enrichmentCalls()).toHaveLength(3);
     },
   );
 

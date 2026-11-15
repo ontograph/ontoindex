@@ -1,4 +1,5 @@
 import { executeParameterized } from '../../core/lbug/pool-adapter.js';
+import { CONTENT_NODE_TABLES } from '../../core/lbug/schema.js';
 import {
   isAutomaticWorkspaceEnabled,
   getOverlaySnapshot,
@@ -77,6 +78,21 @@ function rowValue(row: QueryRow, key: string, index: number): unknown {
   const keyedValue = (row as Record<string, unknown>)[key];
   if (keyedValue != null) return keyedValue;
   return Array.isArray(row) ? row[index] : row[String(index)];
+}
+
+/** Read content by table and primary key without scanning unrelated content columns. */
+export async function readNodeContent(
+  run: (cypher: string, params: Record<string, unknown>) => Promise<unknown[]>,
+  label: string,
+  id: string,
+): Promise<string | undefined> {
+  if (!CONTENT_NODE_TABLES.has(label)) return undefined;
+  const rows = await run(`MATCH (n:\`${label}\` {id: $id}) RETURN n.content AS content LIMIT 1`, {
+    id,
+  });
+  return rows.length > 0
+    ? (rowValue(rows[0] as QueryRow, 'content', 0) as string | undefined)
+    : undefined;
 }
 
 /**
@@ -236,7 +252,21 @@ export async function resolveSymbolCandidates(
   options: { snapshot?: OverlaySnapshot } = {},
 ): Promise<SymbolResolutionOutcome> {
   const { uid, name, include_content } = query;
-  const selectClause = `n.id AS id, n.name AS name, label(n) AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine, n.content AS content`;
+  const selectClause = `n.id AS id, n.name AS name, label(n) AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine`;
+  const contentFor = (symbol: ResolvedSymbol, snapshot?: OverlaySnapshot) =>
+    readNodeContent(
+      (cypher, params) =>
+        symbol.source === 'overlay'
+          ? queryOverlay(
+              { id: repo.id, repoPath: repo.repoPath, storagePath: repo.storagePath },
+              cypher,
+              params,
+              snapshot?.generation,
+            )
+          : executeParameterized(repo.id, cypher, params),
+      symbol.type,
+      symbol.id,
+    );
 
   if (uid) {
     const cypher = `MATCH (n {id: $uid}) RETURN ${selectClause} LIMIT 1`;
@@ -263,6 +293,7 @@ export async function resolveSymbolCandidates(
     }
     if (candidates.length === 0) return notFoundForTombstones(filtered.tombstones);
     const symbol = candidates[0];
+    if (include_content) symbol.content = await contentFor(symbol, overlay?.snapshot);
     return { kind: 'ok', symbol, resolvedLabel: symbol.type, snapshot: overlay?.snapshot };
   }
 
@@ -294,7 +325,6 @@ export async function resolveSymbolCandidates(
       : await executeParameterized(repo.id, cypher, queryParams);
   const filtered = filterBaseRows(rows as QueryRow[], overlay);
   const baseRows = filtered.rows;
-  const queryRows = [...baseRows, ...(overlay?.rows ?? [])];
   const normalized: ResolvedSymbol[] = [
     ...baseRows.map((r) => parseSymbolRow(r, include_content)),
     ...(overlay?.rows ?? []).map((r) => ({
@@ -331,6 +361,7 @@ export async function resolveSymbolCandidates(
           const preferredId = rowValue(labelRows[0] as QueryRow, 'id', 0);
           const preferred = normalized.find((s) => s.id === preferredId);
           if (preferred) {
+            if (include_content) preferred.content = await contentFor(preferred, overlay?.snapshot);
             return {
               kind: 'ok',
               symbol: preferred,
@@ -344,6 +375,9 @@ export async function resolveSymbolCandidates(
   }
 
   if (normalized.length === 1) {
+    if (include_content) {
+      normalized[0].content = await contentFor(normalized[0], overlay?.snapshot);
+    }
     return {
       kind: 'ok',
       symbol: normalized[0],
@@ -352,19 +386,25 @@ export async function resolveSymbolCandidates(
     };
   }
 
-  const scored: AmbiguousSymbol[] = normalized.map((s, index) => ({
-    ...s,
-    score: scoreCandidate(
-      {
-        kind: s.type,
-        filePath: s.filePath || '',
-        startLine: s.startLine,
-        endLine: s.endLine,
-        content: s.content ?? (rowValue(queryRows[index], 'content', 6) as string | undefined),
-      },
-      hints,
-    ),
-  }));
+  const scored: AmbiguousSymbol[] = await Promise.all(
+    normalized.map(async (s) => {
+      const content = await contentFor(s, overlay?.snapshot);
+      return {
+        ...s,
+        ...(include_content ? { content } : {}),
+        score: scoreCandidate(
+          {
+            kind: s.type,
+            filePath: s.filePath || '',
+            startLine: s.startLine,
+            endLine: s.endLine,
+            content,
+          },
+          hints,
+        ),
+      };
+    }),
+  );
   scored.sort((a, b) => {
     if (b.score !== a.score) return b.score - a.score;
     const fpA = (a.filePath || '').length;

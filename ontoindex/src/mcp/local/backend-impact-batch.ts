@@ -186,15 +186,29 @@ export async function runImpactBatch(
 
   try {
     const results = await mapWithConcurrency(targets, IMPACT_BATCH_CONCURRENCY, async (target) => {
-      const result = await runImpact(repo, {
-        target,
-        direction,
-        maxDepth,
-        relationTypes: params?.relationTypes,
-        includeTests: params?.includeTests,
-        minConfidence: params?.minConfidence ?? 0.7,
-      });
-      return { target, result };
+      try {
+        const result = await runImpact(repo, {
+          target,
+          direction,
+          maxDepth,
+          relationTypes: params?.relationTypes,
+          includeTests: params?.includeTests,
+          minConfidence: params?.minConfidence ?? 0.7,
+        });
+        return { target, result };
+      } catch (err: unknown) {
+        return {
+          target,
+          result: {
+            error: batchErrorDetail(err) || 'Impact analysis failed',
+            target: { name: target },
+            direction,
+            impactedCount: 0,
+            risk: 'UNKNOWN' as const,
+            suggestion: 'The graph query failed — try ontoindex context <symbol> as a fallback',
+          },
+        };
+      }
     });
 
     // Count how many targets reached each impacted id so we can report

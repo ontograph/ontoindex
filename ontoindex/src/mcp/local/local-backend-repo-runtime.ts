@@ -177,6 +177,9 @@ export class WorkspacePreparationError extends Error {
 }
 
 const WORKSPACE_BUILD_TIMEOUT_MS = 120_000;
+// Half the 131072-byte Linux MAX_ARG_STRLEN (including its NUL), leaving room
+// for the environment within ARG_MAX.
+export const MAX_SYMBOL_PATHS_ARGUMENT_BYTES = 64 * 1024;
 /** Each caller has its own wait budget; the shared build may continue for other callers. */
 export const WORKSPACE_PREPARATION_DEADLINE_MS = 60_000;
 
@@ -218,13 +221,16 @@ export async function buildWorkspaceGraph(
   const child = fileURLToPath(new URL('../../core/workspace-build-child.js', import.meta.url));
   if (syncFs.existsSync(child)) {
     const { superviseWorkspaceBuild } = await import('./workspace-build-supervisor.js');
+    const symbolsJson =
+      build?.workspaceGraph === false ? JSON.stringify([...build.includePaths].sort()) : undefined;
     await superviseWorkspaceBuild({
       command: process.execPath,
       args: [
         child,
         repo.repoPath,
-        ...(build?.workspaceGraph === false
-          ? ['--symbols', JSON.stringify(build.includePaths)]
+        ...(symbolsJson !== undefined &&
+        Buffer.byteLength(symbolsJson, 'utf8') <= MAX_SYMBOL_PATHS_ARGUMENT_BYTES
+          ? ['--symbols', symbolsJson]
           : []),
       ],
       cwd: repo.repoPath,

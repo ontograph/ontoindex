@@ -1,3 +1,6 @@
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 type ToolCallHandler = (request: {
@@ -20,6 +23,8 @@ async function createHarness(
     dispatchError?: string | Error;
     resolveRepoError?: string;
     generationMeta?: unknown;
+    generationLookup?: () => Promise<unknown>;
+    full?: boolean;
   } = {},
 ): Promise<{ backend: MockBackend; handler: ToolCallHandler }> {
   vi.resetModules();
@@ -40,12 +45,13 @@ async function createHarness(
   vi.doMock('../../src/storage/repo-manager.js', async (importOriginal) => ({
     ...(await importOriginal<typeof import('../../src/storage/repo-manager.js')>()),
     readActiveGenerationMeta: vi.fn(
-      async () =>
-        options.generationMeta ?? {
-          activeGeneration: null,
-          meta: { lastCommit: 'a'.repeat(40) },
-          authority: 'legacy-root',
-        },
+      options.generationLookup ??
+        (async () =>
+          options.generationMeta ?? {
+            activeGeneration: null,
+            meta: { lastCommit: 'a'.repeat(40) },
+            authority: 'legacy-root',
+          }),
     ),
   }));
 
@@ -74,7 +80,7 @@ async function createHarness(
     withPreparedRepoRead: vi.fn(async (_repo, _options, operation) => operation()),
   };
 
-  createMCPServer(backend as any);
+  createMCPServer(backend as any, { full: options.full });
   const handler = setRequestHandlerSpy.mock.calls.find(
     ([schema]) => schema === CallToolRequestSchema,
   )?.[1] as ToolCallHandler | undefined;
@@ -696,6 +702,36 @@ describe('MCP server tool-call errors', () => {
     expect(readErrorPayload(response.content[0].text)).not.toHaveProperty('remediation');
   });
 
+  it.each(
+    ['workspace_build_failed', 'workspace_too_large'].flatMap((code) =>
+      ['throws', 'hangs'].map((lookup) => ({ code, lookup })),
+    ),
+  )('omits $code remediation when generation lookup $lookup', async ({ code, lookup }) => {
+    const error = Object.assign(new Error('workspace unavailable'), { code });
+    const { handler } = await createHarness({
+      dispatchError: error,
+      generationLookup: () =>
+        lookup === 'throws'
+          ? Promise.reject(new Error('metadata unavailable'))
+          : new Promise(() => {}),
+    });
+    vi.useFakeTimers();
+    try {
+      const pending = handler({
+        params: { name: 'gn_explore', arguments: { repo: 'fixture' } },
+      });
+      await vi.advanceTimersByTimeAsync(1000);
+      const response = await pending;
+      expect(response.isError).toBe(true);
+      const payload = readErrorPayload(response.content[0].text);
+      expect(payload).toMatchObject({ code });
+      expect(payload).not.toHaveProperty('remediation');
+      expect(response.content[0].text).not.toContain('read_mode="committed"');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('keeps committed remediation when indexed commit identity is trusted', async () => {
     const error = Object.assign(new Error('workspace unavailable'), {
       code: 'workspace_build_failed',
@@ -756,5 +792,129 @@ describe('MCP server tool-call errors', () => {
 
     expect(response.isError).toBe(true);
     expect(response.content[0].text).toBe('Error: global failed');
+  });
+});
+
+describe('MCP tool-call telemetry ownership', () => {
+  it('records the raw tool name in full-backend mode', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ontoindex-full-telemetry-'));
+    vi.stubEnv('ONTOINDEX_TELEMETRY_DIR', dir);
+    try {
+      const { backend, handler } = await createHarness({ full: true });
+      const args = { action: 'context', repo: 'fixture' };
+      const response = await handler({ params: { name: 'inspect', arguments: args } });
+      expect(response.isError).not.toBe(true);
+      expect(backend.callTool).toHaveBeenCalledWith('inspect', args);
+      await vi.waitFor(() => {
+        const records = readFileSync(join(dir, 'telemetry.jsonl'), 'utf8')
+          .trim()
+          .split('\n')
+          .map((line) => JSON.parse(line));
+        expect(records).toHaveLength(2);
+        expect(records[0]).toMatchObject({ phase: 'start', method: 'inspect' });
+        expect(records[1]).toMatchObject({ id: records[0].id, method: 'inspect', ok: true });
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    'success',
+    'context',
+    'resolveRepo',
+    'ensureRepoInitialized',
+    'withPreparedRepoRead',
+    'super',
+    'facade',
+    'callTool',
+  ] as const)('records one pair for %s', async (stage) => {
+    const dir = mkdtempSync(join(tmpdir(), 'ontoindex-mcp-telemetry-'));
+    vi.stubEnv('ONTOINDEX_TELEMETRY_DIR', dir);
+    try {
+      const { backend, handler } = await createHarness();
+      const failure = Object.assign(new Error('preparation failed'), {
+        code: 'workspace_busy',
+        diagnostics: { reason: 'timeout' },
+      });
+      if (stage === 'super' || stage === 'facade')
+        backend.withPreparedRepoRead.mockRejectedValue(failure);
+      else if (stage !== 'success' && stage !== 'context')
+        backend[stage].mockRejectedValue(failure);
+      const name =
+        stage === 'super'
+          ? 'gn_explore'
+          : stage === 'facade'
+            ? 'inspect'
+            : stage === 'callTool' || stage === 'success'
+              ? 'list_repos'
+              : 'inspect';
+      const args =
+        name === 'inspect'
+          ? {
+              action: stage === 'facade' ? 'explore' : 'context',
+              repo: 'fixture',
+              ...(stage === 'facade' ? {} : { read_mode: 'committed' }),
+            }
+          : { repo: 'fixture' };
+      const response = await handler({ params: { name, arguments: args } });
+      const success = stage === 'success' || stage === 'context';
+      expect(response.isError === true).toBe(!success);
+      let records: any[] = [];
+      await vi.waitFor(() => {
+        records = readFileSync(join(dir, 'telemetry.jsonl'), 'utf8')
+          .trim()
+          .split('\n')
+          .map((line) => JSON.parse(line));
+        expect(records).toHaveLength(2);
+      });
+      expect(records[0]).toMatchObject({
+        phase: 'start',
+        method: name === 'inspect' ? (stage === 'facade' ? 'gn_explore' : 'context') : name,
+        repo: 'fixture',
+      });
+      expect(records[1]).toMatchObject({
+        id: records[0].id,
+        ok: success,
+        responseSizeBytes: success ? Buffer.byteLength(JSON.stringify({ ok: true })) : 0,
+      });
+      if (!success) expect(records[1]).toMatchObject({ code: 'workspace_busy', reason: 'timeout' });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('backend telemetry fallback', () => {
+  it.each([false, true])('records exactly one pair with entry scope=%s', async (scoped) => {
+    vi.resetModules();
+    const dir = mkdtempSync(join(tmpdir(), 'ontoindex-backend-telemetry-'));
+    vi.stubEnv('ONTOINDEX_TELEMETRY_DIR', dir);
+    try {
+      const { LocalBackend } = await import('../../src/mcp/local/local-backend.js');
+      const { withToolCallTelemetry } = await import('../../src/mcp/local/tool-telemetry.js');
+      const backend = Object.create(LocalBackend.prototype);
+      backend.withOperation = (operation: () => Promise<unknown>) => operation();
+      backend._callToolImpl = vi.fn(async () => ({ ok: true }));
+      const operation = () => backend.callTool('query', { repo: 'fixture' });
+      if (scoped) await withToolCallTelemetry('search.semantic', { repo: 'fixture' }, operation);
+      else await operation();
+      let records: any[] = [];
+      await vi.waitFor(() => {
+        records = readFileSync(join(dir, 'telemetry.jsonl'), 'utf8')
+          .trim()
+          .split('\n')
+          .map((line) => JSON.parse(line));
+        expect(records).toHaveLength(2);
+      });
+      expect(records[0]).toMatchObject({
+        phase: 'start',
+        method: scoped ? 'search.semantic' : 'query',
+      });
+      expect(records[1]).toMatchObject({ id: records[0].id, ok: true });
+      expect(backend._callToolImpl).toHaveBeenCalledOnce();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

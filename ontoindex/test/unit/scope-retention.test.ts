@@ -1,4 +1,7 @@
 import { createHash } from 'node:crypto';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { GraphNode, GraphRelationship } from 'ontoindex-shared';
 import {
@@ -17,7 +20,10 @@ import {
   createResolutionContext,
   snapshotImportResolutionState,
 } from '../../src/core/ingestion/model/resolution-context.js';
-import type { ImportConfigObservations } from '../../src/core/ingestion/language-config.js';
+import {
+  loadImportConfigs,
+  type ImportConfigObservations,
+} from '../../src/core/ingestion/language-config.js';
 import type {
   ExtractedAssignment,
   ExtractedCall,
@@ -3035,15 +3041,17 @@ describe('original parser ORM query retention', () => {
   });
 });
 
-function configuration(): ImportConfigObservations {
-  const records: ImportConfigObservations['records'] = [
+function configuration(
+  records: ImportConfigObservations['records'] = [
     {
       kind: 'directory',
       path: '.',
       status: 'present',
       entries: [{ name: 'src', kind: 'directory' }],
     },
-  ];
+    { kind: 'traversal', path: '.', dirsScanned: 1 },
+  ],
+): ImportConfigObservations {
   return {
     version: 1,
     complete: true,
@@ -3056,6 +3064,115 @@ function configuration(): ImportConfigObservations {
 }
 
 describe('scope retention consumed input evidence', () => {
+  it.each([0, 250, Number.MAX_SAFE_INTEGER])(
+    'accepts producer-shaped traversal with dirsScanned %s',
+    async (dirsScanned) => {
+      const stage = new ScopeRetentionStage(options());
+      const config = configuration([{ kind: 'traversal', path: '.', dirsScanned }]);
+      try {
+        stage.captureDiscovery(['one.ts'], [{ path: 'one.ts', size: 0 }], []);
+        stage.captureConfigObservations(config);
+        stage.captureParserInputs([{ path: 'one.ts', content: '' }]);
+        stage.reconcile(['one.ts']);
+        expect(stage.inputEvidence.configuration).toEqual(config);
+        expect(stage.inputEvidence.reasons).toEqual([]);
+      } finally {
+        await stage.dispose();
+      }
+    },
+  );
+
+  it.each([-1, 1.5, Number.MAX_SAFE_INTEGER + 1])(
+    'rejects invalid traversal dirsScanned %s',
+    async (dirsScanned) => {
+      const stage = new ScopeRetentionStage(options());
+      try {
+        stage.captureConfigObservations(
+          configuration([{ kind: 'traversal', path: '.', dirsScanned }]),
+        );
+        expect(stage.inputEvidence.configuration).toBeNull();
+        expect(stage.inputEvidence.reasons.length).toBeGreaterThan(0);
+      } finally {
+        await stage.dispose();
+      }
+    },
+  );
+
+  it.each([
+    { maxDepth: 5 },
+    { maxDirs: 100 },
+    { depthLimited: true },
+    { directoryLimited: false },
+    { unknown: true },
+  ])('rejects removed or extra traversal fields %j', async (extra) => {
+    const stage = new ScopeRetentionStage(options());
+    try {
+      stage.captureConfigObservations(
+        configuration([{ kind: 'traversal', path: '.', dirsScanned: 1, ...extra }]),
+      );
+      expect(stage.inputEvidence.configuration).toBeNull();
+      expect(stage.inputEvidence.reasons).toContain('configuration-invalid');
+    } finally {
+      await stage.dispose();
+    }
+  });
+
+  it.each([
+    ['inherited fields', Object.create({ kind: 'traversal', path: '.', dirsScanned: 1 })],
+    [
+      'non-enumerable removed field',
+      Object.defineProperty({ kind: 'traversal', path: '.', dirsScanned: 1 }, 'maxDirs', {
+        value: 100,
+      }),
+    ],
+    ['symbol field', { kind: 'traversal', path: '.', dirsScanned: 1, [Symbol('extra')]: true }],
+    [
+      'accessor field',
+      {
+        kind: 'traversal',
+        path: '.',
+        get dirsScanned() {
+          return 1;
+        },
+      },
+    ],
+    [
+      'non-enumerable required field',
+      Object.defineProperty({ kind: 'traversal', path: '.' }, 'dirsScanned', { value: 1 }),
+    ],
+  ])('rejects traversal with %s', async (_description, record) => {
+    const stage = new ScopeRetentionStage(options());
+    try {
+      stage.captureConfigObservations(configuration([record]));
+      expect(stage.inputEvidence.configuration).toBeNull();
+      expect(stage.inputEvidence.reasons).toContain('configuration-invalid');
+    } finally {
+      await stage.dispose();
+    }
+  });
+
+  it('accepts traversal observations from the real config producer', async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'scope-traversal-test-'));
+    const stage = new ScopeRetentionStage(options());
+    try {
+      const configs = await loadImportConfigs(directory);
+      const observations = configs.observations!;
+      expect(observations.complete).toBe(true);
+      expect(observations.records.filter((record) => record.kind === 'traversal')).toEqual([
+        { kind: 'traversal', path: '.', dirsScanned: 1 },
+      ]);
+      stage.captureDiscovery(['one.ts'], [{ path: 'one.ts', size: 0 }], []);
+      stage.captureConfigObservations(observations);
+      stage.captureParserInputs([{ path: 'one.ts', content: '' }]);
+      stage.reconcile(['one.ts']);
+      expect(stage.inputEvidence.configuration).toEqual(observations);
+      expect(stage.inputEvidence.reasons).toEqual([]);
+    } finally {
+      await stage.dispose();
+      await fs.rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it('retains one immutable parser code identity, deduplicates its bytes and refunds disposal once', async () => {
     const request = options();
     const allowance = request.artifactAllowance.remainingBytes;

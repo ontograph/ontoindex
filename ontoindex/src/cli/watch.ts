@@ -383,6 +383,7 @@ export async function createWatchCommand(
   let overlayPending = false;
   let attemptedHead: string | undefined;
   let signature: string | undefined;
+  let workspaceGraphRefused = false;
   let retryTimer: NodeJS.Timeout | undefined;
   let inFlightCallback: Promise<void> | undefined;
   let retryIndex = 0;
@@ -425,20 +426,24 @@ export async function createWatchCommand(
   ) => {
     const includePaths = [...plan.includePaths].sort();
     const fingerprints = await Promise.all(
-      includePaths.map(async (includePath) => {
-        try {
-          const stat = await fs.promises.stat(path.join(repoPath, includePath));
-          return [includePath, stat.mtimeMs, stat.size];
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [includePath, 'gone'];
-          throw error;
-        }
-      }),
+      [...new Set([...includePaths, ...(plan.configPaths ?? [])])]
+        .sort()
+        .map(async (includePath) => {
+          try {
+            const stat = await fs.promises.stat(path.join(repoPath, includePath));
+            return [includePath, stat.mtimeMs, stat.size];
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [includePath, 'gone'];
+            throw error;
+          }
+        }),
     );
     return JSON.stringify([
       generationId,
       [...plan.allDirtyPaths].sort(),
       includePaths,
+      [...(plan.configPaths ?? [])].sort(),
+      [...plan.tombstones].sort(),
       fingerprints,
     ]);
   };
@@ -500,11 +505,15 @@ export async function createWatchCommand(
     }
     launching = true;
     let requestedSignature: string | undefined;
+    let workspaceGraph = false;
     try {
       if (!baseHead) {
         const plan = await deps.planDirtyOverlay(repoPath);
+        workspaceGraph = (plan.configPaths?.length ?? 0) > 0;
+        if (!plan.includePaths.length && !plan.tombstones.length && !workspaceGraph) return;
         const { base } = await readState();
         requestedSignature = await planSignature(plan, base.generationId);
+        if (workspaceGraphRefused && requestedSignature === signature) return;
       }
       if (stopped) return;
       baseRunning = !!baseHead;
@@ -540,7 +549,13 @@ export async function createWatchCommand(
         try {
           const processChild = deps.spawn(
             process.execPath,
-            [deps.cliPath, 'analyze', ...(baseHead ? [] : ['--dirty-overlay']), repoPath],
+            [
+              deps.cliPath,
+              'analyze',
+              ...(baseHead ? [] : [workspaceGraph ? '--workspace-graph' : '--dirty-overlay']),
+              ...(workspaceGraph ? ['--skip-agents-md', '--no-stats'] : []),
+              repoPath,
+            ],
             {
               cwd: repoPath,
               env: childEnvironment(deps.env),
@@ -572,6 +587,7 @@ export async function createWatchCommand(
             }
             if (code === 0) {
               signature = requestedSignature;
+              workspaceGraphRefused = false;
               resetRetry();
             }
             deps.log(
@@ -581,7 +597,10 @@ export async function createWatchCommand(
               deps.error(
                 `Watch overlay analyze failed with code ${code ?? `signal ${signal ?? 'unknown'}`}.`,
               );
-              scheduleRetry();
+              if (workspaceGraph) {
+                signature = requestedSignature;
+                workspaceGraphRefused = true;
+              } else scheduleRetry();
             }
             finish();
           });
@@ -735,6 +754,9 @@ export async function createWatchCommand(
         if (
           !stopped &&
           !watcher.isBusy() &&
+          (plan.includePaths.length > 0 ||
+            plan.tombstones.length > 0 ||
+            (plan.configPaths?.length ?? 0) > 0) &&
           (await planSignature(plan, base.generationId)) !== signature
         )
           watcher.requestRefresh();
@@ -766,7 +788,9 @@ export async function createWatchCommand(
     deps.log(`Watching ${repoPath} (debounce ${WATCH_DEBOUNCE_MS} ms); ${startupState}`);
     if (
       !(await refreshBase(head, base.commit)) &&
-      (plan.includePaths.length > 0 || plan.tombstones.length > 0)
+      (plan.includePaths.length > 0 ||
+        plan.tombstones.length > 0 ||
+        (plan.configPaths?.length ?? 0) > 0)
     ) {
       watcher.requestRefresh();
     }

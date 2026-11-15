@@ -251,12 +251,26 @@ withTestLbugDB(
         result.definitions.find((entry) => 'id' in entry && entry.id === 'Function:nullTarget'),
       ).not.toHaveProperty('citation_path');
     });
-    it('executes one successful query per enrichment with at most one selected neighbor per target', async () => {
+    it('batches graph enrichment and reads content per symbol with at most one selected neighbor per target', async () => {
       const execute = vi.spyOn(poolAdapter, 'executeParameterized');
       try {
         await search();
-        expect(execute).toHaveBeenCalledTimes(4);
-        for (const [, , params] of execute.mock.calls) expect(params).toHaveProperty('nodeIds');
+        const enrichmentCalls = execute.mock.calls.filter(([, , params]) => 'nodeIds' in params);
+        const contentCalls = execute.mock.calls.filter(([, , params]) => !('nodeIds' in params));
+        expect(enrichmentCalls).toHaveLength(3);
+        expect(contentCalls).toHaveLength(names.length);
+        expect(contentCalls.map(([, , params]) => params.id).sort()).toEqual(
+          names.map((name) => `Function:${name}`).sort(),
+        );
+        for (const [, cypher, params] of contentCalls) {
+          expect(Object.keys(params)).toEqual(['id']);
+          expect(cypher.replace(/\s+/g, ' ').trim()).toMatch(
+            /^MATCH \(n:`Function` \{id: \$id\}\) RETURN n\.content AS content LIMIT 1$/,
+          );
+        }
+        for (const [, cypher] of execute.mock.calls) {
+          if (cypher.includes('n.content')) expect(cypher).toMatch(/MATCH \(n:`Function` /);
+        }
         let checkedLookups = 0;
         for (const [index, [, cypher]] of execute.mock.calls.entries()) {
           if (!cypher.includes('MEMBER_OF') && !cypher.includes('callerPath')) continue;

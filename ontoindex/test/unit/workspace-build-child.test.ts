@@ -98,6 +98,29 @@ describe('supervised workspace child runtime admission', () => {
     );
   });
 
+  it('accepts 51 valid symbols paths', async () => {
+    const paths = Array.from({ length: 51 }, (_, i) => `src/file-${i}.ts`);
+    process.argv.push('--symbols', JSON.stringify(paths));
+    await import('../../src/core/workspace-build-child.js');
+    await vi.waitFor(() => expect(process.exit).toHaveBeenCalledWith(0));
+    expect(analyze).toHaveBeenCalledWith(
+      '/repo',
+      { dirtyOverlay: true, overlayPaths: paths, skipNativeClose: true },
+      { onProgress: expect.any(Function) },
+    );
+  });
+
+  it.each(['/absolute.ts', 'src\\file.ts', './file.ts', 'src/../file.ts'])(
+    'rejects invalid symbols path %j with exit code 2',
+    async (invalidPath) => {
+      process.argv.push('--symbols', JSON.stringify([invalidPath]));
+      await import('../../src/core/workspace-build-child.js');
+      expect(process.exit).toHaveBeenCalledExactlyOnceWith(2);
+      expect(initialize).not.toHaveBeenCalled();
+      expect(analyze).not.toHaveBeenCalled();
+    },
+  );
+
   it.each([
     { timeoutMs: 1, maxBytes: 1 },
     { timeoutMs: 120000, maxBytes: 67108864 },

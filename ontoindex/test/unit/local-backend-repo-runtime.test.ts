@@ -20,6 +20,7 @@ import {
   workspaceBuildChildEnv,
   workspaceBuildNodeOptions,
   buildWorkspaceGraph,
+  MAX_SYMBOL_PATHS_ARGUMENT_BYTES,
 } from '../../src/mcp/local/local-backend-repo-runtime.js';
 import type { OverlaySnapshot } from '../../src/mcp/local/backend-overlay.js';
 import { WorkspaceInputCaptureError } from '../../src/core/analyze-delta.js';
@@ -35,6 +36,42 @@ const { createWatchCommand } = vi.hoisted(() => ({ createWatchCommand: vi.fn() }
 vi.mock('../../src/cli/watch.js', () => ({ createWatchCommand }));
 
 describe('workspace build child environment', () => {
+  it.each([0, 1])(
+    'uses serialized UTF-8 bytes for symbols admission at the ceiling plus %i',
+    async (extraBytes) => {
+      const paths = ['z/é".ts', 'a.ts'];
+      const padding =
+        MAX_SYMBOL_PATHS_ARGUMENT_BYTES - Buffer.byteLength(JSON.stringify(paths), 'utf8');
+      paths[0] = `z/${'x'.repeat(padding + extraBytes)}é".ts`;
+      const serialized = JSON.stringify([...paths].sort());
+      expect(Buffer.byteLength(serialized, 'utf8')).toBe(
+        MAX_SYMBOL_PATHS_ARGUMENT_BYTES + extraBytes,
+      );
+      expect(serialized.length).toBeLessThan(Buffer.byteLength(serialized, 'utf8'));
+      const exists = vi.spyOn(syncFs, 'existsSync').mockReturnValue(true);
+      const supervise = vi
+        .spyOn(workspaceBuildSupervisor, 'superviseWorkspaceBuild')
+        .mockResolvedValue(undefined);
+      try {
+        await buildWorkspaceGraph(
+          { id: 'fixture', repoPath: '/fixture', storagePath: '/fixture/.ontoindex' },
+          undefined,
+          { workspaceGraph: false, includePaths: paths },
+        );
+        const args = supervise.mock.calls[0][0].args;
+        expect(args).toEqual([
+          expect.stringContaining('workspace-build-child.js'),
+          '/fixture',
+          ...(extraBytes === 0 ? ['--symbols', serialized] : []),
+        ]);
+        expect(paths[0]).toMatch(/^z\//);
+      } finally {
+        exists.mockRestore();
+        supervise.mockRestore();
+      }
+    },
+  );
+
   it.each([
     ['', '--max-old-space-size=8192'],
     ['--max-old-space-size=1536', '--max-old-space-size=8192'],
@@ -777,6 +814,33 @@ describe('workspace read preparation', () => {
       expect.any(AbortSignal),
       { workspaceGraph: false, includePaths: ['a.ts'] },
     );
+  });
+  it('accepts a full workspace build serving a symbols request above the argument ceiling', async () => {
+    const f = fixture();
+    f.options.needsRelationships = false;
+    const paths = [`src/${'é'.repeat(MAX_SYMBOL_PATHS_ARGUMENT_BYTES)}".ts`];
+    f.dirty.dirtyPaths = new Set(paths);
+    f.ready.dirtyPaths = new Set(paths);
+    const exists = vi.spyOn(syncFs, 'existsSync').mockReturnValue(true);
+    const supervise = vi
+      .spyOn(workspaceBuildSupervisor, 'superviseWorkspaceBuild')
+      .mockResolvedValue(undefined);
+    f.dependencies.buildWorkspaceGraph.mockImplementation(
+      async (repo, signal, ...rest: [{ workspaceGraph: boolean; includePaths: string[] }?]) => {
+        await buildWorkspaceGraph(repo, signal, rest[0]);
+      },
+    );
+    try {
+      expect(await prepareWorkspaceRead(f.options)).toBe(f.ready);
+      expect(supervise.mock.calls[0][0].args).toEqual([
+        expect.stringContaining('workspace-build-child.js'),
+        '/repo',
+      ]);
+      expect(f.ready.capability).toBe('workspace-graph');
+    } finally {
+      exists.mockRestore();
+      supervise.mockRestore();
+    }
   });
   it('builds a missing workspace graph when activation is absent', async () => {
     const f = fixture();

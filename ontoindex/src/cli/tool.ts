@@ -16,6 +16,7 @@
  */
 
 import { writeSync } from 'node:fs';
+import { withToolCallTelemetry } from '../mcp/local/tool-telemetry.js';
 import { parseTypedQueryDocument } from '../core/search/typed-query-document.js';
 import { LocalBackend } from '../mcp/local/local-backend.js';
 import { projectResponseSourceLines } from '../mcp/shared/response-source-lines.js';
@@ -32,22 +33,24 @@ const NAVIGATION_ROUTES = {
 async function committedReadAvailable(
   backend: LocalBackend,
   repo: string | undefined,
-): Promise<boolean> {
+): Promise<'available' | 'unavailable' | 'unknown'> {
   let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
     const result = await Promise.race([
       (async () => {
         const resolved = await backend.resolveRepo(repo);
         const { meta, authority } = await readActiveGenerationMeta(resolved.storagePath);
-        return !meta?.lastCommit || authority === 'untrusted' ? false : true;
+        return !meta?.lastCommit || authority === 'untrusted'
+          ? ('unavailable' as const)
+          : ('available' as const);
       })(),
       new Promise<undefined>((resolve) => {
         timeout = setTimeout(() => resolve(undefined), 1000);
       }),
     ]);
-    return result ?? true;
+    return result ?? 'unknown';
   } catch {
-    return true;
+    return 'unknown';
   } finally {
     if (timeout) clearTimeout(timeout);
   }
@@ -68,73 +71,78 @@ async function callNavigationTool(
   name: 'query' | 'context' | 'impact',
   params: Record<string, unknown>,
 ): Promise<unknown> {
-  if (params.read_mode !== undefined) {
-    if (
-      (params.read_mode !== 'committed' && params.read_mode !== 'workspace') ||
-      typeof params.repo !== 'string' ||
-      !params.repo.trim() ||
-      params.repo.startsWith('@')
-    ) {
-      throw new Error(
-        params.read_mode === 'committed'
-          ? 'Committed reads require an explicit single repository (--repo <name>).'
-          : 'Read mode must be committed or workspace and requires an explicit single repository (--repo <name>).',
-      );
+  return withToolCallTelemetry(name, params, async (scope) => {
+    if (params.read_mode !== undefined) {
+      if (
+        (params.read_mode !== 'committed' && params.read_mode !== 'workspace') ||
+        typeof params.repo !== 'string' ||
+        !params.repo.trim() ||
+        params.repo.startsWith('@')
+      ) {
+        throw new Error(
+          params.read_mode === 'committed'
+            ? 'Committed reads require an explicit single repository (--repo <name>).'
+            : 'Read mode must be committed or workspace and requires an explicit single repository (--repo <name>).',
+        );
+      }
+      if (
+        params.consume_enrichment_facts === true ||
+        params.include_passive_related_facts === true ||
+        params.include_markdown_context === true ||
+        params.include_markdown_ppr === true
+      ) {
+        throw new Error(
+          `${params.read_mode === 'committed' ? 'Committed' : 'Workspace'} reads do not support live or external enrichment.`,
+        );
+      }
     }
-    if (
-      params.consume_enrichment_facts === true ||
-      params.include_passive_related_facts === true ||
-      params.include_markdown_context === true ||
-      params.include_markdown_ppr === true
-    ) {
-      throw new Error(
-        `${params.read_mode === 'committed' ? 'Committed' : 'Workspace'} reads do not support live or external enrichment.`,
-      );
-    }
-  }
-  // Report the same 1-based source lines as the equivalent MCP facade route.
-  const [tool, action] = NAVIGATION_ROUTES[name];
-  let backend: LocalBackend | undefined;
-  try {
-    backend = await getBackend();
-    if (params.read_mode === 'committed' || params.read_mode === 'workspace') {
-      const repo = await backend.resolveRepo(params.repo as string);
-      await backend.ensureRepoInitialized(repo.id);
-      return projectResponseSourceLines(
-        tool,
-        action,
-        await backend.withPreparedRepoRead(
+    // Report the same 1-based source lines as the equivalent MCP facade route.
+    const [tool, action] = NAVIGATION_ROUTES[name];
+    let backend: LocalBackend | undefined;
+    try {
+      backend = await getBackend();
+      if (params.read_mode === 'committed' || params.read_mode === 'workspace') {
+        const repo = await backend.resolveRepo(params.repo as string);
+        await backend.ensureRepoInitialized(repo.id);
+        const result = await backend.withPreparedRepoRead(
           repo,
           { needsRelationships: true, readMode: params.read_mode },
           () => backend.callTool(name, params),
-        ),
+        );
+        scope.setResponseSize(Buffer.byteLength(JSON.stringify(result ?? ''), 'utf8'));
+        return projectResponseSourceLines(tool, action, result);
+      }
+      const result = await backend.callTool(name, params);
+      scope.setResponseSize(Buffer.byteLength(JSON.stringify(result ?? ''), 'utf8'));
+      return projectResponseSourceLines(tool, action, result);
+    } catch (err) {
+      scope.fail(err);
+      const code = thrownCode(err);
+      if (
+        !(err instanceof Error) ||
+        !/^workspace_preparation_failed(?::|$)/.test(err.message) ||
+        typeof code !== 'string'
+      ) {
+        throw err;
+      }
+      const diagnostics = recordField(err, 'diagnostics');
+      const committedAvailable = backend
+        ? await committedReadAvailable(backend, params.repo as string | undefined)
+        : 'unknown';
+      console.error(
+        `OntoIndex: ${code}${diagnostics ? ` ${JSON.stringify(diagnostics)}` : ''}. ` +
+          (committedAvailable === 'unknown'
+            ? 'Committed-read availability could not be confirmed.'
+            : committedAvailable === 'unavailable'
+              ? 'This index has no trusted commit (for example, it was built with analyze --skip-git), so --read-mode committed is unavailable; run ontoindex analyze in a git checkout to enable it.'
+              : params.read_mode === 'workspace'
+                ? 'As an explicit alternative, use --repo <name> --read-mode committed to read the last index; readContext.sourceProvenance reports whether it includes uncommitted changes.'
+                : 'Use --repo <name> --read-mode committed to read the last index; readContext.sourceProvenance reports whether it includes uncommitted changes.'),
       );
+      process.exitCode = 1;
+      return NAVIGATION_PREPARATION_FAILED;
     }
-    return projectResponseSourceLines(tool, action, await backend.callTool(name, params));
-  } catch (err) {
-    const code = thrownCode(err);
-    if (
-      !(err instanceof Error) ||
-      !/^workspace_preparation_failed(?::|$)/.test(err.message) ||
-      typeof code !== 'string'
-    ) {
-      throw err;
-    }
-    const diagnostics = recordField(err, 'diagnostics');
-    const committedAvailable = backend
-      ? await committedReadAvailable(backend, params.repo as string | undefined)
-      : true;
-    console.error(
-      `OntoIndex: ${code}${diagnostics ? ` ${JSON.stringify(diagnostics)}` : ''}. ` +
-        (!committedAvailable
-          ? 'This index has no trusted commit (for example, it was built with analyze --skip-git), so --read-mode committed is unavailable; run ontoindex analyze in a git checkout to enable it.'
-          : params.read_mode === 'workspace'
-            ? 'As an explicit alternative, use --repo <name> --read-mode committed to read the last index; readContext.sourceProvenance reports whether it includes uncommitted changes.'
-            : 'Use --repo <name> --read-mode committed to read the last index; readContext.sourceProvenance reports whether it includes uncommitted changes.'),
-    );
-    process.exitCode = 1;
-    return NAVIGATION_PREPARATION_FAILED;
-  }
+  });
 }
 
 export async function disposeBackend(): Promise<void> {
@@ -322,7 +330,7 @@ export async function impactCommand(
     process.exit(1);
   }
 
-  let committedAvailable = true;
+  let committedAvailable: 'available' | 'unavailable' | 'unknown' = 'unknown';
   try {
     try {
       const result = await callNavigationTool('impact', {
@@ -347,14 +355,15 @@ export async function impactCommand(
     }
   } catch (err: unknown) {
     // Belt-and-suspenders: catch infrastructure failures (getBackend, callTool transport)
-    // The backend's impact() already returns structured errors for graph query failures
+    // Resource-class graph failures (e.g. buffer-pool exhaustion) reject into this catch;
+    // other graph query failures return a structured error result from the backend's impact().
     output({
       error:
         (err instanceof Error ? err.message : String(err)) || 'Impact analysis failed unexpectedly',
       target: { name: target },
       direction: options?.direction || 'upstream',
       suggestion:
-        thrownCode(err) === 'workspace_too_large' && committedAvailable
+        thrownCode(err) === 'workspace_too_large' && committedAvailable === 'available'
           ? 'Explicitly select ontoindex impact <symbol> --repo <name> --read-mode committed; uncommitted changes are excluded'
           : 'Try reducing --depth or using ontoindex context <symbol> as a fallback',
     });

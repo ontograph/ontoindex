@@ -31,7 +31,11 @@ vi.mock('../../src/mcp/local/backend-overlay.js', async (importOriginal) => ({
   ...overlay,
 }));
 
-import { resolveSymbolCandidates } from '../../src/mcp/local/backend-symbol-resolution.js';
+import {
+  readNodeContent,
+  resolveSymbolCandidates,
+} from '../../src/mcp/local/backend-symbol-resolution.js';
+import { CONTENT_NODE_TABLES, SCHEMA_QUERIES } from '../../src/core/lbug/schema.js';
 import type { OverlaySnapshot } from '../../src/mcp/local/backend-overlay.js';
 
 const repo = { id: 'repo', repoPath: '/repo', storagePath: '/store' };
@@ -71,6 +75,195 @@ describe('symbol resolution with a dirty overlay', () => {
     pool.executeParameterized.mockResolvedValue([]);
     overlay.getOverlaySnapshot.mockResolvedValue(usable);
     overlay.queryOverlay.mockResolvedValue([]);
+  });
+
+  it('keeps the content table allowlist aligned with the node DDL', () => {
+    const tables = SCHEMA_QUERIES.filter(
+      (ddl) => /CREATE NODE TABLE\b/.test(ddl) && /\bcontent\s+STRING\b/.test(ddl),
+    ).map((ddl) => ddl.match(/CREATE NODE TABLE\s+`?(\w+)`?\s*\(/)![1]);
+    expect([...CONTENT_NODE_TABLES].sort()).toEqual(tables.sort());
+  });
+
+  it.each([{ uid: 'base-id' }, { name: 'lookup' }])(
+    'resolves %o without an unlabeled content projection',
+    async (query) => {
+      pool.executeParameterized.mockImplementation(async (_repo, cypher) => {
+        if (cypher.includes('.content') && !cypher.includes('(n:`Function`')) {
+          throw new Error(
+            'Buffer manager exception: buffer pool is full and no memory could be freed',
+          );
+        }
+        return cypher.includes('.content')
+          ? [{ content: 'function lookup() { return 1; }' }]
+          : [row('base-id', 'src/clean.ts')];
+      });
+
+      const result = await resolveSymbolCandidates(repo, { ...query, include_content: true }, {});
+
+      expect(result).toMatchObject({
+        kind: 'ok',
+        symbol: { id: 'base-id', content: 'function lookup() { return 1; }' },
+      });
+      expect(pool.executeParameterized).toHaveBeenCalledTimes(2);
+      expect(pool.executeParameterized.mock.calls[0][1]).not.toContain('.content');
+      expect(pool.executeParameterized.mock.calls[1]).toEqual([
+        repo.id,
+        'MATCH (n:`Function` {id: $id}) RETURN n.content AS content LIMIT 1',
+        { id: 'base-id' },
+      ]);
+    },
+  );
+
+  it.each([{ uid: 'base-id' }, { name: 'lookup' }])(
+    'does not hydrate a single candidate for %o without requested content',
+    async (query) => {
+      pool.executeParameterized.mockResolvedValue([row('base-id', 'src/clean.ts')]);
+      const result = await resolveSymbolCandidates(repo, { ...query, include_content: false }, {});
+      expect(result).toMatchObject({ kind: 'ok', symbol: { id: 'base-id' } });
+      if (result.kind === 'ok') expect(result.symbol).not.toHaveProperty('content');
+      expect(pool.executeParameterized).toHaveBeenCalledTimes(1);
+      expect(
+        [...pool.executeParameterized.mock.calls, ...overlay.queryOverlay.mock.calls].every(
+          (call) => !call[1].includes('.content'),
+        ),
+      ).toBe(true);
+    },
+  );
+
+  it.each([false, true])(
+    'hydrates ranking through each candidate executor once (include_content=%s)',
+    async (include_content) => {
+      const snapshot: OverlaySnapshot = {
+        ...usable,
+        reason: null,
+        parseErrorPaths: new Set(),
+        generation: 'pinned-content',
+      };
+      pool.executeParameterized.mockImplementation(async (_repo, cypher) =>
+        cypher.includes('.content')
+          ? [{ content: 'function lookup();' }]
+          : [row('base-id', 'src/clean.ts')],
+      );
+      overlay.queryOverlay.mockImplementation(async (_repo, cypher) =>
+        cypher.includes('.content')
+          ? [{ content: 'function lookup() { return 1; }' }]
+          : [row('overlay-id', 'src/dirty.ts')],
+      );
+
+      const result = await resolveSymbolCandidates(
+        repo,
+        { name: 'lookup', include_content },
+        {},
+        { snapshot },
+      );
+
+      expect(result.kind).toBe('ambiguous');
+      if (result.kind !== 'ambiguous') throw new Error('expected ranked candidates');
+      expect(result.candidates.map((candidate) => candidate.id)).toEqual(['overlay-id', 'base-id']);
+      expect(result.candidates[0].score).toBeGreaterThan(result.candidates[1].score);
+      if (include_content) {
+        expect(result.candidates.map((candidate) => candidate.content)).toEqual([
+          'function lookup() { return 1; }',
+          'function lookup();',
+        ]);
+      } else {
+        expect(result.candidates.every((candidate) => !('content' in candidate))).toBe(true);
+      }
+      expect(pool.executeParameterized).toHaveBeenCalledTimes(2);
+      expect(overlay.queryOverlay).toHaveBeenCalledTimes(2);
+      expect(pool.executeParameterized.mock.calls[1][2]).toEqual({ id: 'base-id' });
+      expect(overlay.queryOverlay.mock.calls[1]).toEqual([
+        repo,
+        'MATCH (n:`Function` {id: $id}) RETURN n.content AS content LIMIT 1',
+        { id: 'overlay-id' },
+        snapshot.generation,
+      ]);
+      expect(overlay.queryOverlay.mock.calls.every((call) => call[3] === snapshot.generation)).toBe(
+        true,
+      );
+    },
+  );
+
+  it.each(['Class', 'Interface'])(
+    'hydrates the preferred %s when content is requested',
+    async (type) => {
+      pool.executeParameterized.mockImplementation(async (_repo, cypher) => {
+        if (cypher.includes('.content')) return [{ content: `${type} Widget {}` }];
+        if (cypher.includes('candidateIds'))
+          return cypher.includes(`\`${type}\``) ? [{ id: 'preferred' }] : [];
+        return [
+          { ...row('preferred', 'src/clean.ts', 'Widget'), type },
+          { ...row('constructor', 'src/clean.ts', 'Widget'), type: 'Constructor' },
+        ];
+      });
+      const result = await resolveSymbolCandidates(
+        repo,
+        { name: 'Widget', include_content: true },
+        {},
+      );
+      expect(result).toMatchObject({
+        kind: 'ok',
+        symbol: { id: 'preferred', content: `${type} Widget {}` },
+      });
+      expect(
+        pool.executeParameterized.mock.calls.filter((call) => call[1].includes('.content')),
+      ).toHaveLength(1);
+    },
+  );
+
+  it.each([{ uid: 'overlay-id' }, { name: 'lookup' }])(
+    'hydrates a sole overlay candidate for %o using its pinned generation',
+    async (query) => {
+      const snapshot: OverlaySnapshot = {
+        ...usable,
+        reason: null,
+        parseErrorPaths: new Set(),
+        generation: 'overlay-content',
+      };
+      overlay.queryOverlay.mockImplementation(async (_repo, cypher) =>
+        cypher.includes('.content')
+          ? [{ content: 'overlay body' }]
+          : [row('overlay-id', 'src/dirty.ts')],
+      );
+      const result = await resolveSymbolCandidates(
+        repo,
+        { ...query, include_content: true },
+        {},
+        { snapshot },
+      );
+      expect(result).toMatchObject({
+        kind: 'ok',
+        symbol: { source: 'overlay', content: 'overlay body' },
+      });
+      expect(overlay.queryOverlay).toHaveBeenCalledTimes(2);
+      expect(overlay.queryOverlay.mock.calls.every((call) => call[3] === snapshot.generation)).toBe(
+        true,
+      );
+      expect(pool.executeParameterized).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('does not query content for a label without that column or an untrusted label', async () => {
+    const run = vi.fn();
+    expect(await readNodeContent(run, 'Route', 'route-id')).toBeUndefined();
+    expect(await readNodeContent(run, 'Function`) RETURN n //', 'bad-id')).toBeUndefined();
+    expect(run).not.toHaveBeenCalled();
+    pool.executeParameterized.mockResolvedValue([
+      { ...row('route-id', 'src/clean.ts'), type: 'Route' },
+    ]);
+    await expect(
+      resolveSymbolCandidates(repo, { name: 'lookup', include_content: true }, {}),
+    ).resolves.toMatchObject({ kind: 'ok', symbol: { id: 'route-id', content: undefined } });
+    expect(pool.executeParameterized).toHaveBeenCalledTimes(1);
+  });
+
+  it('reads positional content rows and handles a missing content row', async () => {
+    const run = vi
+      .fn()
+      .mockResolvedValueOnce([['body']])
+      .mockResolvedValueOnce([]);
+    expect(await readNodeContent(run, 'Function', 'id')).toBe('body');
+    expect(await readNodeContent(run, 'Function', 'missing')).toBeUndefined();
   });
 
   it('resolves a name defined only in a dirty file from the overlay', async () => {

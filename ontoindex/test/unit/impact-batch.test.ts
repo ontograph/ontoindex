@@ -143,6 +143,43 @@ describe('impact_batch', () => {
     expect(errorEntry?.result?.error).toMatch(/not found/i);
   });
 
+  it('keeps successful targets when another target throws a resource failure', async () => {
+    const message = 'Buffer manager exception: buffer pool is full and no memory could be freed';
+    const success = {
+      target: { name: 'ok' },
+      direction: 'upstream',
+      impactedCount: 1,
+      byDepth: { 1: [{ id: 'Z', depth: 1 }] },
+    };
+    impactMock.mockImplementation(async (_repo, params) => {
+      if (params.target === 'failed') throw new Error(message);
+      return success;
+    });
+    const result = await runImpactBatch(makeRepo(), { targets: ['failed', 'ok'] });
+    expect(result.status).toBe('success');
+    expect(result.perSymbol).toEqual([
+      {
+        target: 'failed',
+        result: {
+          error: message,
+          target: { name: 'failed' },
+          direction: 'upstream',
+          impactedCount: 0,
+          risk: 'UNKNOWN',
+          suggestion: 'The graph query failed — try ontoindex context <symbol> as a fallback',
+        },
+      },
+      { target: 'ok', result: success },
+    ]);
+    expect(result.union).toEqual({
+      totalAffectedNodes: 1,
+      totalRelationships: 1,
+      maxDepth: 1,
+      risk: 'LOW',
+      sharedNodes: 0,
+    });
+  });
+
   it('defaults direction to upstream and maxDepth to 3', async () => {
     impactMock.mockResolvedValue({
       target: { name: 't' },

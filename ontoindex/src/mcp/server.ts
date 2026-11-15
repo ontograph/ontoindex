@@ -1,3 +1,4 @@
+import { withToolCallTelemetry } from './local/tool-telemetry.js';
 import { isAutomaticWorkspaceEnabled } from './local/backend-overlay.js';
 import { readActiveGenerationMeta } from '../storage/repo-manager.js';
 /**
@@ -32,7 +33,12 @@ import {
   ErrorCode,
 } from '@modelcontextprotocol/sdk/types.js';
 import { INTERNAL_TOOL_HANDLERS } from './tools.js';
-import { dispatchFacade, type FacadeTool } from './facade/dispatch.js';
+import {
+  dispatchFacade,
+  getInternalMethod,
+  getAuditFacadeSuperTool,
+  type FacadeTool,
+} from './facade/dispatch.js';
 import { attachRepoScopeIdentity } from './shared/response-envelope.js';
 import { isMarkedInvocationError } from './shared/invocation-error.js';
 import { projectResponseSourceLines } from './shared/response-source-lines.js';
@@ -733,221 +739,246 @@ export function createMCPServer(
     'docs',
   ]);
   server.setRequestHandler(CallToolRequestSchema, (request, extra) =>
-    trackRequest(
-      async () => {
+    withToolCallTelemetry(
+      (() => {
         const { name, arguments: args } = request.params;
-        const typedArgs = (args ?? {}) as Record<string, unknown>;
-        let repoIdentity: RepoIdentity | null = null;
-        const supportedCommittedRead = COMMITTED_READ_OPERATIONS.some(
-          ({ tool, actions }) =>
-            name === tool && (!actions || actions.some((action) => action === typedArgs.action)),
-        );
-        const supportedWorkspaceRead = WORKSPACE_READ_OPERATIONS.some(
-          ({ tool, actions }) =>
-            name === tool && actions.some((action) => action === typedArgs.action),
-        );
-        const committedFallbackAvailable =
-          supportedCommittedRead &&
-          !options.full &&
-          (typedArgs.read_mode === undefined || typedArgs.read_mode === 'workspace') &&
-          typeof typedArgs.repo === 'string' &&
-          typedArgs.repo.trim().length > 0 &&
-          !typedArgs.repo.startsWith('@') &&
-          typedArgs.include_lsp_refs !== true &&
-          typedArgs.consume_enrichment_facts !== true &&
-          typedArgs.include_passive_related_facts !== true &&
-          typedArgs.include_markdown_context !== true &&
-          (!typedArgs.retrieval_policy || typedArgs.retrieval_policy === 'graph-only');
-
-        try {
-          const oversized = findOversizedArgument(typedArgs);
-          if (oversized) throw new Error(`Invalid arguments for ${name}: ${oversized}`);
-          const responseBudgetBytes = validateResponseBudget(typedArgs.response_budget_bytes);
-          const committedRead = typedArgs.read_mode === 'committed';
-          const workspaceRead = typedArgs.read_mode === 'workspace';
-          if (typedArgs.read_mode !== undefined) {
-            if (
-              (!committedRead && !workspaceRead) ||
-              !(committedRead ? supportedCommittedRead : supportedWorkspaceRead) ||
-              options.full ||
-              typeof typedArgs.repo !== 'string' ||
-              !typedArgs.repo.trim() ||
-              typedArgs.repo.startsWith('@')
-            ) {
-              const reason =
-                !committedRead && !workspaceRead
-                  ? `Unsupported read_mode value: ${String(typedArgs.read_mode)}.`
-                  : !(committedRead ? supportedCommittedRead : supportedWorkspaceRead)
-                    ? `Received ${name}/${String(typedArgs.action)}.`
-                    : options.full
-                      ? 'Explicit reads are unavailable in full-backend mode.'
-                      : 'Missing single repository or received a repository group.';
-              throw new Error(
-                `read_mode=${workspaceRead ? 'workspace' : 'committed'} requires an explicit single repository and a supported navigation operation. ${reason} Committed supported: ${COMMITTED_READ_SUPPORTED}. Workspace supported: ${WORKSPACE_READ_SUPPORTED}.`,
-              );
-            }
-            if (
-              typedArgs.include_lsp_refs === true ||
-              typedArgs.consume_enrichment_facts === true ||
-              typedArgs.include_passive_related_facts === true ||
-              typedArgs.include_markdown_context === true ||
-              typedArgs.include_markdown_ppr === true ||
-              (typedArgs.retrieval_policy && typedArgs.retrieval_policy !== 'graph-only')
-            ) {
-              throw new Error(
-                `${committedRead ? 'Committed' : 'Workspace'} reads do not support live or external enrichment.`,
-              );
-            }
-          }
-          if (options.transport === 'http' && name === 'gn_quality_mode') {
-            throw new Error(
-              'gn_quality_mode is unavailable over HTTP because it changes process-wide configuration.',
+        if (!options.full && FACADE_NAMES.has(name) && typeof args?.action === 'string') {
+          try {
+            return (
+              getAuditFacadeSuperTool(name as FacadeTool, args.action) ??
+              getInternalMethod(name as FacadeTool, args.action)
             );
+          } catch {
+            // Invalid mappings still record the incoming tool call.
           }
-          const responseCursor =
-            typeof typedArgs.response_cursor === 'string' ? typedArgs.response_cursor : undefined;
-          if (responseCursor) {
-            const page = await pageMcpResponse({
-              tool: name,
-              args: typedArgs,
-              cursor: responseCursor,
-              responseBudgetBytes,
-            });
-            return { content: [{ type: 'text', text: page.text }] };
-          }
-
-          const execute = async () => {
-            let result: unknown;
-            if (!options.full && SUPER_NAMES.has(name as SuperTool)) {
-              if (isRepoOptionalSuperToolName(name)) {
-                result = await dispatchLazySuper(name as SuperTool, typedArgs, '');
-              } else {
-                const repo = await backend.resolveRepo(typedArgs.repo as string | undefined);
-                repoIdentity = {
-                  repoLabel: repo.name ?? repo.id,
-                  repoPath: repo.repoPath,
-                };
-                const operation = () =>
-                  dispatchLazySuper(
-                    name as SuperTool,
-                    typedArgs,
-                    repo.id,
-                    name === 'gn_safe_refactor'
-                      ? {
-                          repoPath: repo.repoPath,
-                          callTool: backend.callTool.bind(backend),
-                        }
-                      : undefined,
-                    name === 'gn_diagnose'
-                      ? { repoPath: repo.repoPath, projectCwd: options.projectCwd ?? null }
-                      : name === 'gn_audit_logic'
-                        ? { repoPath: repo.repoPath }
-                        : undefined,
-                    name === 'gn_test_gap' || name === 'gn_verify_diff' ? backend : undefined,
-                  );
-                const superResult = await withPreparedSuperRead(
-                  name as SuperTool,
-                  typedArgs,
-                  repo,
-                  backend,
-                  { automaticWorkspace: isAutomaticWorkspaceEnabled(), committedRead },
-                  operation,
-                );
-                result = attachRepoScopeIdentity(superResult, repo);
-              }
-            } else if (!options.full && FACADE_NAMES.has(name)) {
-              const action = typedArgs.action as string;
-              if (!action) throw new Error(`Tool "${name}" requires an "action" parameter.`);
-              result = await dispatchFacade(name as FacadeTool, action, typedArgs, backend);
-            } else {
-              result = await backend.callTool(name, typedArgs);
-            }
-            return result;
-          };
-          let result: unknown;
-          if (committedRead || workspaceRead) {
-            const repo = await backend.resolveRepo(typedArgs.repo as string);
-            repoIdentity = { repoLabel: repo.name ?? repo.id, repoPath: repo.repoPath };
-            await backend.ensureRepoInitialized(repo.id);
-            result = await backend.withPreparedRepoRead(
-              repo,
-              { needsRelationships: true, readMode: committedRead ? 'committed' : 'workspace' },
-              execute,
-            );
-          } else {
-            result = await execute();
-          }
-          const projectedResult = projectResponseSourceLines(name, typedArgs.action, result);
-          const resultText =
-            typeof projectedResult === 'string'
-              ? projectedResult
-              : JSON.stringify(projectedResult, null, 2);
-          const hint = responseBudgetBytes === undefined ? getNextStepHint(name, typedArgs) : '';
-          const page = await pageMcpResponse({
-            tool: name,
-            args: typedArgs,
-            text: resultText + hint,
-            identityText: resultText,
-            responseBudgetBytes,
-            isError: isMarkedInvocationError(result),
-          });
-          return {
-            content: [{ type: 'text', text: page.text }],
-            ...(isMarkedInvocationError(result) ? { isError: true } : {}),
-          };
-        } catch (error) {
-          const scopedRepoIdentity = repoIdentity ?? readRepoIdentity(error);
-          let errorCommittedFallbackAvailable = committedFallbackAvailable;
-          const errorCandidate =
-            error !== null && typeof error === 'object'
-              ? (error as Record<string, unknown>)
-              : undefined;
-          if (
-            committedFallbackAvailable &&
-            !extra?.signal?.aborted &&
-            (errorCandidate?.code === 'workspace_too_large' ||
-              errorCandidate?.code === 'workspace_build_failed')
-          ) {
-            let timeout: ReturnType<typeof setTimeout> | undefined;
-            const lookupTimedOut = Symbol('generation metadata lookup timed out');
-            try {
-              const generation = await Promise.race([
-                (async () => {
-                  const repo = await backend.resolveRepo(typedArgs.repo as string);
-                  return readActiveGenerationMeta(repo.storagePath);
-                })(),
-                new Promise<typeof lookupTimedOut>((resolve) => {
-                  timeout = setTimeout(() => resolve(lookupTimedOut), 1000);
-                }),
-              ]);
-              if (
-                generation !== lookupTimedOut &&
-                (!generation?.meta?.lastCommit || generation.authority === 'untrusted')
-              ) {
-                errorCommittedFallbackAvailable = false;
-              }
-            } catch {
-              // Preserve the existing remediation when generation metadata cannot be read.
-            } finally {
-              if (timeout) clearTimeout(timeout);
-            }
-          }
-          return {
-            content: [
-              {
-                type: 'text',
-                text: formatToolCallErrorMessage(
-                  error,
-                  scopedRepoIdentity,
-                  errorCommittedFallbackAvailable,
-                ),
-              },
-            ],
-            isError: true,
-          };
         }
+        return name;
+      })(),
+      request.params.arguments,
+      async (scope) => {
+        const response = await trackRequest(
+          async () => {
+            const { name, arguments: args } = request.params;
+            const typedArgs = (args ?? {}) as Record<string, unknown>;
+            let repoIdentity: RepoIdentity | null = null;
+            const supportedCommittedRead = COMMITTED_READ_OPERATIONS.some(
+              ({ tool, actions }) =>
+                name === tool &&
+                (!actions || actions.some((action) => action === typedArgs.action)),
+            );
+            const supportedWorkspaceRead = WORKSPACE_READ_OPERATIONS.some(
+              ({ tool, actions }) =>
+                name === tool && actions.some((action) => action === typedArgs.action),
+            );
+            const committedFallbackAvailable =
+              supportedCommittedRead &&
+              !options.full &&
+              (typedArgs.read_mode === undefined || typedArgs.read_mode === 'workspace') &&
+              typeof typedArgs.repo === 'string' &&
+              typedArgs.repo.trim().length > 0 &&
+              !typedArgs.repo.startsWith('@') &&
+              typedArgs.include_lsp_refs !== true &&
+              typedArgs.consume_enrichment_facts !== true &&
+              typedArgs.include_passive_related_facts !== true &&
+              typedArgs.include_markdown_context !== true &&
+              (!typedArgs.retrieval_policy || typedArgs.retrieval_policy === 'graph-only');
+
+            try {
+              const oversized = findOversizedArgument(typedArgs);
+              if (oversized) throw new Error(`Invalid arguments for ${name}: ${oversized}`);
+              const responseBudgetBytes = validateResponseBudget(typedArgs.response_budget_bytes);
+              const committedRead = typedArgs.read_mode === 'committed';
+              const workspaceRead = typedArgs.read_mode === 'workspace';
+              if (typedArgs.read_mode !== undefined) {
+                if (
+                  (!committedRead && !workspaceRead) ||
+                  !(committedRead ? supportedCommittedRead : supportedWorkspaceRead) ||
+                  options.full ||
+                  typeof typedArgs.repo !== 'string' ||
+                  !typedArgs.repo.trim() ||
+                  typedArgs.repo.startsWith('@')
+                ) {
+                  const reason =
+                    !committedRead && !workspaceRead
+                      ? `Unsupported read_mode value: ${String(typedArgs.read_mode)}.`
+                      : !(committedRead ? supportedCommittedRead : supportedWorkspaceRead)
+                        ? `Received ${name}/${String(typedArgs.action)}.`
+                        : options.full
+                          ? 'Explicit reads are unavailable in full-backend mode.'
+                          : 'Missing single repository or received a repository group.';
+                  throw new Error(
+                    `read_mode=${workspaceRead ? 'workspace' : 'committed'} requires an explicit single repository and a supported navigation operation. ${reason} Committed supported: ${COMMITTED_READ_SUPPORTED}. Workspace supported: ${WORKSPACE_READ_SUPPORTED}.`,
+                  );
+                }
+                if (
+                  typedArgs.include_lsp_refs === true ||
+                  typedArgs.consume_enrichment_facts === true ||
+                  typedArgs.include_passive_related_facts === true ||
+                  typedArgs.include_markdown_context === true ||
+                  typedArgs.include_markdown_ppr === true ||
+                  (typedArgs.retrieval_policy && typedArgs.retrieval_policy !== 'graph-only')
+                ) {
+                  throw new Error(
+                    `${committedRead ? 'Committed' : 'Workspace'} reads do not support live or external enrichment.`,
+                  );
+                }
+              }
+              if (options.transport === 'http' && name === 'gn_quality_mode') {
+                throw new Error(
+                  'gn_quality_mode is unavailable over HTTP because it changes process-wide configuration.',
+                );
+              }
+              const responseCursor =
+                typeof typedArgs.response_cursor === 'string'
+                  ? typedArgs.response_cursor
+                  : undefined;
+              if (responseCursor) {
+                const page = await pageMcpResponse({
+                  tool: name,
+                  args: typedArgs,
+                  cursor: responseCursor,
+                  responseBudgetBytes,
+                });
+                return { content: [{ type: 'text', text: page.text }] };
+              }
+
+              const execute = async () => {
+                let result: unknown;
+                if (!options.full && SUPER_NAMES.has(name as SuperTool)) {
+                  if (isRepoOptionalSuperToolName(name)) {
+                    result = await dispatchLazySuper(name as SuperTool, typedArgs, '');
+                  } else {
+                    const repo = await backend.resolveRepo(typedArgs.repo as string | undefined);
+                    repoIdentity = {
+                      repoLabel: repo.name ?? repo.id,
+                      repoPath: repo.repoPath,
+                    };
+                    const operation = () =>
+                      dispatchLazySuper(
+                        name as SuperTool,
+                        typedArgs,
+                        repo.id,
+                        name === 'gn_safe_refactor'
+                          ? {
+                              repoPath: repo.repoPath,
+                              callTool: backend.callTool.bind(backend),
+                            }
+                          : undefined,
+                        name === 'gn_diagnose'
+                          ? { repoPath: repo.repoPath, projectCwd: options.projectCwd ?? null }
+                          : name === 'gn_audit_logic'
+                            ? { repoPath: repo.repoPath }
+                            : undefined,
+                        name === 'gn_test_gap' || name === 'gn_verify_diff' ? backend : undefined,
+                      );
+                    const superResult = await withPreparedSuperRead(
+                      name as SuperTool,
+                      typedArgs,
+                      repo,
+                      backend,
+                      { automaticWorkspace: isAutomaticWorkspaceEnabled(), committedRead },
+                      operation,
+                    );
+                    result = attachRepoScopeIdentity(superResult, repo);
+                  }
+                } else if (!options.full && FACADE_NAMES.has(name)) {
+                  const action = typedArgs.action as string;
+                  if (!action) throw new Error(`Tool "${name}" requires an "action" parameter.`);
+                  result = await dispatchFacade(name as FacadeTool, action, typedArgs, backend);
+                } else {
+                  result = await backend.callTool(name, typedArgs);
+                }
+                scope.setResponseSize(Buffer.byteLength(JSON.stringify(result ?? ''), 'utf8'));
+                return result;
+              };
+              let result: unknown;
+              if (committedRead || workspaceRead) {
+                const repo = await backend.resolveRepo(typedArgs.repo as string);
+                repoIdentity = { repoLabel: repo.name ?? repo.id, repoPath: repo.repoPath };
+                await backend.ensureRepoInitialized(repo.id);
+                result = await backend.withPreparedRepoRead(
+                  repo,
+                  { needsRelationships: true, readMode: committedRead ? 'committed' : 'workspace' },
+                  execute,
+                );
+              } else {
+                result = await execute();
+              }
+              const projectedResult = projectResponseSourceLines(name, typedArgs.action, result);
+              const resultText =
+                typeof projectedResult === 'string'
+                  ? projectedResult
+                  : JSON.stringify(projectedResult, null, 2);
+              const hint =
+                responseBudgetBytes === undefined ? getNextStepHint(name, typedArgs) : '';
+              const page = await pageMcpResponse({
+                tool: name,
+                args: typedArgs,
+                text: resultText + hint,
+                identityText: resultText,
+                responseBudgetBytes,
+                isError: isMarkedInvocationError(result),
+              });
+              return {
+                content: [{ type: 'text', text: page.text }],
+                ...(isMarkedInvocationError(result) ? { isError: true } : {}),
+              };
+            } catch (error) {
+              scope.setResponseSize(0);
+              scope.fail(error);
+              const scopedRepoIdentity = repoIdentity ?? readRepoIdentity(error);
+              let errorCommittedFallbackAvailable = false;
+              const errorCandidate =
+                error !== null && typeof error === 'object'
+                  ? (error as Record<string, unknown>)
+                  : undefined;
+              if (
+                committedFallbackAvailable &&
+                !extra?.signal?.aborted &&
+                (errorCandidate?.code === 'workspace_too_large' ||
+                  errorCandidate?.code === 'workspace_build_failed')
+              ) {
+                let timeout: ReturnType<typeof setTimeout> | undefined;
+                const lookupTimedOut = Symbol('generation metadata lookup timed out');
+                try {
+                  const generation = await Promise.race([
+                    (async () => {
+                      const repo = await backend.resolveRepo(typedArgs.repo as string);
+                      return readActiveGenerationMeta(repo.storagePath);
+                    })(),
+                    new Promise<typeof lookupTimedOut>((resolve) => {
+                      timeout = setTimeout(() => resolve(lookupTimedOut), 1000);
+                    }),
+                  ]);
+                  errorCommittedFallbackAvailable =
+                    generation !== lookupTimedOut &&
+                    !!generation?.meta?.lastCommit &&
+                    generation.authority !== 'untrusted';
+                } catch {
+                  // Unknown trust cannot enable committed-read remediation.
+                } finally {
+                  if (timeout) clearTimeout(timeout);
+                }
+              }
+              return {
+                content: [
+                  {
+                    type: 'text',
+                    text: formatToolCallErrorMessage(
+                      error,
+                      scopedRepoIdentity,
+                      errorCommittedFallbackAvailable,
+                    ),
+                  },
+                ],
+                isError: true,
+              };
+            }
+          },
+          { signal: extra?.signal },
+        );
+        return response;
       },
-      { signal: extra?.signal },
     ),
   );
 

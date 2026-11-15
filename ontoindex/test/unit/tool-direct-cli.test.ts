@@ -9,6 +9,8 @@ const resolveRepoMock = vi.fn();
 const ensureRepoInitializedMock = vi.fn();
 const withPreparedRepoReadMock = vi.fn();
 const readActiveGenerationMetaMock = vi.fn();
+const telemetryStartMock = vi.fn();
+const telemetryEndMock = vi.fn();
 
 vi.mock('../../src/mcp/local/local-backend.js', () => ({
   LocalBackend: class {
@@ -27,6 +29,15 @@ vi.mock('../../src/mcp/local/local-backend.js', () => ({
 
 vi.mock('node:fs', () => ({
   writeSync: writeSyncMock,
+  mkdirSync: vi.fn(),
+  appendFileSync: telemetryStartMock,
+}));
+
+vi.mock('node:fs/promises', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('node:fs/promises')>()),
+  mkdir: vi.fn(),
+  stat: vi.fn().mockRejectedValue(new Error('missing')),
+  appendFile: telemetryEndMock,
 }));
 
 vi.mock('../../src/storage/repo-manager.js', async (importOriginal) => ({
@@ -37,6 +48,8 @@ vi.mock('../../src/storage/repo-manager.js', async (importOriginal) => ({
 describe('direct CLI tool commands', () => {
   beforeEach(() => {
     vi.resetModules();
+    telemetryStartMock.mockReset();
+    telemetryEndMock.mockReset().mockResolvedValue(undefined);
     disposeMock.mockReset();
     constructorMock.mockReset();
     initMock.mockReset();
@@ -86,6 +99,16 @@ describe('direct CLI tool commands', () => {
 
     expect(JSON.parse(writeSyncMock.mock.calls[0][1])).toMatchObject({
       symbol: { startLine: 2, endLine: 2 },
+    });
+    await vi.waitFor(() => expect(telemetryEndMock).toHaveBeenCalledOnce());
+    expect(JSON.parse(telemetryEndMock.mock.calls[0][1])).toMatchObject({
+      ok: true,
+      responseSizeBytes: Buffer.byteLength(
+        JSON.stringify({
+          status: 'found',
+          symbol: { name: 'appended', filePath: 'src/callee.ts', startLine: 1, endLine: 1 },
+        }),
+      ),
     });
   });
 
@@ -199,6 +222,17 @@ describe('direct CLI tool commands', () => {
       ).resolves.toBeUndefined();
       expect(errorSpy).toHaveBeenCalledOnce();
       expect(errorSpy.mock.calls[0][0]).toContain('workspace_busy');
+      await vi.waitFor(() => expect(telemetryEndMock).toHaveBeenCalledOnce());
+      expect(telemetryStartMock).toHaveBeenCalledOnce();
+      const start = JSON.parse(telemetryStartMock.mock.calls[0][1]);
+      const completion = JSON.parse(telemetryEndMock.mock.calls[0][1]);
+      expect(start).toMatchObject({
+        phase: 'start',
+        method: 'context',
+        repo: 'codex',
+        readMode: 'committed',
+      });
+      expect(completion).toMatchObject({ id: start.id, ok: false, code: 'workspace_busy' });
       expect(process.exitCode).toBe(1);
       expect(writeSyncMock).not.toHaveBeenCalled();
       expect(disposeMock).toHaveBeenCalledOnce();
@@ -207,6 +241,87 @@ describe('direct CLI tool commands', () => {
       errorSpy.mockRestore();
     }
   });
+
+  it.each(
+    (['query', 'context', 'impact'] as const).flatMap((command) =>
+      (['throws', 'hangs'] as const).map((lookup) => ({ command, lookup })),
+    ),
+  )(
+    'reports unknown trust for $command when metadata lookup $lookup',
+    async ({ command, lookup }) => {
+      if (lookup === 'throws') {
+        readActiveGenerationMetaMock.mockRejectedValue(new Error('metadata unavailable'));
+      } else {
+        readActiveGenerationMetaMock.mockImplementation(() => new Promise(() => {}));
+      }
+      callToolMock.mockRejectedValue(
+        Object.assign(new Error('workspace_preparation_failed: workspace_too_large'), {
+          code: 'workspace_too_large',
+          diagnostics: { observedIndexedFiles: 6997, maxIndexedFiles: 5000 },
+        }),
+      );
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const previousExitCode = process.exitCode;
+      try {
+        const { queryCommand, contextCommand, impactCommand } =
+          await import('../../src/cli/tool.js');
+        vi.useFakeTimers();
+        const run = { query: queryCommand, context: contextCommand, impact: impactCommand }[
+          command
+        ];
+        const pending = run('Symbol', { repo: 'codex' });
+        await vi.advanceTimersByTimeAsync(1000);
+        await pending;
+
+        expect(errorSpy).toHaveBeenCalledExactlyOnceWith(
+          'OntoIndex: workspace_too_large {"observedIndexedFiles":6997,"maxIndexedFiles":5000}. ' +
+            'Committed-read availability could not be confirmed.',
+        );
+        expect(errorSpy.mock.calls[0][0]).not.toContain('--read-mode committed');
+        expect(errorSpy.mock.calls[0][0]).not.toContain('no trusted commit');
+        expect(process.exitCode).toBe(1);
+        expect(writeSyncMock).not.toHaveBeenCalled();
+        expect(disposeMock).toHaveBeenCalledOnce();
+      } finally {
+        vi.useRealTimers();
+        process.exitCode = previousExitCode;
+        errorSpy.mockRestore();
+      }
+    },
+  );
+
+  it.each(['throws', 'hangs'])(
+    'keeps the raw impact fallback when metadata lookup %s',
+    async (lookup) => {
+      if (lookup === 'throws') {
+        readActiveGenerationMetaMock.mockRejectedValue(new Error('metadata unavailable'));
+      } else {
+        readActiveGenerationMetaMock.mockImplementation(() => new Promise(() => {}));
+      }
+      callToolMock.mockRejectedValue(
+        Object.assign(new Error('workspace too large'), { code: 'workspace_too_large' }),
+      );
+      const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+      try {
+        const { impactCommand } = await import('../../src/cli/tool.js');
+        vi.useFakeTimers();
+        const pending = impactCommand('Symbol', { repo: 'codex' });
+        await vi.advanceTimersByTimeAsync(1000);
+        await pending;
+
+        const written = JSON.parse(String(writeSyncMock.mock.calls[0][1]));
+        expect(written.suggestion).toBe(
+          'Try reducing --depth or using ontoindex context <symbol> as a fallback',
+        );
+        expect(written.suggestion).not.toContain('--read-mode committed');
+        expect(disposeMock).toHaveBeenCalledOnce();
+        expect(exitSpy).toHaveBeenCalledWith(1);
+      } finally {
+        vi.useRealTimers();
+        exitSpy.mockRestore();
+      }
+    },
+  );
 
   it('omits committed-read advice when the index has no trusted commit', async () => {
     readActiveGenerationMetaMock.mockResolvedValue({
