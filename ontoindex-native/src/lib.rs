@@ -1,7 +1,7 @@
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use std::collections::{HashMap, HashSet};
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
 
 mod file_lock;
@@ -16,6 +16,16 @@ fn write_csv_lines_impl(csv_path: &str, header: &str, rows: &[String]) -> std::i
     let file = File::create(csv_path)?;
     let mut out = BufWriter::new(file);
     write_line(&mut out, header)?;
+    for row in rows {
+        write_line(&mut out, row)?;
+    }
+    out.flush()?;
+    Ok(rows.len() as u32)
+}
+
+fn append_csv_lines_impl(csv_path: &str, rows: &[String]) -> std::io::Result<u32> {
+    let file = OpenOptions::new().append(true).open(csv_path)?;
+    let mut out = BufWriter::new(file);
     for row in rows {
         write_line(&mut out, row)?;
     }
@@ -51,6 +61,12 @@ fn write_csv_records_impl(
 pub fn write_csv_lines(csv_path: String, header: String, rows: Vec<String>) -> Result<u32> {
     write_csv_lines_impl(&csv_path, &header, &rows)
         .map_err(|err| Error::from_reason(format!("failed to write native CSV {csv_path}: {err}")))
+}
+
+#[napi(js_name = "appendCsvLines")]
+pub fn append_csv_lines(csv_path: String, rows: Vec<String>) -> Result<u32> {
+    append_csv_lines_impl(&csv_path, &rows)
+        .map_err(|err| Error::from_reason(format!("failed to append native CSV {csv_path}: {err}")))
 }
 
 #[napi(js_name = "writeCsvRecords")]
@@ -567,6 +583,36 @@ mod tests {
             "id,name\n\"1\",\"plain\"\n\"2\",\"say \"\"hello\"\"\"\n\"3\",\"line1\nline2\"\n"
         );
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn appends_rows_without_repeating_header_or_creating_missing_file() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("ontoindex-native-csv-append-{suffix}.csv"));
+        let csv_path = path.to_str().unwrap();
+        let rows = vec![
+            "\"2\",\"line1\nline2\"".to_string(),
+            "\"3\",\"é\"".to_string(),
+        ];
+        assert_eq!(
+            append_csv_lines_impl(csv_path, &rows).unwrap_err().kind(),
+            std::io::ErrorKind::NotFound
+        );
+        assert!(!path.exists());
+        assert_eq!(
+            write_csv_lines_impl(csv_path, "id,name", &["1,plain".to_string()]).unwrap(),
+            1
+        );
+        assert_eq!(append_csv_lines_impl(csv_path, &rows).unwrap(), 2);
+        assert_eq!(append_csv_lines_impl(csv_path, &[]).unwrap(), 0);
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            "id,name\n1,plain\n\"2\",\"line1\nline2\"\n\"3\",\"é\"\n".as_bytes()
+        );
+        fs::remove_file(path).unwrap();
     }
 
     #[test]

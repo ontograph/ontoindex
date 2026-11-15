@@ -31,6 +31,7 @@ import {
 import {
   planExperimentalFileDeltaRefresh,
   planDirtyOverlay,
+  WorkspaceInputCaptureError,
   type ExperimentalFileDeltaPlan,
 } from '../core/analyze-delta.js';
 import {
@@ -48,7 +49,12 @@ import {
   type OverlaySnapshot,
 } from '../mcp/local/backend-overlay.js';
 import { buildWorkspaceGraph } from '../mcp/local/local-backend-repo-runtime.js';
-import { assertWorkspaceBuildAdmission } from '../mcp/local/workspace-build-supervisor.js';
+import {
+  assertWorkspaceBuildAdmission,
+  WORKSPACE_INPUT_REFUSED_EXIT_CODE,
+  WorkspaceBuildError,
+  workspaceBuildExitCode,
+} from '../mcp/local/workspace-build-supervisor.js';
 import { parseManagedAnalysisContextFromEnv } from '../core/analysis/analysis-publication-receipt.js';
 import { acquireNativeFileLock } from '../native/file-lock.js';
 
@@ -646,7 +652,20 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
       );
     } catch (error) {
       console.error(`Workspace graph preparation failed: ${getErrorMessage(error)}`);
-      process.exitCode = signalExitCode ?? 1;
+      let exitCode = 1;
+      const seen = new Set<unknown>();
+      for (let cause: unknown = error; isObject(cause) && !seen.has(cause); cause = cause.cause) {
+        seen.add(cause);
+        if (
+          (cause instanceof WorkspaceBuildError && cause.kind === 'input_refused') ||
+          (cause instanceof WorkspaceInputCaptureError &&
+            workspaceBuildExitCode(cause) === WORKSPACE_INPUT_REFUSED_EXIT_CODE)
+        ) {
+          exitCode = WORKSPACE_INPUT_REFUSED_EXIT_CODE;
+          break;
+        }
+      }
+      process.exitCode = signalExitCode ?? exitCode;
     } finally {
       process.off('SIGINT', interrupt);
       process.off('SIGTERM', terminate);

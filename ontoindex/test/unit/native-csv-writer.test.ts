@@ -73,39 +73,67 @@ describe('native CSV writer selection', () => {
     expect(warnings[0]).toContain('using TypeScript writer');
   });
 
-  it.skipIf(
-    !fsSync.existsSync(
-      path.resolve(__dirname, '../../../ontoindex-native/native/ontoindex_native.node'),
-    ),
-  )('writes byte-for-byte identical CSV through the Rust prototype writer', async () => {
-    const require = createRequire(import.meta.url);
-    const nativeModule = require('../../../ontoindex-native/index.cjs') as {
-      createCsvRowWriter: CsvRowWriterFactory;
-    };
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-native-csv-compare-'));
-    try {
-      const header = 'id,name,content';
-      const rows = [
-        '"1","alpha","plain"',
-        '"2","quote","say ""hello"""',
-        '"3","multiline","line1\nline2"',
-      ];
-      const tsWriter = new BufferedCsvRowWriter(path.join(dir, 'ts.csv'), header);
-      const nativeWriter = nativeModule.createCsvRowWriter(path.join(dir, 'native.csv'), header);
+  it
+    .skipIf(
+      !fsSync.existsSync(
+        path.resolve(__dirname, '../../../ontoindex-native/native/ontoindex_native.node'),
+      ),
+    )
+    .each([
+      { label: 'multiple row batches', count: 1201, maxBufferedCharacters: undefined },
+      { label: 'empty table', count: 0, maxBufferedCharacters: undefined },
+      { label: 'character-limited and oversized rows', count: 25, maxBufferedCharacters: 64 },
+    ])(
+    'writes byte-for-byte identical CSV for $label',
+    async ({ count, maxBufferedCharacters }) => {
+      const require = createRequire(import.meta.url);
+      const nativeModule = require('../../../ontoindex-native/index.cjs') as {
+        createCsvRowWriter: (
+          csvPath: string,
+          header: string,
+          maxBufferedCharacters?: number,
+        ) => ReturnType<CsvRowWriterFactory> & { _rows: string[]; _chars: number };
+      };
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-native-csv-compare-'));
+      try {
+        const header = 'id,name,content';
+        const samples = [
+          '"1","alpha","plain"',
+          '"2","quote","say ""hello"""',
+          '"3","multiline","line1\nline2"',
+          '"4","unicode","é🙂"',
+          `"5","oversized","${'x'.repeat(128)}"`,
+        ];
+        const rows = Array.from({ length: count }, (_, i) => samples[i % samples.length]);
+        const tsWriter = new BufferedCsvRowWriter(
+          path.join(dir, 'ts.csv'),
+          header,
+          maxBufferedCharacters,
+        );
+        const nativeWriter = nativeModule.createCsvRowWriter(
+          path.join(dir, 'native.csv'),
+          header,
+          maxBufferedCharacters,
+        );
 
-      for (const row of rows) {
-        tsWriter.addRow(row);
-        nativeWriter.addRow(row);
+        for (const row of rows) {
+          await tsWriter.addRow(row);
+          expect(nativeWriter.addRow(row)).toBeUndefined();
+          expect(nativeWriter._rows.length).toBeLessThan(500);
+          expect(nativeWriter._chars).toBeLessThanOrEqual(
+            maxBufferedCharacters ?? 64 * 1024 * 1024,
+          );
+        }
+        await tsWriter.finish();
+        await nativeWriter.finish();
+
+        expect(await fs.readFile(path.join(dir, 'native.csv'), 'utf8')).toBe(
+          await fs.readFile(path.join(dir, 'ts.csv'), 'utf8'),
+        );
+        expect(nativeWriter.rows).toBe(tsWriter.rows);
+      } finally {
+        await fs.rm(dir, { recursive: true, force: true });
       }
-      await tsWriter.finish();
-      await nativeWriter.finish();
-
-      expect(await fs.readFile(path.join(dir, 'native.csv'), 'utf8')).toBe(
-        await fs.readFile(path.join(dir, 'ts.csv'), 'utf8'),
-      );
-      expect(nativeWriter.rows).toBe(tsWriter.rows);
-    } finally {
-      await fs.rm(dir, { recursive: true, force: true });
-    }
-  });
+    },
+  );
 });

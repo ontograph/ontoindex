@@ -8,6 +8,7 @@ import { createIgnoreFilter } from '../config/ignore-service.js';
 import { readAnalyzeLock } from '../core/runtime/runtime-health.js';
 import { getStoragePaths, readActiveGenerationMeta } from '../storage/repo-manager.js';
 import { getGitRoot } from '../storage/git.js';
+import { WORKSPACE_INPUT_REFUSED_EXIT_CODE } from '../mcp/local/workspace-build-supervisor.js';
 
 export interface DebouncedWatcherOptions {
   root: string;
@@ -597,7 +598,7 @@ export async function createWatchCommand(
               deps.error(
                 `Watch overlay analyze failed with code ${code ?? `signal ${signal ?? 'unknown'}`}.`,
               );
-              if (workspaceGraph) {
+              if (workspaceGraph && code === WORKSPACE_INPUT_REFUSED_EXIT_CODE) {
                 signature = requestedSignature;
                 workspaceGraphRefused = true;
               } else scheduleRetry();

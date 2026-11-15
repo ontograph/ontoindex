@@ -317,6 +317,44 @@ describe('backend-overlay snapshot', () => {
     });
   });
 
+  it.each(['unchanged', 'changed bytes', 'dangling', 'escaping', 'directory'] as const)(
+    'validates resolver configuration symlinks: %s',
+    async (change) => {
+      fs.writeFileSync(path.join(repo, 'src/a.ts'), 'export const a = 2;\n');
+      const target = path.join(repo, 'aliases.json');
+      fs.writeFileSync(target, '{"compilerOptions":{}}\n');
+      const link = path.join(repo, 'tsconfig.json');
+      fs.symlinkSync('aliases.json', link);
+      publishWorkspaceFixture();
+      const metadataPath = path.join(storage, 'overlay', 'fixture', 'base.json');
+      const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+      metadata.inventory['tsconfig.json'] = [
+        0,
+        null,
+        null,
+        createHash('sha256').update(fs.readFileSync(target)).digest('hex'),
+      ];
+      metadata.inventory['aliases.json'] = metadata.inventory['tsconfig.json'];
+      fs.writeFileSync(metadataPath, JSON.stringify(metadata));
+      if (change === 'changed bytes')
+        fs.writeFileSync(target, '{"compilerOptions":{"strict":true}}\n');
+      if (change === 'dangling') fs.unlinkSync(target);
+      if (change === 'directory') {
+        fs.unlinkSync(target);
+        fs.mkdirSync(target);
+      }
+      if (change === 'escaping') {
+        fs.unlinkSync(link);
+        fs.symlinkSync(path.dirname(repo), link);
+      }
+      const snapshot = await getOverlaySnapshot(handle());
+      expect(snapshot.usable).toBe(change === 'unchanged');
+      if (change === 'changed bytes')
+        expect(snapshot.reason).toMatch(/stale for (?:tsconfig|aliases)\.json/);
+      if (change !== 'unchanged') expect(snapshot.reason).toBeTruthy();
+    },
+  );
+
   it('rechecks workspace graph bytes despite a preserved mtime', async () => {
     fs.writeFileSync(path.join(repo, 'src/a.ts'), 'export const a = 2;\n');
     publishWorkspaceFixture();
@@ -328,6 +366,37 @@ describe('backend-overlay snapshot', () => {
       usable: false,
       reason: expect.stringContaining('stale for src/a.ts'),
     });
+  });
+
+  it('refuses an inventory symlink swapped in before opening without reading its target', async () => {
+    fs.writeFileSync(path.join(repo, 'src/a.ts'), 'export const a = 2;\n');
+    publishWorkspaceFixture();
+    vi.mocked(planDirtyOverlay).mockResolvedValueOnce(await planDirtyOverlay(repo));
+    const filename = path.join(repo, 'src/gone.ts');
+    const target = path.join(storage, 'target.ts');
+    fs.writeFileSync(target, 'export const g = 1;\n');
+    const lstat = asyncFs.lstat;
+    let checks = 0;
+    vi.spyOn(asyncFs, 'lstat').mockImplementation(async (file, options) => {
+      const stat = await lstat(file, options);
+      if (String(file) === filename && ++checks === 2) {
+        fs.unlinkSync(filename);
+        fs.symlinkSync(target, filename);
+      }
+      return stat;
+    });
+    const open = vi.spyOn(asyncFs, 'open');
+    const readFile = vi.spyOn(asyncFs, 'readFile');
+    expect(await getOverlaySnapshot(handle())).toMatchObject({
+      usable: false,
+      reason: 'workspace graph input is not a regular file: src/gone.ts; rebuild',
+    });
+    const index = open.mock.calls.findIndex(([file]) => String(file) === filename);
+    expect(index).toBeGreaterThanOrEqual(0);
+    await expect(open.mock.results[index].value).rejects.toMatchObject({ code: 'ELOOP' });
+    expect(readFile.mock.calls.some(([file]) => [filename, target].includes(String(file)))).toBe(
+      false,
+    );
   });
 
   it.each(['valid', 'read failure', 'digest mismatch'] as const)(
@@ -342,29 +411,34 @@ describe('backend-overlay snapshot', () => {
       const inputs = new Set(fs.readdirSync(path.join(repo, 'src')).map((name) => `src/${name}`));
       const started: string[] = [];
       const pending = new Map<string, (failure?: boolean) => void>();
-      const readFile = asyncFs.readFile;
+      const open = asyncFs.open;
       let active = 0;
       let maximumActive = 0;
       let releaseImmediately = false;
-      vi.spyOn(asyncFs, 'readFile').mockImplementation((file, options) => {
+      vi.spyOn(asyncFs, 'open').mockImplementation(async (file, flags, mode) => {
+        const handle = await open(file, flags, mode);
         const rel = path.relative(repo, String(file));
-        if (!inputs.has(rel)) return readFile(file, options);
-        started.push(rel);
-        active++;
-        maximumActive = Math.max(maximumActive, active);
-        return new Promise<Buffer<ArrayBuffer>>((resolve, reject) => {
-          const release = (failure = false) => {
-            pending.delete(rel);
-            active--;
-            if (failure && outcome === 'read failure') reject(new Error('controlled read failure'));
-            else
-              resolve(
-                failure ? Buffer.from('changed bytes') : fs.readFileSync(path.join(repo, rel)),
-              );
-          };
-          if (releaseImmediately) release();
-          else pending.set(rel, release);
+        if (!inputs.has(rel)) return handle;
+        vi.spyOn(handle, 'readFile').mockImplementation(() => {
+          started.push(rel);
+          active++;
+          maximumActive = Math.max(maximumActive, active);
+          return new Promise<Buffer<ArrayBuffer>>((resolve, reject) => {
+            const release = (failure = false) => {
+              pending.delete(rel);
+              active--;
+              if (failure && outcome === 'read failure')
+                reject(new Error('controlled read failure'));
+              else
+                resolve(
+                  failure ? Buffer.from('changed bytes') : fs.readFileSync(path.join(repo, rel)),
+                );
+            };
+            if (releaseImmediately) release();
+            else pending.set(rel, release);
+          });
         });
+        return handle;
       });
       let settled = false;
       const snapshotPromise = getOverlaySnapshot(handle()).finally(() => {

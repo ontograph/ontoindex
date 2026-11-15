@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { analyzeCommand, prepareWorkspaceGraphCommand } from '../../src/cli/analyze.js';
 import { MANAGED_ANALYSIS_ENV } from '../../src/core/analysis/analysis-publication-receipt.js';
 import type { OverlaySnapshot } from '../../src/mcp/local/backend-overlay.js';
+import { WorkspaceBuildError } from '../../src/mcp/local/workspace-build-supervisor.js';
+import { WorkspaceInputCaptureError } from '../../src/core/analyze-delta.js';
 
 const { getSnapshot, evictSnapshot, automaticEnabled, buildGraph, readMeta } = vi.hoisted(() => ({
   getSnapshot: vi.fn(),
@@ -80,6 +82,50 @@ afterEach(async () => {
 });
 
 describe('explicit workspace graph prebuild', () => {
+  it.each([
+    ['input refusal', new WorkspaceBuildError('input_refused', 'refused'), 3],
+    [
+      'wrapped input refusal',
+      new Error('build failed', { cause: new WorkspaceBuildError('input_refused', 'refused') }),
+      3,
+    ],
+    ['capture limit', new WorkspaceInputCaptureError('limit', 'too large'), 3],
+    [
+      'wrapped unsupported capture',
+      new Error('capture failed', {
+        cause: new WorkspaceInputCaptureError('unsupported', 'unsupported input'),
+      }),
+      3,
+    ],
+    ['timeout', new WorkspaceBuildError('timeout', 'timed out'), 1],
+    ['cancellation', new WorkspaceBuildError('cancelled', 'cancelled'), 1],
+    ['failed build', new WorkspaceBuildError('failed', 'failed'), 1],
+    ['unstoppable build', new WorkspaceBuildError('unstoppable', 'unstoppable'), 1],
+    ['ordinary failure', new Error('lock busy'), 1],
+  ])('maps %s to workspace CLI exit code %s', async (_label, error, exitCode) => {
+    const repoPath = await makeRepo();
+    getSnapshot.mockResolvedValue(snapshot());
+    buildGraph.mockRejectedValue(error);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await analyzeCommand(repoPath, { workspaceGraph: true });
+
+    expect(process.exitCode).toBe(exitCode);
+  });
+
+  it('keeps an unusable snapshot verification failure at exit code 1', async () => {
+    const repoPath = await makeRepo();
+    getSnapshot.mockResolvedValue(snapshot());
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await analyzeCommand(repoPath, { workspaceGraph: true });
+
+    expect(process.exitCode).toBe(1);
+    expect(console.error).toHaveBeenCalledWith(
+      expect.stringContaining('Workspace graph verification failed'),
+    );
+  });
+
   it('rejects managed analysis context before creating storage', async () => {
     const repoPath = await makeRepo();
     const head = 'a'.repeat(40);

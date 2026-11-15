@@ -628,7 +628,7 @@ function assertCaptureInputIdentity(relativePath: string, expected: Stats, actua
   }
 }
 
-async function captureReadPath(
+export async function captureReadPath(
   root: string,
   relativePath: string,
   configuration: boolean,

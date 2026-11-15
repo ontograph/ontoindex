@@ -20,6 +20,7 @@ import { NodeTableName } from './schema.js';
 import { writeGraphBatch, isNativeGraphWriterEnabled } from '../../native/graph-writer.js';
 import {
   createBufferedCsvRowWriter,
+  MAX_BUFFERED_CHARACTERS,
   type CsvRowWriter,
   type CsvRowWriterFactory,
 } from './csv-row-writer.js';
@@ -143,7 +144,11 @@ const envInt = (name: string): number | undefined => {
 
 interface ContentLimits {
   maxSnippetChars: number;
+  maxFileContentChars: number;
 }
+
+// An escaped capped file is at most 2x plus the marker, so its row fits one writer batch.
+const DEFAULT_MAX_FILE_CONTENT_CHARS = MAX_BUFFERED_CHARACTERS / 4;
 
 const extractContent = async (
   node: GraphNode,
@@ -157,7 +162,15 @@ const extractContent = async (
   if (node.label === 'Folder') return '';
   if (isBinaryContent(content)) return '[Binary file - content not stored]';
 
-  if (node.label === 'File') return content;
+  if (node.label === 'File') {
+    const cap = limits.maxFileContentChars;
+    if (cap > 0 && content.length > cap) {
+      const lastCode = content.charCodeAt(cap - 1);
+      const end = lastCode >= 0xd800 && lastCode <= 0xdbff ? cap - 1 : cap;
+      return content.slice(0, end) + '\n... [File content truncated]';
+    }
+    return content;
+  }
 
   const startLine = node.properties.startLine;
   const endLine = node.properties.endLine;
@@ -221,6 +234,8 @@ export const streamAllCSVsToDisk = async (
   const largeGraph = graph.nodeCount > 25_000;
   const contentLimits: ContentLimits = {
     maxSnippetChars: envInt('ONTOINDEX_MAX_SNIPPET_CHARS') ?? (largeGraph ? 1_000 : 5_000),
+    maxFileContentChars:
+      envInt('ONTOINDEX_MAX_FILE_CONTENT_CHARS') ?? DEFAULT_MAX_FILE_CONTENT_CHARS,
   };
 
   // Create writers for every node type up-front

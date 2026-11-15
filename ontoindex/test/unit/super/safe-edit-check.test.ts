@@ -225,6 +225,66 @@ describe('gnSafeEditCheck', () => {
     await expect(gnSafeEditCheck(REPO_ID, { symbol })).rejects.toBe(error);
   });
 
+  it.each([
+    ['fetchProcessCount', "r.type = 'PARTICIPATES_IN'"],
+    ['fetchClusterCount', "r.type = 'MEMBER_OF'"],
+    ['fetchCoChangeSiblings', 'other.filePath AS otherPath'],
+    ['fetchRecentTouchDays', 'r.lastDate AS lastDate'],
+    ['fetchIsExported', 'RETURN s.isExported AS isExported'],
+    ['upstream impact', 'MATCH (caller)-[r:CodeRelation]->(n)'],
+    ['downstream impact', 'MATCH (n)-[r:CodeRelation]->(callee)'],
+  ])('reports CAUTION and a warning when %s fails', async (probe, queryFragment) => {
+    setupMocks({ lastDate: new Date().toISOString() });
+    expect((await gnSafeEditCheck(REPO_ID, { symbol: 'parseToken' })).verdict).toBe('SAFE');
+    const implementation = mockExecuteParameterized.getMockImplementation() as (
+      ...args: unknown[]
+    ) => Promise<unknown>;
+    mockExecuteParameterized.mockImplementation(async (...args) => {
+      if (args[1].includes(queryFragment)) throw new Error('query failed');
+      return implementation(...args);
+    });
+
+    const report = await gnSafeEditCheck(REPO_ID, { symbol: 'parseToken', force: true });
+    expect(report.verdict).toBe('CAUTION');
+    expect(report.warnings.join(' ')).toMatch(/query failed/);
+    expect(report.reasoning).toContain(probe);
+  });
+
+  it.each([
+    "r.type = 'PARTICIPATES_IN'",
+    "r.type = 'MEMBER_OF'",
+    'other.filePath AS otherPath',
+    'r.lastDate AS lastDate',
+    'RETURN s.isExported AS isExported',
+  ])('rethrows buffer-pool failures in graph probe %s', async (queryFragment) => {
+    setupMocks();
+    const error = new Error(
+      'Buffer manager exception: buffer pool is full and no memory could be freed',
+    );
+    const implementation = mockExecuteParameterized.getMockImplementation() as (
+      ...args: unknown[]
+    ) => Promise<unknown>;
+    mockExecuteParameterized.mockImplementation(async (...args) => {
+      if (args[1].includes(queryFragment)) throw error;
+      return implementation(...args);
+    });
+    await expect(gnSafeEditCheck(REPO_ID, { symbol: 'parseToken' })).rejects.toBe(error);
+  });
+
+  it('preserves a stronger verdict when a graph probe fails', async () => {
+    setupMocks({ isExported: true });
+    const implementation = mockExecuteParameterized.getMockImplementation() as (
+      ...args: unknown[]
+    ) => Promise<unknown>;
+    mockExecuteParameterized.mockImplementation(async (...args) => {
+      if (args[1].includes("r.type = 'PARTICIPATES_IN'")) throw new Error('query failed');
+      return implementation(...args);
+    });
+    const report = await gnSafeEditCheck(REPO_ID, { symbol: 'parseToken' });
+    expect(report.verdict).toBe('DANGEROUS');
+    expect(report.reasoning).toContain('fetchProcessCount');
+  });
+
   it('reads candidate content only through labeled primary-key queries', async () => {
     setupMocks();
     await gnSafeEditCheck(REPO_ID, { symbol: 'parseToken' });

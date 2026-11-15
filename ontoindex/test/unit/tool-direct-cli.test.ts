@@ -120,6 +120,40 @@ describe('direct CLI tool commands', () => {
     expect(disposeMock).toHaveBeenCalledTimes(1);
   });
 
+  it('records impact infrastructure failures without exiting immediately', async () => {
+    callToolMock.mockRejectedValue(new Error('tool failed'));
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => {
+      throw new Error('unexpected immediate exit');
+    });
+    const previousExitCode = process.exitCode;
+    try {
+      const { impactCommand } = await import('../../src/cli/tool.js');
+
+      await expect(impactCommand('Symbol')).resolves.toBeUndefined();
+
+      expect(JSON.parse(writeSyncMock.mock.calls[0][1])).toEqual({
+        error: 'tool failed',
+        target: { name: 'Symbol' },
+        direction: 'upstream',
+        suggestion: 'Try reducing --depth or using ontoindex context <symbol> as a fallback',
+      });
+      expect(process.exitCode).toBe(1);
+      expect(exitSpy).not.toHaveBeenCalled();
+      expect(disposeMock).toHaveBeenCalledOnce();
+      expect(telemetryStartMock).toHaveBeenCalledOnce();
+      await vi.waitFor(() => expect(telemetryEndMock).toHaveBeenCalledOnce());
+      const start = JSON.parse(telemetryStartMock.mock.calls[0][1]);
+      expect(JSON.parse(telemetryEndMock.mock.calls[0][1])).toMatchObject({
+        id: start.id,
+        method: 'impact',
+        ok: false,
+      });
+    } finally {
+      process.exitCode = previousExitCode;
+      exitSpy.mockRestore();
+    }
+  });
+
   it('creates direct CLI backend with cwd as preferred project path', async () => {
     callToolMock.mockResolvedValue({ results: [] });
     const { queryCommand } = await import('../../src/cli/tool.js');
@@ -302,6 +336,7 @@ describe('direct CLI tool commands', () => {
         Object.assign(new Error('workspace too large'), { code: 'workspace_too_large' }),
       );
       const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+      const previousExitCode = process.exitCode;
       try {
         const { impactCommand } = await import('../../src/cli/tool.js');
         vi.useFakeTimers();
@@ -315,9 +350,11 @@ describe('direct CLI tool commands', () => {
         );
         expect(written.suggestion).not.toContain('--read-mode committed');
         expect(disposeMock).toHaveBeenCalledOnce();
-        expect(exitSpy).toHaveBeenCalledWith(1);
+        expect(process.exitCode).toBe(1);
+        expect(exitSpy).not.toHaveBeenCalled();
       } finally {
         vi.useRealTimers();
+        process.exitCode = previousExitCode;
         exitSpy.mockRestore();
       }
     },
@@ -375,6 +412,7 @@ describe('direct CLI tool commands', () => {
         Object.assign(new Error('workspace too large'), { code: 'workspace_too_large' }),
       );
       const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+      const previousExitCode = process.exitCode;
       try {
         const { impactCommand } = await import('../../src/cli/tool.js');
         await impactCommand('Symbol', { repo: 'codex' });
@@ -383,8 +421,10 @@ describe('direct CLI tool commands', () => {
         expect(written.suggestion).toBe(suggestion);
         expect(constructorMock).toHaveBeenCalledOnce();
         expect(disposeMock).toHaveBeenCalledOnce();
-        expect(exitSpy).toHaveBeenCalledWith(1);
+        expect(process.exitCode).toBe(1);
+        expect(exitSpy).not.toHaveBeenCalled();
       } finally {
+        process.exitCode = previousExitCode;
         exitSpy.mockRestore();
       }
     },
@@ -454,7 +494,95 @@ describe('direct CLI tool commands', () => {
       'Unknown typed query line type "route" on line 1',
     );
     expect(callToolMock).not.toHaveBeenCalled();
+    expect(telemetryStartMock).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(telemetryEndMock).toHaveBeenCalledOnce());
+    const start = JSON.parse(telemetryStartMock.mock.calls[0][1]);
+    expect(JSON.parse(telemetryEndMock.mock.calls[0][1])).toMatchObject({
+      id: start.id,
+      method: 'query',
+      ok: false,
+      code: 'UNKNOWN_TYPE',
+    });
   });
+
+  it.each(['query', 'context', 'impact'] as const)(
+    'records missing arguments for %s before returning exit code 1',
+    async (command) => {
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const previousExitCode = process.exitCode;
+      try {
+        const { queryCommand, contextCommand, impactCommand } =
+          await import('../../src/cli/tool.js');
+        const run = { query: queryCommand, context: contextCommand, impact: impactCommand }[
+          command
+        ];
+        await run('   ');
+
+        expect(errorSpy).toHaveBeenCalledExactlyOnceWith(
+          {
+            query: 'Usage: ontoindex query <search_query>',
+            context: 'Usage: ontoindex context <symbol_name> [--uid <uid>] [--file <path>]',
+            impact: 'Usage: ontoindex impact <symbol_name> [--direction upstream|downstream]',
+          }[command],
+        );
+        expect(process.exitCode).toBe(1);
+        expect(constructorMock).not.toHaveBeenCalled();
+        expect(telemetryStartMock).toHaveBeenCalledOnce();
+        await vi.waitFor(() => expect(telemetryEndMock).toHaveBeenCalledOnce());
+        const start = JSON.parse(telemetryStartMock.mock.calls[0][1]);
+        expect(JSON.parse(telemetryEndMock.mock.calls[0][1])).toMatchObject({
+          id: start.id,
+          method: command,
+          ok: false,
+          code: 'CLI_USAGE',
+        });
+      } finally {
+        process.exitCode = previousExitCode;
+        errorSpy.mockRestore();
+      }
+    },
+  );
+
+  it.each(['query', 'context', 'impact'] as const)(
+    'records failed backend initialization for %s before returning exit code 1',
+    async (command) => {
+      initMock.mockResolvedValue(false);
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => {
+        throw new Error('unexpected immediate exit');
+      });
+      const previousExitCode = process.exitCode;
+      try {
+        const { queryCommand, contextCommand, impactCommand } =
+          await import('../../src/cli/tool.js');
+        const run = { query: queryCommand, context: contextCommand, impact: impactCommand }[
+          command
+        ];
+        await run('Symbol');
+
+        expect(errorSpy).toHaveBeenCalledExactlyOnceWith(
+          'OntoIndex: No indexed repositories found. Run: ontoindex analyze',
+        );
+        expect(process.exitCode).toBe(1);
+        expect(exitSpy).not.toHaveBeenCalled();
+        expect(callToolMock).not.toHaveBeenCalled();
+        expect(writeSyncMock).not.toHaveBeenCalled();
+        expect(telemetryStartMock).toHaveBeenCalledOnce();
+        await vi.waitFor(() => expect(telemetryEndMock).toHaveBeenCalledOnce());
+        const start = JSON.parse(telemetryStartMock.mock.calls[0][1]);
+        expect(JSON.parse(telemetryEndMock.mock.calls[0][1])).toMatchObject({
+          id: start.id,
+          method: command,
+          ok: false,
+        });
+        expect(disposeMock).toHaveBeenCalledOnce();
+      } finally {
+        process.exitCode = previousExitCode;
+        errorSpy.mockRestore();
+        exitSpy.mockRestore();
+      }
+    },
+  );
 
   it('leaves colon-prefixed plain queries unchanged unless --typed is set', async () => {
     callToolMock.mockResolvedValue({ results: [] });
@@ -521,6 +649,32 @@ describe('direct CLI tool commands', () => {
       repo: undefined,
     });
   });
+
+  it.each(['cypher', 'detect-changes'] as const)(
+    'reports missing indexed repositories for %s without rejecting',
+    async (command) => {
+      initMock.mockResolvedValue(false);
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const previousExitCode = process.exitCode;
+      try {
+        const { cypherCommand, detectChangesCommand } = await import('../../src/cli/tool.js');
+        await expect(
+          command === 'cypher' ? cypherCommand('MATCH (n) RETURN n') : detectChangesCommand(),
+        ).resolves.toBeUndefined();
+
+        expect(errorSpy).toHaveBeenCalledExactlyOnceWith(
+          'OntoIndex: No indexed repositories found. Run: ontoindex analyze',
+        );
+        expect(process.exitCode).toBe(1);
+        expect(callToolMock).not.toHaveBeenCalled();
+        expect(writeSyncMock).not.toHaveBeenCalled();
+        expect(disposeMock).toHaveBeenCalledOnce();
+      } finally {
+        process.exitCode = previousExitCode;
+        errorSpy.mockRestore();
+      }
+    },
+  );
 
   it('dispatches detect_changes with CLI-shaped arguments', async () => {
     callToolMock.mockResolvedValue({

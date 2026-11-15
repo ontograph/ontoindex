@@ -108,6 +108,7 @@ describe('navigation with a small native read buffer', () => {
     });
     expect(result.status).toBe('found');
     expect(result.symbol.name).toBe('fuseRanks');
+    expect(result.contextCompleteness.missingReasons).not.toContain('method-metadata-query-failed');
     expect(result.symbol.content).toContain('return left + right');
     expect(JSON.stringify(result.incoming)).toContain('rankCaller');
   });

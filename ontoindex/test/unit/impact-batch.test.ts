@@ -138,6 +138,8 @@ describe('impact_batch', () => {
     expect(result.perSymbol).toHaveLength(2);
     expect(result.union.totalAffectedNodes).toBe(1);
     expect(result.union.totalRelationships).toBe(1);
+    expect(result.union.risk).toBe('UNKNOWN');
+    expect(result.union.failedTargets).toEqual(['missing']);
     // Error entries must still appear in perSymbol so callers can inspect them.
     const errorEntry = result.perSymbol.find((e) => e.target === 'missing');
     expect(errorEntry?.result?.error).toMatch(/not found/i);
@@ -175,7 +177,32 @@ describe('impact_batch', () => {
       totalAffectedNodes: 1,
       totalRelationships: 1,
       maxDepth: 1,
-      risk: 'LOW',
+      risk: 'UNKNOWN',
+      failedTargets: ['failed'],
+      sharedNodes: 0,
+    });
+  });
+
+  it('returns an error and UNKNOWN risk when every target fails', async () => {
+    impactMock.mockImplementation(async (_repo, params) => {
+      if (params.target === 'resource') {
+        throw new Error(
+          'Buffer manager exception: buffer pool is full and no memory could be freed',
+        );
+      }
+      return { error: 'Target not found', target: { name: params.target } };
+    });
+    const result = await runImpactBatch(makeRepo(), { targets: ['resource', 'missing'] });
+    expect(result.status).toBe('error');
+    expect(result.error).toMatch(/every target/i);
+    expect(result.perSymbol).toHaveLength(2);
+    expect(result.perSymbol.every(({ result }) => Boolean(result.error))).toBe(true);
+    expect(result.union).toEqual({
+      totalAffectedNodes: 0,
+      totalRelationships: 0,
+      maxDepth: 0,
+      risk: 'UNKNOWN',
+      failedTargets: ['resource', 'missing'],
       sharedNodes: 0,
     });
   });

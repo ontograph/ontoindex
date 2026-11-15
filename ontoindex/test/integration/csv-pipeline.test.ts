@@ -46,19 +46,61 @@ afterAll(async () => {
 describe('streamAllCSVsToDisk', () => {
   it.each([
     ['default settings', undefined, 1],
-    ['a retired zero content limit', '0', 1],
+    ['a zero content limit', '0', 1],
     ['a large graph', undefined, 25_001],
-  ] as const)('preserves full File content with %s', async (_name, retiredLimit, nodeCount) => {
+  ] as const)('preserves full File content with %s', async (_name, fileLimit, nodeCount) => {
     const sourceContent = `export const longValue = '${'a'.repeat(12_000)}';\n`;
     await fs.writeFile(path.join(repoDir, 'src', 'long.ts'), sourceContent);
     const graph = buildTestGraph([
       { id: 'file:src/long.ts', label: 'File', name: 'long.ts', filePath: 'src/long.ts' },
     ]);
-    vi.stubEnv('ONTOINDEX_MAX_FILE_CONTENT_CHARS', retiredLimit);
+    vi.stubEnv('ONTOINDEX_MAX_FILE_CONTENT_CHARS', fileLimit);
     try {
       const result = await streamAllCSVsToDisk({ ...graph, nodeCount }, repoDir, csvDir);
       await expect(fs.readFile(result.nodeFiles.get('File')!.csvPath, 'utf-8')).resolves.toBe(
         `id,name,filePath,content\n"file:src/long.ts","long.ts","src/long.ts","${sourceContent}"\n`,
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('caps File content while preserving short, exact-cap, and binary files', async () => {
+    const marker = '\n... [File content truncated]';
+    const fixtures = [
+      { name: 'large.ts', content: '"'.repeat(80), expected: '""'.repeat(64) + marker },
+      { name: 'small.ts', content: 'short file', expected: 'short file' },
+      { name: 'exact.ts', content: 'e'.repeat(64), expected: 'e'.repeat(64) },
+      {
+        name: 'surrogate.ts',
+        content: 's'.repeat(63) + '😀tail',
+        expected: 's'.repeat(63) + marker,
+      },
+      {
+        name: 'binary.ts',
+        content: '\0'.repeat(80),
+        expected: '[Binary file - content not stored]',
+      },
+    ];
+    const graph = buildTestGraph(
+      fixtures.map(({ name }) => ({
+        id: `file:src/${name}`,
+        label: 'File',
+        name,
+        filePath: `src/${name}`,
+      })),
+    );
+    for (const { name, content } of fixtures) {
+      await fs.writeFile(path.join(repoDir, 'src', name), content);
+    }
+    vi.stubEnv('ONTOINDEX_MAX_FILE_CONTENT_CHARS', '64');
+    try {
+      const result = await streamAllCSVsToDisk(graph, repoDir, csvDir);
+      const expectedRows = fixtures.map(
+        ({ name, expected }) => `"file:src/${name}","${name}","src/${name}","${expected}"\n`,
+      );
+      await expect(fs.readFile(result.nodeFiles.get('File')!.csvPath, 'utf-8')).resolves.toBe(
+        'id,name,filePath,content\n' + expectedRows.join(''),
       );
     } finally {
       vi.unstubAllEnvs();

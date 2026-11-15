@@ -402,7 +402,11 @@ async function fetchDownstream(repoId: string, symbol: ResolvedSymbol): Promise<
 }
 
 /** Single-call: number of Processes this symbol participates in. */
-async function fetchProcessCount(repoId: string, nodeId: string): Promise<number> {
+async function fetchProcessCount(
+  repoId: string,
+  nodeId: string,
+  warnings: string[],
+): Promise<number> {
   try {
     const rows = (await executeParameterized(
       repoId,
@@ -413,13 +417,19 @@ async function fetchProcessCount(repoId: string, nodeId: string): Promise<number
       { id: nodeId },
     )) as QueryRow[];
     return rows.length > 0 ? rowNumber(rows[0], 'processCount', 0) : 0;
-  } catch {
+  } catch (err) {
+    if (classifyLbugOpenError(err) === 'resource') throw err;
+    warnings.push(`fetchProcessCount failed: ${err instanceof Error ? err.message : String(err)}`);
     return 0;
   }
 }
 
 /** Single-call: number of Community clusters this symbol belongs to. */
-async function fetchClusterCount(repoId: string, nodeId: string): Promise<number> {
+async function fetchClusterCount(
+  repoId: string,
+  nodeId: string,
+  warnings: string[],
+): Promise<number> {
   try {
     const rows = (await executeParameterized(
       repoId,
@@ -430,13 +440,19 @@ async function fetchClusterCount(repoId: string, nodeId: string): Promise<number
       { id: nodeId },
     )) as QueryRow[];
     return rows.length > 0 ? rowNumber(rows[0], 'clusterCount', 0) : 0;
-  } catch {
+  } catch (err) {
+    if (classifyLbugOpenError(err) === 'resource') throw err;
+    warnings.push(`fetchClusterCount failed: ${err instanceof Error ? err.message : String(err)}`);
     return 0;
   }
 }
 
 /** Single-call: co-changed sibling file paths. */
-async function fetchCoChangeSiblings(repoId: string, filePath: string): Promise<string[]> {
+async function fetchCoChangeSiblings(
+  repoId: string,
+  filePath: string,
+  warnings: string[],
+): Promise<string[]> {
   try {
     const rows = (await executeParameterized(
       repoId,
@@ -447,7 +463,11 @@ async function fetchCoChangeSiblings(repoId: string, filePath: string): Promise<
       { path: filePath },
     )) as QueryRow[];
     return rows.map((row) => rowString(row, 'otherPath', 0)).filter(Boolean);
-  } catch {
+  } catch (err) {
+    if (classifyLbugOpenError(err) === 'resource') throw err;
+    warnings.push(
+      `fetchCoChangeSiblings failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
     return [];
   }
 }
@@ -456,7 +476,11 @@ async function fetchCoChangeSiblings(repoId: string, filePath: string): Promise<
  * Single-call: most recent co-change date, returned as days-ago integer.
  * Returns 0 (recently touched) when no date is available — safe default.
  */
-async function fetchRecentTouchDays(repoId: string, filePath: string): Promise<number> {
+async function fetchRecentTouchDays(
+  repoId: string,
+  filePath: string,
+  warnings: string[],
+): Promise<number> {
   try {
     const rows = (await executeParameterized(
       repoId,
@@ -472,13 +496,21 @@ async function fetchRecentTouchDays(repoId: string, filePath: string): Promise<n
     const lastDate = new Date(lastDateStr);
     if (Number.isNaN(lastDate.getTime())) return 0;
     return Math.floor((Date.now() - lastDate.getTime()) / (1000 * 60 * 60 * 24));
-  } catch {
+  } catch (err) {
+    if (classifyLbugOpenError(err) === 'resource') throw err;
+    warnings.push(
+      `fetchRecentTouchDays failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
     return 0;
   }
 }
 
 /** Single-call: whether the symbol is exported. */
-async function fetchIsExported(repoId: string, nodeId: string): Promise<boolean> {
+async function fetchIsExported(
+  repoId: string,
+  nodeId: string,
+  warnings: string[],
+): Promise<boolean> {
   try {
     const rows = (await executeParameterized(
       repoId,
@@ -488,7 +520,9 @@ async function fetchIsExported(repoId: string, nodeId: string): Promise<boolean>
     if (rows.length === 0) return false;
     const val = rows[0].isExported ?? rows[0][0];
     return val === true || val === 'true' || val === 1;
-  } catch {
+  } catch (err) {
+    if (classifyLbugOpenError(err) === 'resource') throw err;
+    warnings.push(`fetchIsExported failed: ${err instanceof Error ? err.message : String(err)}`);
     return false;
   }
 }
@@ -846,16 +880,17 @@ export async function gnSafeEditCheck(
   }
 
   // --- 2. Impact analysis with bounded DB concurrency ---------------------
+  const probeWarnings: string[] = [];
   const impactResults = await runLimitedTuple<ImpactResultTuple>(
     [
       () => fetchUpstream(repoId, resolved),
       () => fetchDownstream(repoId, resolved),
-      () => fetchProcessCount(repoId, resolved.nodeId),
-      () => fetchClusterCount(repoId, resolved.nodeId),
+      () => fetchProcessCount(repoId, resolved.nodeId, probeWarnings),
+      () => fetchClusterCount(repoId, resolved.nodeId, probeWarnings),
       () => findTestFiles(repoId, resolved.filePath, resolved.name),
-      () => fetchCoChangeSiblings(repoId, resolved.filePath),
-      () => fetchRecentTouchDays(repoId, resolved.filePath),
-      () => fetchIsExported(repoId, resolved.nodeId),
+      () => fetchCoChangeSiblings(repoId, resolved.filePath, probeWarnings),
+      () => fetchRecentTouchDays(repoId, resolved.filePath, probeWarnings),
+      () => fetchIsExported(repoId, resolved.nodeId, probeWarnings),
     ],
     IMPACT_QUERY_CONCURRENCY,
   );
@@ -870,7 +905,9 @@ export async function gnSafeEditCheck(
     recentTouchDays,
     isExported,
   ] = impactResults;
-  warnings.push(...upstream.warnings, ...downstream.warnings);
+  warnings.push(...probeWarnings, ...upstream.warnings, ...downstream.warnings);
+  probeWarnings.push(...upstream.warnings.map((warning) => `upstream impact: ${warning}`));
+  probeWarnings.push(...downstream.warnings.map((warning) => `downstream impact: ${warning}`));
 
   // --- 3. LSP refs (best-effort, never throws) --------------------------
   let lspRefs: EditCheckReport['lspRefs'];
@@ -956,14 +993,18 @@ export async function gnSafeEditCheck(
     recentTouchDays,
     force,
   );
-  const verdict =
+  let verdict =
     targetContext && !graphAuthoritative && computed.verdict === 'SAFE'
       ? 'CAUTION'
       : computed.verdict;
-  const reasoning =
+  let reasoning =
     targetContext && !graphAuthoritative && computed.verdict === 'SAFE'
       ? `${computed.reasoning} Graph is not authoritative: ${freshness.reason}. Verify callers in source before editing.`
       : computed.reasoning;
+  if (probeWarnings.length > 0) {
+    if (verdict === 'SAFE') verdict = 'CAUTION';
+    reasoning = `${reasoning} Graph probes failed: ${probeWarnings.join('; ')}.`;
+  }
 
   // --- 6. Recommended tool + suggestedNext ----------------------------
   const recommendedTool = computeRecommendedTool(intent, upstream);
