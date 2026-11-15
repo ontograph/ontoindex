@@ -4,6 +4,19 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [3.1.6] - 2026-11-15
+
+- `inspect context`, `impact`, `audit safe_edit_check`, `search repomap` and `search semantic` with `include_content: true` find matching nodes from metadata first, then read requested content by node label and id from the tables that have a content column. Large file content no longer exhausts the default 64 MiB committed read pool on these paths, so they return correct answers instead of a buffer-pool error.
+- `impact` and `audit safe_edit_check` report a database resource failure as an error. Previously `impact` returned `risk: UNKNOWN` and `safe_edit_check` reported the symbol as not found with `CAUTION`. In `impact` batch, a failed target carries its own error and the other targets still return results.
+- Symbols-only workspace builds accept any number of changed paths. When the path list is larger than 64 KiB as one argument, a full workspace build runs instead.
+- Workspace capture reads a symlinked resolver configuration such as `tsconfig.json` through its link when the target stays inside the repository, as `ontoindex analyze` does. A dangling link counts as an absent file. A link that leaves the repository is refused with its path and the kind `symlink`. Symlinked `.gitignore` and `.ontoindexignore` files are still refused.
+- `ontoindex watch` and the MCP watcher rebuild after a configuration-only edit, at startup or at the periodic check, even when no recursive file event fires. When configuration changed, standalone watch runs `ontoindex analyze --workspace-graph --skip-agents-md --no-stats`. A refused build is not retried until a watched input changes.
+- Index CSV writing flushes a batch before adding a row would take it past 64 Mi characters, newlines included, so one batch cannot exceed the V8 string limit. A row larger than that is written by itself.
+- Scope retention accepts traversal observations as the configuration reader emits them, `kind`, `path: '.'` and a non-negative safe-integer `dirsScanned`, including scans of more than 100 directories. Earlier it rejected them as `configuration-invalid`. Records carrying the old limit fields or other extra keys are rejected.
+- Tool telemetry writes the start record for an MCP tool call when the call arrives, and for a `query`, `context` or `impact` CLI call before argument validation, with one completion record when the call returns or throws. In 3.1.5, failed calls included error codes only if they reached the backend dispatcher. Calls that fail earlier, in argument validation, repository resolution, initialization or workspace preparation, are now recorded as failed, with the error code and diagnostic reason when the error carries valid ones. Super tools and the facade actions backed by them are recorded under their `gn_*` names. Method names are unchanged. A call that returns a result, including a result marked as an error, records the size of that raw result before projection or paging, as in 3.1.5. When the MCP handler turns a thrown error into an error response, it records size 0.
+- MCP errors and CLI hints suggest committed reads only after confirming that the index has a trusted commit. When that check times out or fails, MCP errors leave out the suggestion, `query`, `context` and `impact` workspace-preparation errors print "Committed-read availability could not be confirmed.", and the raw `impact` size error keeps its fallback suggestion.
+- Documentation correction: since 3.1.2, `ensure_fresh` has not emitted `runtimeHealth.dirtyCoverage.cap`, `runtimeHealth.workspaceReadiness.maxIndexedFiles` or `runtimeHealth.workspaceReadiness.remediation`. The TypeScript fields remain optional.
+
 ## [3.1.5] - 2026-11-15
 
 - Refused workspace inputs report a safe repository-relative path and whether the input is a symlink or non-regular file, when those details are available.
