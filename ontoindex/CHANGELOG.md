@@ -4,6 +4,8 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [3.1.7] - 2026-11-15
+
 - `inspect context` reads method metadata from `Method` columns by label, and `graph_walk` resolves its seed by id and name only. Before, both read whole nodes, so large file content exhausted the default 64 MiB committed read pool and `inspect context` reported `method-metadata-query-failed` in `contextCompleteness`.
 - `ontoindex analyze --workspace-graph` produces a usable workspace graph when `tsconfig.json` or another resolver configuration file is a symlink to a file inside the repository. In 3.1.6 the overlay check treated the link as deleted and failed with "workspace graph input paths changed". When the link target's bytes change, the workspace graph becomes stale.
 - `audit safe_edit_check` rethrows a database resource failure from the process, cluster, co-change, recent-touch and export probes. Any other failure in those probes, and any upstream or downstream query warning, adds a warning, names the failed probe in the reasoning and prevents a `SAFE` verdict. Stronger verdicts are unchanged.
