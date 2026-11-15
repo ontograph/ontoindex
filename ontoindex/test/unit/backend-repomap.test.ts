@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import * as poolAdapter from '../../src/core/lbug/pool-adapter.js';
 import { runRepomap } from '../../src/mcp/local/backend-repomap.js';
 import { withTestLbugDB } from '../helpers/test-indexed-db.js';
 
@@ -22,6 +23,56 @@ withTestLbugDB(
   'backend-repomap',
   (handle) => {
     describe('runRepomap', () => {
+      it.each(['signatures', 'outline', 'full', 'compressed', 'files'] as const)(
+        'preserves %s output when unlabeled content projections exhaust the pool',
+        async (format) => {
+          const params = { focus: ['src/focus.ts'], format, token_budget: 5000 };
+          const baseline = await runRepomap({ id: handle.repoId }, params);
+          const execute = poolAdapter.executeParameterized;
+          const spy = vi
+            .spyOn(poolAdapter, 'executeParameterized')
+            .mockImplementation(async (graphId, cypher, params) => {
+              if (/MATCH \(n\)/.test(cypher) && cypher.includes('.content')) {
+                throw new Error(
+                  'Buffer manager exception: buffer pool is full and no memory could be freed',
+                );
+              }
+              return execute(graphId, cypher, params);
+            });
+          try {
+            expect(await runRepomap({ id: handle.repoId }, params)).toEqual(baseline);
+            const contentCalls = spy.mock.calls.filter(([, cypher]) => cypher.includes('.content'));
+            if (format === 'files') expect(contentCalls).toHaveLength(0);
+            else {
+              expect(contentCalls.length).toBeGreaterThan(0);
+              for (const [, cypher, params] of contentCalls) {
+                expect(cypher).toMatch(/MATCH \(n:`\w+` \{id: \$id\}\)/);
+                expect(params).toHaveProperty('id');
+              }
+            }
+          } finally {
+            spy.mockRestore();
+          }
+        },
+      );
+
+      it('resolves a file name through the File fallback', async () => {
+        const result = await runRepomap(
+          { id: handle.repoId },
+          { focus: ['focus.ts'], format: 'full', token_budget: 5000 },
+        );
+        expect(result).toMatchObject({
+          status: 'success',
+          symbols: [
+            expect.objectContaining({
+              uid: 'file:focus.ts',
+              type: 'File',
+              content: 'focus module',
+            }),
+          ],
+        });
+      });
+
       it('keeps file-focused functions in the seed set instead of truncating to an arbitrary first five matches', async () => {
         const result = await runRepomap(
           { id: handle.repoId },
@@ -88,4 +139,50 @@ withTestLbugDB(
     });
   },
   { seed: REPOMAP_SEED, poolAdapter: true },
+);
+
+withTestLbugDB(
+  'backend-repomap-budget',
+  (handle) => {
+    it('hydrates in rank order, skips oversized candidates, and stops at the exact budget', async () => {
+      const contentReads: string[] = [];
+      const execute = poolAdapter.executeParameterized;
+      const spy = vi
+        .spyOn(poolAdapter, 'executeParameterized')
+        .mockImplementation(async (graphId, cypher, params) => {
+          if (/MATCH \(n:`Function` \{id: \$id\}\)/.test(cypher) && cypher.includes('AS content')) {
+            contentReads.push(params?.id as string);
+          }
+          return execute(graphId, cypher, params);
+        });
+      try {
+        // HEAD fills ordered file seeds first. With no edges each score is
+        // (1 - 0.85) / 4. Its serialized entries have 171/567/175/179 chars,
+        // so ceil(length / 4) costs 43/142/44/45 tokens for A/B/C/D.
+        const result = await runRepomap(
+          { id: handle.repoId },
+          { focus: ['src/budget.ts'], format: 'full', token_budget: 87 },
+        );
+        expect(contentReads).toEqual(['func:budgetA', 'func:budgetB', 'func:budgetC']);
+        expect(result).toMatchObject({ status: 'success', symbol_count: 2, tokens_used: 87 });
+        if ('symbols' in result) {
+          expect(result.symbols.map((symbol) => symbol.uid)).toEqual([
+            'func:budgetA',
+            'func:budgetC',
+          ]);
+        } else {
+          throw new Error('Expected repomap symbols');
+        }
+      } finally {
+        spy.mockRestore();
+      }
+    });
+  },
+  {
+    seed: [4, 400, 8, 12].map((length, index) => {
+      const suffix = String.fromCharCode(65 + index);
+      return `CREATE (n:Function {id: 'func:budget${suffix}', name: 'budget${suffix}', filePath: 'src/budget.ts', startLine: ${index + 1}, endLine: ${index + 1}, content: '${'x'.repeat(length)}'})`;
+    }),
+    poolAdapter: true,
+  },
 );

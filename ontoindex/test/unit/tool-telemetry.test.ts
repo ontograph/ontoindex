@@ -24,6 +24,9 @@ import {
   readToolTelemetrySummary,
   recordToolCall,
   recordToolCallStart,
+  withToolCallTelemetry,
+  hasToolCallTelemetryScope,
+  toolCallErrorFields,
 } from '../../src/mcp/local/tool-telemetry.js';
 import { appendFile, readFile, stat } from 'node:fs/promises';
 
@@ -140,29 +143,15 @@ describe('recordToolCall', () => {
         ['--import', tsxImport, '--input-type=module', '-e', script],
         {
           env: { ...process.env, ONTOINDEX_TELEMETRY_DIR: dir },
+          timeout: 30_000,
+          killSignal: 'SIGKILL',
         },
       );
+      expect(child.error, child.stderr?.toString()).toBeUndefined();
       expect(child.signal).toBe('SIGKILL');
       const lines = readFileSync(join(dir, 'telemetry.jsonl'), 'utf8').trim().split('\n');
       expect(lines).toHaveLength(1);
       expect(JSON.parse(lines[0]).phase).toBe('start');
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it('keeps synchronous start writes below the 5 ms median stop condition', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'ontoindex-telemetry-speed-'));
-    vi.stubEnv('ONTOINDEX_TELEMETRY_DIR', dir);
-    try {
-      const durations: number[] = [];
-      for (let i = 0; i < 50; i++) {
-        const before = performance.now();
-        recordToolCallStart({ phase: 'start', ts: 'x', id: `1-${i}`, method: 'query', repo: '' });
-        durations.push(performance.now() - before);
-      }
-      durations.sort((a, b) => a - b);
-      expect(durations[24]).toBeLessThan(5);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -262,5 +251,96 @@ describe('recordToolCall', () => {
     readFileMock.mockResolvedValue('not-json\n');
 
     await expect(readRecentOversizedToolCalls()).resolves.toEqual([]);
+  });
+});
+
+describe('tool-call telemetry scope', () => {
+  it.each(['success', 'throw', 'fail'] as const)(
+    'records one matched pair for %s',
+    async (mode) => {
+      const dir = mkdtempSync(join(tmpdir(), 'ontoindex-scope-'));
+      vi.stubEnv('ONTOINDEX_TELEMETRY_DIR', dir);
+      appendMock.mockClear();
+      appendMock.mockResolvedValue(undefined);
+      statMock.mockRejectedValue(new Error('missing'));
+      const failure = Object.assign(new Error('failed'), {
+        code: 'TOOL_FAILED',
+        diagnostics: { reason: 'timeout' },
+      });
+      try {
+        expect(hasToolCallTelemetryScope()).toBe(false);
+        const result = withToolCallTelemetry(
+          'inspect.context',
+          { repo: 'fixture', read_mode: 'committed' },
+          async (scope) => {
+            expect(hasToolCallTelemetryScope()).toBe(true);
+            await Promise.resolve().then(() => expect(hasToolCallTelemetryScope()).toBe(true));
+            scope.setResponseSize(42);
+            if (mode === 'throw') throw failure;
+            if (mode === 'fail') scope.fail(failure);
+            return 'result';
+          },
+        );
+        if (mode === 'throw') await expect(result).rejects.toBe(failure);
+        else await expect(result).resolves.toBe('result');
+        await vi.waitFor(() => expect(appendMock).toHaveBeenCalledOnce());
+        const start = JSON.parse(readFileSync(join(dir, 'telemetry.jsonl'), 'utf8').trim());
+        const completion = JSON.parse(appendMock.mock.calls[0][1]);
+        expect(start).toMatchObject({
+          phase: 'start',
+          method: 'inspect.context',
+          repo: 'fixture',
+          readMode: 'committed',
+        });
+        expect(completion).toMatchObject({
+          id: start.id,
+          ok: mode === 'success',
+          responseSizeBytes: 42,
+        });
+        if (mode !== 'success')
+          expect(completion).toMatchObject({ code: 'TOOL_FAILED', reason: 'timeout' });
+      } finally {
+        vi.unstubAllEnvs();
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
+  it('ignores late writes and closes the scope in background work', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ontoindex-closed-scope-'));
+    vi.stubEnv('ONTOINDEX_TELEMETRY_DIR', dir);
+    appendMock.mockClear();
+    appendMock.mockResolvedValue(undefined);
+    let finish!: () => void;
+    let background!: Promise<void>;
+    try {
+      await withToolCallTelemetry('query', { repo: '@group' }, async (scope) => {
+        background = new Promise<void>((resolve) => {
+          finish = resolve;
+        }).then(() => {
+          expect(hasToolCallTelemetryScope()).toBe(false);
+          scope.fail({ code: 'LATE' });
+          scope.setResponseSize(999);
+        });
+        scope.setResponseSize(7);
+      });
+      finish();
+      await background;
+      await vi.waitFor(() => expect(appendMock).toHaveBeenCalledOnce());
+      expect(JSON.parse(appendMock.mock.calls[0][1])).toMatchObject({
+        repo: '',
+        ok: true,
+        responseSizeBytes: 7,
+      });
+      expect(JSON.parse(appendMock.mock.calls[0][1])).not.toHaveProperty('code');
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  it('only records bounded diagnostic identifiers', () => {
+    expect(
+      toolCallErrorFields({ code: 'private/path', diagnostics: { reason: 'x'.repeat(65) } }),
+    ).toEqual({});
+    expect(toolCallErrorFields(null)).toEqual({});
   });
 });

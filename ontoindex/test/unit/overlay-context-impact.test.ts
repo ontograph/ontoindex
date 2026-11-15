@@ -405,6 +405,7 @@ describe('overlay context and impact', () => {
       expect(generation).toBe('captured-A');
       overlay.getOverlaySnapshot.mockResolvedValue({ ...snapshot, generation: 'published-C' });
       if (query.includes('AS startLine')) return [captured];
+      if (query.includes('AS content')) return [{ content: captured.content }];
       if (query.includes('AS relType'))
         return [
           {

@@ -67,7 +67,6 @@ import {
           process.argv[3] !== '--symbols' ||
           process.argv.length !== 5 ||
           !Array.isArray(paths) ||
-          paths.length > 50 ||
           paths.some(
             (item) =>
               typeof item !== 'string' ||

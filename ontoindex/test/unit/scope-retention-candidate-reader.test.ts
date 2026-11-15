@@ -164,6 +164,7 @@ function captureCompleteInputs(stage: ScopeRetentionStage) {
       status: 'present',
       entries: [{ name: 'src', kind: 'directory' }],
     },
+    { kind: 'traversal', path: '.', dirsScanned: 250 },
   ];
   stage.captureConfigObservations({
     version: 1,
@@ -589,6 +590,28 @@ describe('scope retention candidate verification', () => {
       }
       expect(dispose).toHaveBeenCalledTimes(2);
       expect(request.artifactAllowance.remainingBytes).toBe(allowance);
+    },
+  );
+
+  it.each(['maxDepth', 'maxDirs', 'depthLimited', 'directoryLimited'])(
+    'rejects persisted traversal evidence carrying removed field %s',
+    async (field) => {
+      const { directory, candidate, request } = await setup(captureCompleteInputs);
+      await mutateManifest(candidate, (manifest) => {
+        const configuration = manifest.retention.inputEvidence.configuration!;
+        const traversal = configuration.records.find((record) => record.kind === 'traversal')!;
+        Object.assign(traversal, { [field]: field.endsWith('Limited') ? true : 5 });
+        Object.assign(configuration, {
+          digest: createHash('sha256')
+            .update(JSON.stringify({ version: 1, records: configuration.records }))
+            .digest('hex'),
+        });
+      });
+      for (const read of [verifyScopeRetentionCandidate, loadScopeRetentionCandidate]) {
+        await expect(read(directory, expected, request)).rejects.toThrow(
+          /^scope-retention-candidate: invalid configuration evidence$/,
+        );
+      }
     },
   );
 

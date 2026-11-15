@@ -33,6 +33,7 @@ describe('typed Lbug open error classification', () => {
     [`Could not set lock on database file. ${nativeMessage}`, 'lock'],
     [`EACCES: permission denied opening database file. ${nativeMessage}`, 'permission'],
     ['Unable to open database: out of memory', 'resource'],
+    ['Buffer manager exception: buffer pool is full and no memory could be freed', 'resource'],
     [
       'Runtime exception: Reading past the end of the file /p/lbug with size 4415488 at offset 8818688',
       'corrupt',

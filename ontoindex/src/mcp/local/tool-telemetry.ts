@@ -2,6 +2,94 @@ import { appendFile, mkdir, readFile, rename, stat } from 'node:fs/promises';
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { AsyncLocalStorage } from 'node:async_hooks';
+
+interface ToolCallTelemetryScope {
+  closed: boolean;
+  fail(error: unknown): void;
+  setResponseSize(bytes: number): void;
+}
+
+const toolCallScope = new AsyncLocalStorage<ToolCallTelemetryScope>();
+let toolCallTelemetryCounter = 0;
+
+export function hasToolCallTelemetryScope(): boolean {
+  const scope = toolCallScope.getStore();
+  return scope !== undefined && !scope.closed;
+}
+
+export function toolCallErrorFields(error: unknown): { code?: string; reason?: string } {
+  const candidate =
+    error !== null && typeof error === 'object'
+      ? (error as { code?: unknown; diagnostics?: { reason?: unknown } })
+      : undefined;
+  const valid = (value: unknown): value is string =>
+    typeof value === 'string' && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(value);
+  return {
+    ...(valid(candidate?.code) ? { code: candidate.code } : {}),
+    ...(valid(candidate?.diagnostics?.reason) ? { reason: candidate.diagnostics.reason } : {}),
+  };
+}
+
+export async function withToolCallTelemetry<T>(
+  method: string,
+  params: unknown,
+  operation: (scope: ToolCallTelemetryScope) => Promise<T>,
+): Promise<T> {
+  const normalized =
+    params !== null && typeof params === 'object' ? (params as Record<string, unknown>) : {};
+  const repo =
+    typeof normalized.repo === 'string' && !normalized.repo.startsWith('@') ? normalized.repo : '';
+  const readMode =
+    normalized.read_mode === 'committed' || normalized.read_mode === 'workspace'
+      ? normalized.read_mode
+      : undefined;
+  const id = `${process.pid}-${++toolCallTelemetryCounter}`;
+  const start = Date.now();
+  let ok = true;
+  let error: unknown;
+  let responseSizeBytes = 0;
+  const scope: ToolCallTelemetryScope = {
+    closed: false,
+    fail(failure) {
+      if (!scope.closed) {
+        ok = false;
+        error = failure;
+      }
+    },
+    setResponseSize(bytes) {
+      if (!scope.closed) responseSizeBytes = bytes;
+    },
+  };
+  recordToolCallStart({
+    phase: 'start',
+    ts: new Date().toISOString(),
+    id,
+    method,
+    repo,
+    ...(readMode ? { readMode } : {}),
+  });
+  return toolCallScope.run(scope, async () => {
+    try {
+      return await operation(scope);
+    } catch (failure) {
+      scope.fail(failure);
+      throw failure;
+    } finally {
+      scope.closed = true;
+      recordToolCall({
+        ts: new Date().toISOString(),
+        id,
+        method,
+        repo,
+        durationMs: Date.now() - start,
+        responseSizeBytes,
+        ok,
+        ...toolCallErrorFields(error),
+      });
+    }
+  });
+}
 
 const ROTATE_BYTES = 10 * 1024 * 1024;
 

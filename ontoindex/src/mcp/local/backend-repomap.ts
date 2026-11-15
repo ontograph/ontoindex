@@ -1,5 +1,6 @@
 import { executeParameterized } from '../../core/lbug/pool-adapter.js';
 import { workspaceGraphPoolId } from './backend-overlay.js';
+import { readNodeContent } from './backend-symbol-resolution.js';
 import { personalizedPageRank, buildFullAdjacency } from '../../core/graph/pagerank.js';
 import { compressSymbol } from '../../core/graph/repomap-compressor.js';
 import { estimateTokens } from '../../core/wiki/llm-client.js';
@@ -20,7 +21,6 @@ type RepomapNodeRow = {
   filePath?: string;
   startLine?: number;
   endLine?: number;
-  content?: string;
   description?: string;
 };
 
@@ -33,7 +33,6 @@ type RepomapTupleRow = readonly [
   filePath?: unknown,
   startLine?: unknown,
   endLine?: unknown,
-  content?: unknown,
   description?: unknown,
 ];
 type RepomapRawRow = RepomapObjectRow | RepomapTupleRow;
@@ -109,8 +108,7 @@ function normalizeRepomapRow(row: RepomapRawRow): RepomapNodeRow {
     filePath: repomapRowValue(row, 'filePath', 3) as string | undefined,
     startLine: repomapRowValue(row, 'startLine', 4) as number | undefined,
     endLine: repomapRowValue(row, 'endLine', 5) as number | undefined,
-    content: repomapRowValue(row, 'content', 6) as string | undefined,
-    description: repomapRowValue(row, 'description', 7) as string | undefined,
+    description: repomapRowValue(row, 'description', 6) as string | undefined,
   };
 }
 
@@ -171,7 +169,7 @@ async function resolveRepomapFocusRows(repo: RepoHandle, item: string): Promise<
     MATCH (n)
     WHERE n.filePath = $item
     RETURN n.id AS id, n.name AS name, label(n) AS type, n.filePath AS filePath,
-           n.startLine AS startLine, n.endLine AS endLine, n.content AS content, n.description AS description
+           n.startLine AS startLine, n.endLine AS endLine, n.description AS description
     LIMIT ${FILE_FOCUS_FETCH_LIMIT}
   `,
     { item },
@@ -188,7 +186,7 @@ async function resolveRepomapFocusRows(repo: RepoHandle, item: string): Promise<
     MATCH (n)
     WHERE n.id = $item OR n.name = $item
     RETURN n.id AS id, n.name AS name, label(n) AS type, n.filePath AS filePath,
-           n.startLine AS startLine, n.endLine AS endLine, n.content AS content, n.description AS description
+           n.startLine AS startLine, n.endLine AS endLine, n.description AS description
     LIMIT ${SYMBOL_FOCUS_FETCH_LIMIT}
   `,
     { item },
@@ -325,7 +323,7 @@ export async function runRepomap(repo: RepoHandle, params: RepomapParams): Promi
     MATCH (n)
     WHERE n.id IN $nodeIds
     RETURN n.id AS id, n.name AS name, label(n) AS type, n.filePath AS filePath,
-           n.startLine AS startLine, n.endLine AS endLine, n.content AS content, n.description AS description
+           n.startLine AS startLine, n.endLine AS endLine, n.description AS description
   `,
     { nodeIds: rankedNodeIds.slice(0, META_FETCH_LIMIT) },
   );
@@ -359,7 +357,12 @@ export async function runRepomap(repo: RepoHandle, params: RepomapParams): Promi
     if (!n) continue;
 
     const nodeType = n.type || 'Unknown';
-    let code = n.content || '';
+    let code =
+      (await readNodeContent(
+        (cypher, params) => executeParameterized(workspaceGraphPoolId(repo.id), cypher, params),
+        n.type,
+        n.id,
+      )) || '';
     if (format === 'compressed' || format === 'signatures') {
       code = compressSymbol(nodeType, code);
     }

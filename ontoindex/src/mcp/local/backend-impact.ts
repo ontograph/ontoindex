@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { getLanguageFromFilename } from 'ontoindex-shared';
 import { executeParameterized } from '../../core/lbug/pool-adapter.js';
+import { classifyLbugOpenError } from '../../core/lbug/open-error.js';
 import { createKnowledgeGraph } from '../../core/graph/graph.js';
 import { createASTCache } from '../../core/ingestion/ast-cache.js';
 import { processParsing } from '../../core/ingestion/parsing-processor.js';
@@ -240,6 +241,7 @@ export async function runImpact(
   try {
     return await impactImpl(repo, params);
   } catch (err: unknown) {
+    if (classifyLbugOpenError(err) === 'resource') throw err;
     return {
       error: (err instanceof Error ? err.message : String(err)) || 'Impact analysis failed',
       target: { name: params.target },

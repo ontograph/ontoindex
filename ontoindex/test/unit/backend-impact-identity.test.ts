@@ -34,6 +34,32 @@ describe('backend impact identity ergonomics', () => {
 
   afterEach(() => vi.unstubAllEnvs());
 
+  it('rethrows resource failures without returning UNKNOWN risk', async () => {
+    const error = new Error(
+      'Buffer manager exception: buffer pool is full and no memory could be freed',
+    );
+    resolveMocks.resolveSymbolCandidates.mockRejectedValue(error);
+    const { runImpact } = await import('../../src/mcp/local/backend-impact.js');
+    await expect(
+      runImpact({ id: 'repo', name: 'repo' }, { target: 'login', direction: 'upstream' }),
+    ).rejects.toBe(error);
+  });
+
+  it('keeps UNKNOWN risk for generic query failures', async () => {
+    resolveMocks.resolveSymbolCandidates.mockRejectedValue(new Error('DB unavailable'));
+    const { runImpact } = await import('../../src/mcp/local/backend-impact.js');
+    expect(
+      await runImpact({ id: 'repo', name: 'repo' }, { target: 'login', direction: 'upstream' }),
+    ).toEqual({
+      error: 'DB unavailable',
+      target: { name: 'login' },
+      direction: 'upstream',
+      impactedCount: 0,
+      risk: 'UNKNOWN',
+      suggestion: 'The graph query failed — try ontoindex context <symbol> as a fallback',
+    });
+  });
+
   it.each([undefined, 'Deleted source path(s): src/auth.ts'])(
     'preserves not-found results and surfaces a defined warning: %s',
     async (warning) => {

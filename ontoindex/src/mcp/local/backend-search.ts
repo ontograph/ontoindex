@@ -9,6 +9,7 @@ import type {
   QueryTokenCostSnapshotInput,
 } from '../../core/runtime/query-budget.js';
 import { executeParameterized } from '../../core/lbug/pool-adapter.js';
+import { readNodeContent } from './backend-symbol-resolution.js';
 import { classifyLbugOpenError } from '../../core/lbug/open-error.js';
 import { PhaseTimer } from '../../core/search/phase-timer.js';
 import { computeGraphPathWithDiagnostics } from '../../core/search/graph-path.js';
@@ -83,10 +84,6 @@ interface ProcessLookupRow extends QueryTuple {
 interface CohesionLookupRow extends QueryTuple {
   cohesion?: number;
   module?: string;
-}
-
-interface ContentLookupRow extends QueryTuple {
-  content?: string;
 }
 
 interface CitationLookupRow extends QueryTuple, Record<string, unknown> {
@@ -2225,15 +2222,30 @@ export async function query(
     `,
     'query:cluster-info',
   );
-  const contentByNode = await lookupByNode<ContentLookupRow>(
-    `
-      MATCH (n)
-      WHERE n.id IN $nodeIds
-      RETURN n.content AS content, n.id AS nodeId
-    `,
-    'query:content-fetch',
-    includeContent,
-  );
+  const contentByNode = new Map<string, string | undefined>();
+  if (includeContent) {
+    for (const [, { data: sym }] of mergedReordered) {
+      if (sym.source === 'overlay' || !sym.nodeId || contentByNode.has(sym.nodeId)) continue;
+      if (enrichmentStopped) {
+        enrichmentWarnings.add(enrichmentWarningByContext['query:content-fetch']);
+        break;
+      }
+      try {
+        contentByNode.set(
+          sym.nodeId,
+          await readNodeContent(
+            (cypher, params) => executeParameterized(graphId, cypher, params),
+            sym.type,
+            sym.nodeId,
+          ),
+        );
+      } catch (e) {
+        if (stopsEnrichment(e)) enrichmentStopped = true;
+        logSearchQueryError('query:content-fetch', e);
+        enrichmentWarnings.add(enrichmentWarningByContext['query:content-fetch']);
+      }
+    }
+  }
   const citationsByNode = await lookupFirstByNode<CitationLookupRow>(
     // Repeat the target filter on the rematch so its hash-build branch stays scoped.
     `
@@ -2285,8 +2297,7 @@ export async function query(
     const community = communitiesByNode.get(sym.nodeId)?.[0];
     const cohesion = community ? ((community.cohesion ?? community[0]) as number) || 0 : 0;
     const module = (community?.module ?? community?.[1]) as string | undefined;
-    const contentRow = contentByNode.get(sym.nodeId)?.[0];
-    const content = (contentRow?.content ?? contentRow?.[0]) as string | undefined;
+    const content = contentByNode.get(sym.nodeId);
     let citationPath: string | undefined;
     const citation = citationsByNode.get(sym.nodeId)?.[0];
     if (citation) {

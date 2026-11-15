@@ -148,7 +148,11 @@ function setupMocks({
   lspClientAvailable?: boolean;
   lspRenameResult?: { supported: boolean; placeholder?: string };
 } = {}): void {
-  mockExecuteParameterized.mockImplementation(async (_repoId: string, query: string) => {
+  mockExecuteParameterized.mockImplementation(async (_repoId: string, query: string, params) => {
+    if (query.includes('RETURN n.content AS content')) {
+      const row = resolveRows.find((candidate) => candidate.nodeId === params.id);
+      return row ? [{ content: row.content }] : [];
+    }
     if (query.includes('WHERE s.id = $id') || query.includes('WHERE s.name = $name')) {
       return resolveRows;
     }
@@ -211,6 +215,31 @@ describe('gnSafeEditCheck', () => {
       policy: { status: 'unknown', reason: 'policy-profile-probe-not-configured' },
       warnings: [],
     });
+  });
+
+  it.each([NODE_ID, 'parseToken'])('rethrows buffer-pool failures resolving %s', async (symbol) => {
+    const error = new Error(
+      'Buffer manager exception: buffer pool is full and no memory could be freed',
+    );
+    mockExecuteParameterized.mockRejectedValue(error);
+    await expect(gnSafeEditCheck(REPO_ID, { symbol })).rejects.toBe(error);
+  });
+
+  it('reads candidate content only through labeled primary-key queries', async () => {
+    setupMocks();
+    await gnSafeEditCheck(REPO_ID, { symbol: 'parseToken' });
+    const calls = mockExecuteParameterized.mock.calls;
+    const nameQuery = calls.find(([, query]) => query.includes('WHERE s.name = $name'));
+    expect(nameQuery?.[1]).not.toContain('s.content');
+    expect(nameQuery?.[1]).toContain('ORDER BY callerCount DESC');
+    expect(nameQuery?.[1]).toContain('LIMIT 20');
+    expect(calls.filter(([, query]) => query.includes('.content'))).toEqual([
+      [
+        REPO_ID,
+        'MATCH (n:`Function` {id: $id}) RETURN n.content AS content LIMIT 1',
+        { id: NODE_ID },
+      ],
+    ]);
   });
 
   // -------------------------------------------------------------------------
@@ -779,7 +808,7 @@ describe('gnSafeEditCheck', () => {
   });
 
   it('keeps declaration candidates as lower-ranked fallbacks in shared resolver output', async () => {
-    mockExecuteParameterized.mockResolvedValueOnce([
+    const candidates = [
       {
         id: 'Function:include/auth/token.h:parseToken',
         name: 'parseToken',
@@ -798,7 +827,14 @@ describe('gnSafeEditCheck', () => {
         endLine: 14,
         content: 'export function parseToken(raw: string): Token {\n  return decode(raw);\n}',
       },
-    ]);
+    ];
+    mockExecuteParameterized.mockImplementation(async (_repo, cypher, params) => {
+      if (cypher.includes('.content')) {
+        const candidate = candidates.find((candidate) => candidate.id === params.id);
+        return candidate ? [{ content: candidate.content }] : [];
+      }
+      return candidates;
+    });
 
     const outcome = await resolveSymbolCandidates({ id: REPO_ID }, { name: 'parseToken' }, {});
 

@@ -655,15 +655,7 @@ export class ScopeRetentionStage implements ScopeRetentionHandle {
           : record.kind === 'directory'
             ? ['kind', 'path', 'status', 'entries', 'errorCode']
             : record.kind === 'traversal'
-              ? [
-                  'kind',
-                  'path',
-                  'maxDepth',
-                  'maxDirs',
-                  'dirsScanned',
-                  'depthLimited',
-                  'directoryLimited',
-                ]
+              ? ['kind', 'path', 'dirsScanned']
               : ['kind', 'path'];
       if (!keysAllowed(record, allowed)) {
         this.inputIssue('configuration-invalid');
@@ -708,14 +700,16 @@ export class ScopeRetentionStage implements ScopeRetentionHandle {
         }
       } else if (record.kind === 'traversal') {
         if (
+          (Object.getPrototypeOf(record) !== Object.prototype &&
+            Object.getPrototypeOf(record) !== null) ||
+          Reflect.ownKeys(record).length !== allowed.length ||
+          !allowed.every((key) => {
+            const descriptor = Object.getOwnPropertyDescriptor(record, key);
+            return descriptor?.enumerable === true && 'value' in descriptor;
+          }) ||
           record.path !== '.' ||
-          record.maxDepth !== 5 ||
-          record.maxDirs !== 100 ||
           !Number.isSafeInteger(record.dirsScanned) ||
-          record.dirsScanned < 0 ||
-          record.dirsScanned > 100 ||
-          typeof record.depthLimited !== 'boolean' ||
-          typeof record.directoryLimited !== 'boolean'
+          record.dirsScanned < 0
         ) {
           this.inputIssue('configuration-invalid');
           return;
@@ -726,9 +720,7 @@ export class ScopeRetentionStage implements ScopeRetentionHandle {
       }
       if (
         observations.complete &&
-        (record.kind === 'parse-error' ||
-          ('status' in record && record.status === 'failed') ||
-          (record.kind === 'traversal' && (record.depthLimited || record.directoryLimited)))
+        (record.kind === 'parse-error' || ('status' in record && record.status === 'failed'))
       ) {
         this.inputIssue('configuration-invalid');
         return;

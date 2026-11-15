@@ -12,6 +12,8 @@
  */
 
 import { executeParameterized } from '../../core/lbug/pool-adapter.js';
+import { classifyLbugOpenError } from '../../core/lbug/open-error.js';
+import { readNodeContent } from '../local/backend-symbol-resolution.js';
 import { nodeKind } from './_helpers/node-kind.js';
 import {
   runImpactKernel,
@@ -237,14 +239,14 @@ function definitionRank(row: QueryRow): number {
     if (declarationOnly || stubOnly) return -1;
     if (hasBody) return 1;
   }
-  const startLine = rowNumber(row, 'startLine', 6);
-  const endLine = rowNumber(row, 'endLine', 7);
+  const startLine = rowNumber(row, 'startLine', 5);
+  const endLine = rowNumber(row, 'endLine', 6);
   return endLine > startLine ? 0.5 : 0;
 }
 
 // ---------------------------------------------------------------------------
-// Internal helpers — each makes exactly ONE executeParameterized call.
-// All are best-effort: errors return a zero/empty result, never throw.
+// Internal helpers use bounded graph probes; name resolution hydrates each candidate.
+// Resolution rethrows resource failures; other probe errors remain best-effort.
 // The main facade schedules these through a small concurrency limiter so a
 // single MCP request cannot fan out all graph probes at once.
 // ---------------------------------------------------------------------------
@@ -267,24 +269,34 @@ async function resolveSymbol(repoId: string, symbol: string): Promise<ResolvedSy
         filePath: rowString(row, 'filePath', 2),
         kind: nodeKind(rowString(row, 'kind', 3), rowString(row, 'nodeId', 0)),
       };
-    } catch {
+    } catch (err) {
+      if (classifyLbugOpenError(err) === 'resource') throw err;
       return null;
     }
   }
 
   try {
-    const candidates = (await executeParameterized(
+    const metadata = (await executeParameterized(
       repoId,
       `MATCH (s) WHERE s.name = $name
        OPTIONAL MATCH (caller)-[r:CodeRelation]->(s) WHERE r.type = 'CALLS'
        RETURN s.id AS nodeId, s.name AS name, s.filePath AS filePath, label(s) AS kind,
-              COUNT(caller) AS callerCount, s.content AS content, s.startLine AS startLine,
+              COUNT(caller) AS callerCount, s.startLine AS startLine,
               s.endLine AS endLine
        ORDER BY callerCount DESC
        LIMIT 20`,
       { name: symbol },
     )) as QueryRow[];
-    if (candidates.length === 0) return null;
+    if (metadata.length === 0) return null;
+    const candidates: QueryRow[] = [];
+    for (const row of metadata) {
+      const content = await readNodeContent(
+        (query, params) => executeParameterized(repoId, query, params),
+        rowString(row, 'kind', 3),
+        rowString(row, 'nodeId', 0),
+      );
+      candidates.push({ ...row, content: content ?? '' });
+    }
     candidates.sort((a, b) => {
       const rankDelta = definitionRank(b) - definitionRank(a);
       if (rankDelta !== 0) return rankDelta;
@@ -297,7 +309,8 @@ async function resolveSymbol(repoId: string, symbol: string): Promise<ResolvedSy
       filePath: rowString(row, 'filePath', 2),
       kind: nodeKind(rowString(row, 'kind', 3), rowString(row, 'nodeId', 0)),
     };
-  } catch {
+  } catch (err) {
+    if (classifyLbugOpenError(err) === 'resource') throw err;
     return null;
   }
 }

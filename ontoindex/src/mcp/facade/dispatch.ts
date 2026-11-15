@@ -109,7 +109,7 @@ export async function dispatchFacade(
   return backend.callTool(method, args);
 }
 
-function getAuditFacadeSuperTool(tool: FacadeTool, action: string): SuperTool | null {
+export function getAuditFacadeSuperTool(tool: FacadeTool, action: string): SuperTool | null {
   if (tool === 'impact' && action === 'diff_impact') return 'gn_diff_impact';
   if (tool === 'refactor' && action === 'safe_refactor') return 'gn_safe_refactor';
   if (tool === 'inspect' && action === 'module') return 'gn_explain_module';
@@ -358,7 +358,7 @@ function normalizeFacadeArgs(
 /**
  * Maps a facade tool + action to an internal tool method name.
  */
-function getInternalMethod(tool: FacadeTool, action: string): string {
+export function getInternalMethod(tool: FacadeTool, action: string): string {
   switch (tool) {
     case 'discover':
       switch (action) {

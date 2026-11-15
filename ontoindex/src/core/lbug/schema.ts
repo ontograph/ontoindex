@@ -18,6 +18,35 @@ import {
 } from 'ontoindex-shared';
 
 export const NODE_TABLES = BASE_NODE_TABLES;
+/** Node tables whose schema includes a content column. */
+export const CONTENT_NODE_TABLES: ReadonlySet<string> = new Set([
+  'File',
+  'Function',
+  'Class',
+  'Interface',
+  'Method',
+  'CodeElement',
+  'Struct',
+  'Enum',
+  'Macro',
+  'Typedef',
+  'Union',
+  'Namespace',
+  'Trait',
+  'Impl',
+  'TypeAlias',
+  'Const',
+  'Static',
+  'Variable',
+  'Property',
+  'Record',
+  'Delegate',
+  'Annotation',
+  'Constructor',
+  'Template',
+  'Module',
+  'Section',
+]);
 // Re-export so downstream consumers keep the same import path
 export { REL_TABLE_NAME, REL_TYPES, EMBEDDING_TABLE_NAME };
 export type { NodeTableName, RelType } from 'ontoindex-shared';
