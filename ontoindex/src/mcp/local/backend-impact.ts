@@ -183,6 +183,21 @@ type ImpactResult =
   | ImpactOverlayResult
   | ImpactSuccessResult;
 
+export function impactResultCompleteness(
+  result: ImpactResult | undefined,
+): 'complete' | 'partial' | 'failed' {
+  if (!result || result.error || (result.risk === 'UNKNOWN' && !result.impactedCount)) {
+    return 'failed';
+  }
+  if (
+    ('partial' in result && result.partial === true) ||
+    ('traversalComplete' in result && result.traversalComplete === false)
+  ) {
+    return 'partial';
+  }
+  return 'complete';
+}
+
 function logQueryError(context: string, err: unknown): void {
   const msg = err instanceof Error ? err.message : String(err);
   console.error(`OntoIndex [${context}]: ${msg}`);

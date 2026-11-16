@@ -43,6 +43,43 @@ function withGitRepo(test: (repoPath: string) => Promise<void>): () => Promise<v
 
 describe('dirty overlay planner', () => {
   it(
+    'does not classify unrelated dirty JSON as configuration behind a tracked config symlink',
+    withGitRepo(async (repoDir) => {
+      writeFile(repoDir, 'configs/aliases.json', '{"compilerOptions":{}}\n');
+      fs.symlinkSync('configs/aliases.json', path.join(repoDir, 'tsconfig.json'));
+      writeFile(repoDir, 'data.json', '{"value":1}\n');
+      commitFiles(repoDir);
+      writeFile(repoDir, 'data.json', '{"value":2}\n');
+
+      expect((await planDirtyOverlay(repoDir)).configPaths).toEqual([]);
+    }),
+  );
+
+  it(
+    'marks a tracked configuration symlink when its target is deleted',
+    withGitRepo(async (repoDir) => {
+      writeFile(repoDir, 'configs/aliases.json', '{"compilerOptions":{}}\n');
+      fs.symlinkSync('configs/aliases.json', path.join(repoDir, 'tsconfig.json'));
+      commitFiles(repoDir);
+      fs.unlinkSync(path.join(repoDir, 'configs/aliases.json'));
+
+      expect((await planDirtyOverlay(repoDir)).configPaths).toEqual(['tsconfig.json']);
+    }),
+  );
+
+  it(
+    'marks a tracked configuration symlink whose target has a source extension',
+    withGitRepo(async (repoDir) => {
+      writeFile(repoDir, 'configs/aliases.ts', '{"compilerOptions":{}}\n');
+      fs.symlinkSync('configs/aliases.ts', path.join(repoDir, 'tsconfig.json'));
+      commitFiles(repoDir);
+      writeFile(repoDir, 'configs/aliases.ts', '{"compilerOptions":{"baseUrl":"."}}\n');
+
+      expect((await planDirtyOverlay(repoDir)).configPaths).toEqual(['tsconfig.json']);
+    }),
+  );
+
+  it(
     'reports a configuration-only edit as configPaths and leaves the source set empty',
     withGitRepo(async (repoDir) => {
       writeFile(repoDir, 'src/a.ts', 'export const a = 1;\n');

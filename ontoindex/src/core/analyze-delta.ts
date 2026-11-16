@@ -430,6 +430,46 @@ export async function workingTreeMatchesHead(
   };
 }
 
+async function dirtyConfigurationSymlinks(
+  repoPath: string,
+  dirtyPaths: ReadonlySet<string>,
+): Promise<string[]> {
+  const targets = new Set(
+    [...dirtyPaths].filter(
+      (filePath) => !CAPTURE_CONFIGURATION.test(path.posix.basename(filePath)),
+    ),
+  );
+  if (targets.size === 0) return [];
+  const tracked = await execFileText('git', ['ls-files', '-s', '-z'], {
+    cwd: repoPath,
+    timeoutMs: GIT_TIMEOUT_MS,
+    maxBuffer: null,
+  });
+  let root: string | undefined;
+  const matches: string[] = [];
+  for (const entry of tracked.split('\0')) {
+    if (!entry.startsWith('120000 ')) continue;
+    const linkPath = entry.slice(entry.indexOf('\t') + 1);
+    const name = path.posix.basename(linkPath);
+    if (!CAPTURE_CONFIGURATION.test(name) || ['.gitignore', '.ontoindexignore'].includes(name))
+      continue;
+    root ??= await fs.realpath(repoPath);
+    try {
+      const target =
+        (await captureReadPath(root, linkPath, true)) ??
+        path.resolve(
+          path.dirname(path.join(root, linkPath)),
+          await fs.readlink(path.join(root, linkPath)),
+        );
+      if (targets.has(path.relative(root, target).split(path.sep).join('/')))
+        matches.push(linkPath);
+    } catch {
+      // Unsafe or unreadable configuration links cannot match a captured input.
+    }
+  }
+  return matches;
+}
+
 export async function planDirtyOverlay(repoPath: string): Promise<DirtyOverlayPlan> {
   const includePaths = new Set<string>();
   const sizeExcludedPaths = new Set<string>();
@@ -475,6 +515,11 @@ export async function planDirtyOverlay(repoPath: string): Promise<DirtyOverlayPl
     } else {
       skipped.add(oldPath);
     }
+  }
+
+  const dirtyPaths = new Set([...skipped, ...includePaths, ...tombstones]);
+  for (const linkPath of await dirtyConfigurationSymlinks(repoPath, dirtyPaths)) {
+    skipped.add(linkPath);
   }
 
   for (const filePath of await hiddenIndexPaths(repoPath)) {
@@ -1278,11 +1323,7 @@ export async function captureWorkspaceInputs(
       check();
       const code = (error as NodeJS.ErrnoException).code;
       if (attempt < 2 && (code === 'ENOENT' || code === 'changed-input')) continue;
-      if (error instanceof WorkspaceInputCaptureError) throw error;
-      throw new WorkspaceInputCaptureError(
-        'unsupported',
-        `Workspace capture failed: ${error instanceof Error ? error.message : String(error)}`,
-      );
+      throw error;
     }
   }
   throw new WorkspaceInputCaptureError(

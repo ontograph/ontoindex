@@ -11,9 +11,11 @@ class NativeCsvRowWriter {
     this._chars = 0;
     this._maxBufferedCharacters = maxBufferedCharacters;
     this._headerWritten = false;
+    this._failed = null;
   }
 
   addRow(row) {
+    if (this._failed) throw this._failed;
     row = String(row);
     if (this._rows.length > 0 && this._chars + row.length + 1 > this._maxBufferedCharacters) {
       this._flush();
@@ -27,21 +29,33 @@ class NativeCsvRowWriter {
   }
 
   _flush() {
+    if (this._failed) throw this._failed;
     if (this._rows.length === 0) return;
-    if (this._headerWritten) {
-      native.appendCsvLines(this.csvPath, this._rows);
-    } else {
-      native.writeCsvLines(this.csvPath, this._header, this._rows);
-      this._headerWritten = true;
+    try {
+      if (this._headerWritten) {
+        native.appendCsvLines(this.csvPath, this._rows);
+      } else {
+        native.writeCsvLines(this.csvPath, this._header, this._rows);
+        this._headerWritten = true;
+      }
+    } catch (error) {
+      this._failed = error;
+      throw error;
+    } finally {
+      this._rows.length = 0;
+      this._chars = 0;
     }
-    this._rows.length = 0;
-    this._chars = 0;
   }
 
   async finish() {
     this._flush();
     if (!this._headerWritten) {
-      native.writeCsvLines(this.csvPath, this._header, []);
+      try {
+        native.writeCsvLines(this.csvPath, this._header, []);
+      } catch (error) {
+        this._failed = error;
+        throw error;
+      }
       this._headerWritten = true;
     }
   }

@@ -11,9 +11,10 @@ import { createMCPServer } from '../../src/mcp/server.js';
 
 describe('navigation with a small native read buffer', () => {
   const repoName = 'committed-small-buffer';
-  // Buffers <=32 MiB cannot serve any query natively; 48 MiB still fails the unlabeled content query on HEAD 591823a.
-  const bufferMiB = 48;
-  const payloadBytes = 16 * 1024 * 1024;
+  // Stored File content (4 x 32 MiB) exceeds the buffer, so an unlabeled content read cannot fit.
+  // 48 MiB left too little headroom for optional search enrichment and failed intermittently.
+  const bufferMiB = 96;
+  const payloadBytes = 32 * 1024 * 1024;
   let root: string;
   let backend: LocalBackend;
   let client: Client;

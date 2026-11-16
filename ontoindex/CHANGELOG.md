@@ -4,6 +4,21 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [3.1.8] - 2026-11-16
+
+- When a dirty file is the in-repository target of a tracked resolver-configuration symlink such as `tsconfig.json`, `ontoindex analyze --workspace-graph` and automatic workspace reads plan the link as a configuration change and rebuild the workspace graph. Before, editing only the target left the committed base in use ("Committed base is current"), so imports still resolved through the old aliases. A deleted target also marks its link as changed.
+- `impact` batch lists targets marked `partial: true` or `traversalComplete: false` in `union.incompleteTargets` and reports `union.risk: UNKNOWN` when any target failed or is incomplete. Incomplete targets still contribute the nodes they found. A target counts as failed when its result has an error or reports `risk: UNKNOWN` with no impacted nodes. That now covers ambiguous and source-only matches, symbols-only overlays without graph impact and a failed first traversal, which 3.1.7 treated as complete, so the batch could report `NONE` or `LOW`.
+- Index CSV writing keeps valid supplementary characters such as emoji and removes only unpaired surrogate halves. Before, every surrogate code unit was removed, so `😀` disappeared from stored content and search.
+- The CSV file-content cache keeps at most one file larger than 4 MiB at a time. Symbol snippets still read the full file, including lines past the stored File content limit.
+- After a native CSV write fails (`ONTOINDEX_NATIVE_CSV=1`), the writer rejects later rows and `finish()` calls with the same error, so a retry cannot append duplicate rows.
+- Overlay validation reads each dirty path without following symlinks and checks that it is a regular file. A dirty path replaced by a symlink makes the overlay unusable with `cannot read <path>`, and the link target is never read.
+- Workspace capture passes through errors that are not capture refusals, such as a `git` timeout or a permission error, so `ontoindex analyze --workspace-graph` exits 1 for them and `ontoindex watch` retries them. In 3.1.7 they were reported as refusals with exit 3, so watch stopped retrying until the inputs changed.
+- The CLI waits for asynchronous command actions. A rejected action prints its error message to stderr and exits 1. Tool telemetry writes completion records synchronously, so a `query`, `context` or `impact` call that fails late is still recorded unless the telemetry file itself cannot be written.
+- Correction to 3.1.7: resolver-configuration symlinks with targets inside the repository are followed by design. The 3.1.7 entry about workspace graph inputs applies to inputs that become symlinks after they were recorded.
+- Correction to 3.1.7: the File content limit applies to stored File content and full-text search. Symbol snippets still include text past the limit.
+- Correction to 3.1.6 and 3.1.7: the CLI telemetry start record is written before argument validation, but Commander rejects a missing required argument before the action runs, so that case is not recorded.
+- Note on version history: this changelog has no entries for the releases between 2.5.5 and 3.1.3.
+
 ## [3.1.7] - 2026-11-15
 
 - `inspect context` reads method metadata from `Method` columns by label, and `graph_walk` resolves its seed by id and name only. Before, both read whole nodes, so large file content exhausted the default 64 MiB committed read pool and `inspect context` reported `method-metadata-query-failed` in `contextCompleteness`.

@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
-vi.mock('../../src/mcp/local/backend-impact.js', () => ({
+vi.mock('../../src/mcp/local/backend-impact.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/mcp/local/backend-impact.js')>()),
   runImpact: vi.fn(),
 }));
 
@@ -33,6 +34,137 @@ describe('impact_batch', () => {
   beforeEach(() => {
     impactMock.mockReset();
   });
+
+  const target = {
+    id: 'Function:src/auth.ts:login',
+    name: 'login',
+    type: 'Function',
+    filePath: 'src/auth.ts',
+  };
+  const traversalFailure = {
+    target,
+    direction: 'upstream',
+    impactedCount: 0,
+    risk: 'UNKNOWN',
+    partial: true,
+    warnings: ['Impact traversal failed at depth 1: DB unavailable'],
+    summary: { direct: 0, processes_affected: 0, modules_affected: 0 },
+    affected_processes: [],
+    affected_modules: [],
+    byDepth: {},
+  };
+
+  it.each([
+    ['first traversal failure', traversalFailure],
+    [
+      'ambiguous match',
+      {
+        status: 'ambiguous',
+        message:
+          "Found 2 symbols matching 'login'. Use target_uid, file_path, or kind to disambiguate.",
+        target: { name: 'login' },
+        direction: 'upstream',
+        impactedCount: 0,
+        risk: 'UNKNOWN',
+        resolutionReason: 'ambiguous',
+        candidates: [],
+      },
+    ],
+    [
+      'overlay unavailable',
+      {
+        target: { ...target, startLine: 1, endLine: 2, source: 'overlay' },
+        direction: 'upstream',
+        source: 'overlay',
+        risk: 'UNKNOWN',
+        graphImpactAvailable: false,
+        impactedCount: 0,
+        impacted: [],
+        byDepth: {},
+        message:
+          'Graph impact is unavailable for uncommitted symbols: the overlay contains symbols only. Empty results do not mean zero callers or zero impact.',
+      },
+    ],
+    [
+      'source-only match',
+      {
+        target,
+        direction: 'upstream',
+        impactedCount: 0,
+        risk: 'UNKNOWN',
+        resolutionStatus: 'source-only',
+        graphImpactAvailable: false,
+        resolutionReason: 'untracked-file-not-indexed',
+        sourceIdentity: {
+          nodeId: target.id,
+          name: target.name,
+          kind: target.type,
+          filePath: target.filePath,
+          sourceDigest: 'abc',
+        },
+        suggestion:
+          'Current source proves symbol identity, but graph impact is unavailable. Re-analyze this repository before treating impact as authoritative.',
+      },
+    ],
+  ])('classifies %s as failed even without an error property', async (_label, failure) => {
+    impactMock.mockResolvedValue(failure);
+    const result = await runImpactBatch(makeRepo(), { targets: ['login'] });
+    expect(result.status).toBe('error');
+    expect(result.union).toEqual({
+      totalAffectedNodes: 0,
+      totalRelationships: 0,
+      maxDepth: 0,
+      risk: 'UNKNOWN',
+      failedTargets: ['login'],
+      sharedNodes: 0,
+    });
+    expect(result.perSymbol[0].result).toBe(failure);
+  });
+
+  it.each([{ partial: true }, { traversalComplete: false }])(
+    'preserves usable nodes and reports incomplete targets for %j',
+    async (flags) => {
+      const partial = {
+        ...traversalFailure,
+        ...flags,
+        partial: 'partial' in flags ? true : undefined,
+        risk: 'LOW',
+        impactedCount: 1,
+        summary: { direct: 1, processes_affected: 0, modules_affected: 0 },
+        byDepth: {
+          1: [
+            {
+              id: 'caller',
+              name: 'caller',
+              type: 'Function',
+              filePath: 'src/caller.ts',
+              depth: 1,
+              relationType: 'CALLS',
+              confidence: 1,
+            },
+          ],
+        },
+      };
+      impactMock.mockResolvedValueOnce(traversalFailure).mockResolvedValueOnce(partial);
+      const result = await runImpactBatch(makeRepo(), { targets: ['failed', 'partial'] });
+      expect(result.status).toBe('success');
+      expect(result.union).toEqual({
+        totalAffectedNodes: 1,
+        totalRelationships: 1,
+        maxDepth: 1,
+        risk: 'UNKNOWN',
+        failedTargets: ['failed'],
+        incompleteTargets: ['partial'],
+        sharedNodes: 0,
+      });
+      impactMock.mockResolvedValue(partial);
+      const onlyPartial = await runImpactBatch(makeRepo(), { targets: ['partial'] });
+      expect(onlyPartial.status).toBe('success');
+      expect(onlyPartial.union.risk).toBe('UNKNOWN');
+      expect(onlyPartial.union.incompleteTargets).toEqual(['partial']);
+      expect(onlyPartial.union.failedTargets).toBeUndefined();
+    },
+  );
 
   it('returns error when targets is missing or empty', async () => {
     const repo = makeRepo();

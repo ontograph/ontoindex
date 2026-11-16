@@ -6,6 +6,7 @@ import { execFileSync } from 'node:child_process';
 import lbug from '@ladybugdb/core';
 import { expect, it, vi } from 'vitest';
 import { runFullAnalysis } from '../../src/core/run-analyze.js';
+import { planDirtyOverlay } from '../../src/core/analyze-delta.js';
 import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
 import { closeLbug, initLbug, loadGraphToLbug } from '../../src/core/lbug/lbug-adapter.js';
 import * as repoManager from '../../src/storage/repo-manager.js';
@@ -301,6 +302,91 @@ it('publishes a partial captured workspace graph with parse-error paths without 
     );
     git('update-index', '--no-assume-unchanged', 'src/caller.ts');
   } finally {
+    vi.unstubAllEnvs();
+    await closeLbug();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+}, 120_000);
+
+it('rebuilds the workspace graph when only a committed resolver-config symlink target changes', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ontoindex-workspace-config-target-'));
+  const repo = path.join(root, 'repo');
+  const home = path.join(root, 'home');
+  const git = (...args: string[]) =>
+    execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' });
+  const config = (target: string) =>
+    JSON.stringify({ compilerOptions: { baseUrl: '.', paths: { '@lib/*': [`src/${target}/*`] } } });
+  try {
+    vi.stubEnv('ONTOINDEX_HOME', home);
+    vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
+    await fs.mkdir(home);
+    await fs.writeFile(path.join(home, 'registry.json'), '[]\n');
+    await fs.mkdir(path.join(repo, 'configs'), { recursive: true });
+    for (const target of ['a', 'b']) {
+      await fs.mkdir(path.join(repo, 'src', target), { recursive: true });
+      await fs.writeFile(
+        path.join(repo, 'src', target, 'util.ts'),
+        `export function util() { return '${target}'; }\n`,
+      );
+    }
+    await fs.writeFile(path.join(repo, '.gitignore'), '.ontoindex/\n');
+    await fs.writeFile(path.join(repo, '.gitignore'), '.ontoindex/\n.claude/\n');
+    await fs.writeFile(path.join(repo, 'configs/aliases.json'), config('a'));
+    await fs.symlink('configs/aliases.json', path.join(repo, 'tsconfig.json'));
+    await fs.writeFile(
+      path.join(repo, 'src/main.ts'),
+      "import { util } from '@lib/util';\nexport function main() { return util(); }\n",
+    );
+    git('init', '-q');
+    git('add', '.');
+    git(
+      '-c',
+      'user.name=Fixture',
+      '-c',
+      'user.email=fixture@example.invalid',
+      'commit',
+      '-qm',
+      'baseline',
+    );
+    const dependencies = {
+      analyzeRuntime: {
+        analyzeRepo: vi.fn(({ repoPath, onProgress, options }) =>
+          runPipelineFromRepo(repoPath, onProgress, { ...options, skipWorkers: true }),
+        ),
+      },
+    };
+    await runFullAnalysis(
+      repo,
+      { skipNativeClose: true, skipAgentsMd: true, noStats: true, embeddings: false },
+      { onProgress: () => {} },
+      dependencies,
+    );
+    await closeLbug();
+    const { storagePath } = repoManager.getStoragePaths(repo);
+    const baseline = await readGraph(repoManager.getStoragePaths(repo).lbugPath);
+    expect(baseline.edges).toContain(
+      JSON.stringify(['File:src/main.ts', 'File:src/a/util.ts', 'IMPORTS']),
+    );
+    expect(git('status', '--porcelain')).toBe('');
+    await fs.writeFile(path.join(repo, 'configs/aliases.json'), config('b'));
+    expect(git('status', '--porcelain').trim()).toBe('M configs/aliases.json');
+    expect((await planDirtyOverlay(repo)).configPaths).toEqual(['tsconfig.json']);
+    await runFullAnalysis(
+      repo,
+      { workspaceGraph: true, skipNativeClose: true },
+      { onProgress: () => {} },
+      dependencies,
+    );
+    const overlayRepo = { id: 'config-target-test', repoPath: repo, storagePath };
+    expect(await getOverlaySnapshot(overlayRepo)).toMatchObject({ usable: true, reason: null });
+    expect(
+      await queryOverlay(
+        overlayRepo,
+        "MATCH (a:File)-[r:CodeRelation]->(b:File) WHERE a.filePath = 'src/main.ts' AND r.type = 'IMPORTS' RETURN b.filePath AS target",
+      ),
+    ).toEqual([{ target: 'src/b/util.ts' }]);
+  } finally {
+    resetOverlaySnapshotCache();
     vi.unstubAllEnvs();
     await closeLbug();
     await fs.rm(root, { recursive: true, force: true });

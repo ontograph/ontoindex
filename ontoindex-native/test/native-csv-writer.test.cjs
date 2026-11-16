@@ -67,6 +67,52 @@ async function main() {
   assert.equal(limited.rows, 5);
   assert.equal(fs.readFileSync(limitedPath, 'utf8'), 'value\nab\ncd\ne\noversized\nz\n');
 
+  const failingPath = path.join(dir, 'failing.csv');
+  const failing = createCsvRowWriter(failingPath, 'value');
+  failing.addRow('written');
+  await failing.finish();
+  failing.addRow('pending');
+  const failure = new Error('native append failed');
+  const appendCsvLines = native.appendCsvLines;
+  let attempts = 0;
+  native.appendCsvLines = (...args) => {
+    attempts++;
+    // Model a partial write before the error, so retrying would duplicate data.
+    appendCsvLines(...args);
+    if (attempts === 1) throw failure;
+  };
+  try {
+    await assert.rejects(failing.finish(), (error) => error === failure);
+    assert.deepEqual(failing._rows, []);
+    assert.equal(failing._chars, 0);
+    await assert.rejects(failing.finish(), (error) => error === failure);
+    assert.throws(
+      () => failing.addRow('later'),
+      (error) => error === failure,
+    );
+    assert.equal(attempts, 1);
+    assert.equal(fs.readFileSync(failingPath, 'utf8'), 'value\nwritten\npending\n');
+  } finally {
+    native.appendCsvLines = appendCsvLines;
+  }
+
+  const headerOnlyPath = path.join(dir, 'header-only.csv');
+  const headerOnly = createCsvRowWriter(headerOnlyPath, 'value');
+  const headerFailure = new Error('native header write failed');
+  const writeCsvLines = native.writeCsvLines;
+  let headerAttempts = 0;
+  native.writeCsvLines = () => {
+    headerAttempts++;
+    throw headerFailure;
+  };
+  try {
+    await assert.rejects(headerOnly.finish(), (error) => error === headerFailure);
+    await assert.rejects(headerOnly.finish(), (error) => error === headerFailure);
+    assert.equal(headerAttempts, 1);
+  } finally {
+    native.writeCsvLines = writeCsvLines;
+  }
+
   const written = native.writeCsvRecords(
     recordsPath,
     ['id', 'name', 'content'],
