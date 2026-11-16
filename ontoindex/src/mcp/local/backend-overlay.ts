@@ -33,7 +33,8 @@ import {
   readActiveGenerationMeta,
 } from '../../storage/repo-manager.js';
 
-async function readRegularFileDigest(filename: string): Promise<string | null> {
+async function readRegularFileDigest(root: string, rel: string): Promise<string | null> {
+  const filename = path.join(root, rel);
   const beforeOpen = await fs.lstat(filename);
   let handle;
   try {
@@ -48,6 +49,8 @@ async function readRegularFileDigest(filename: string): Promise<string | null> {
   try {
     const stat = await handle.stat();
     if (!stat.isFile() || stat.dev !== beforeOpen.dev || stat.ino !== beforeOpen.ino) return null;
+    const parent = path.dirname(filename);
+    if ((await fs.realpath(parent)) !== parent) return null;
     return createHash('sha256')
       .update(await handle.readFile())
       .digest('hex');
@@ -630,6 +633,7 @@ async function computeSnapshot(
     }
     validatedConfiguration = identity;
   }
+  let canonicalRepoPath: string | undefined;
   if (workspaceGraph) {
     const inventory = (
       recordedBase as { inventory?: Record<string, [number, number | null, number | null, string]> }
@@ -638,7 +642,8 @@ async function computeSnapshot(
       return { ...base, usable: false, reason: 'workspace graph has no input inventory; rebuild' };
     }
     try {
-      const canonicalRepoPath = await fs.realpath(repo.repoPath);
+      canonicalRepoPath ??= await fs.realpath(repo.repoPath);
+      const root = canonicalRepoPath;
       let unreadable = false;
       const scanned = await walkRepositoryPaths(repo.repoPath, undefined, {
         onUnreadableFile: () => {
@@ -694,7 +699,10 @@ async function computeSnapshot(
               reason: `workspace graph input is not a regular file: ${rel}; rebuild`,
             };
             if (!filename) return notRegular;
-            const digest = await readRegularFileDigest(filename);
+            const digest = await readRegularFileDigest(
+              root,
+              isResolverConfigPath(rel) ? path.relative(root, filename) : rel,
+            );
             if (digest === null) return notRegular;
             return {
               rel,
@@ -723,7 +731,8 @@ async function computeSnapshot(
   }
   for (const rel of overlayPaths) {
     try {
-      const digest = await readRegularFileDigest(path.join(repo.repoPath, rel));
+      canonicalRepoPath ??= await fs.realpath(repo.repoPath);
+      const digest = await readRegularFileDigest(canonicalRepoPath, rel);
       if (digest === null) return { ...base, usable: false, reason: `cannot read ${rel}` };
       validatedInputs.set(rel, digest);
       if (inputs?.[rel] !== digest) {

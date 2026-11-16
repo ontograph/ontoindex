@@ -506,7 +506,7 @@ describe.each(readers)('$reader static nonregular input', ({ reader, relativePat
         const writes = vi.spyOn(fs, 'writeFile');
 
         await expect(readInputs(root, reader)).rejects.toMatchObject({
-          code: reader === 'capture' && kind === 'socket' ? 'ENXIO' : 'unsupported',
+          code: 'unsupported',
         });
 
         const expectedHandles = reader === 'capture' && kind === 'fifo' ? 1 : 0;

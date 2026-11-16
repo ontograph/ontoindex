@@ -3,6 +3,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const poolMocks = vi.hoisted(() => ({
   executeParameterized: vi.fn(),
   isLbugReady: vi.fn(),
+  searchFTSFromLbug: vi.fn(),
+}));
+
+vi.mock('../../src/core/search/bm25-index.js', () => ({
+  searchFTSFromLbug: poolMocks.searchFTSFromLbug,
 }));
 
 vi.mock('../../src/core/lbug/pool-adapter.js', async (importOriginal) => {
@@ -15,13 +20,46 @@ vi.mock('../../src/core/lbug/pool-adapter.js', async (importOriginal) => {
   };
 });
 
-import { queryCypher, validateMcpCypherLimit } from '../../src/mcp/local/backend-query.js';
+import {
+  bm25Search,
+  queryCypher,
+  validateMcpCypherLimit,
+} from '../../src/mcp/local/backend-query.js';
 
 describe('MCP Cypher query limits', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     poolMocks.isLbugReady.mockReturnValue(true);
     poolMocks.executeParameterized.mockResolvedValue([{ ok: true }]);
+  });
+
+  it.each([
+    {
+      row: {
+        id: 'Function:src/top.ts:top',
+        name: 'top',
+        type: 'Function',
+        filePath: 'src/top.ts',
+        startLine: 0,
+        endLine: 0,
+      },
+    },
+    { row: ['Function:src/top.ts:top', 'top', 'Function', 'src/top.ts', 0, 0] },
+  ])('preserves zero-based lines in symbol lookup for row %#', async ({ row }) => {
+    poolMocks.searchFTSFromLbug.mockResolvedValue([{ filePath: 'src/top.ts', score: 1 }]);
+    poolMocks.executeParameterized.mockResolvedValue([row]);
+    const result = await bm25Search({ id: 'repo' }, 'top', 5);
+    expect(result.results).toEqual([
+      {
+        nodeId: 'Function:src/top.ts:top',
+        name: 'top',
+        type: 'Function',
+        filePath: 'src/top.ts',
+        startLine: 0,
+        endLine: 0,
+        bm25Score: 1,
+      },
+    ]);
   });
 
   it('rejects raw Cypher without LIMIT before executing it', async () => {

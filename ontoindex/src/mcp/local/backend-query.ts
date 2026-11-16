@@ -68,11 +68,6 @@ const rowKeyValue = (row: QueryRow, key: string): unknown =>
 const rowIndexValue = (row: QueryRow, index: number): unknown =>
   Array.isArray(row) ? row[index] : undefined;
 
-const rowValueOr = (row: QueryRow, key: string, index: number): unknown => {
-  const keyed = isRecord(row) ? row[key] : undefined;
-  return keyed || rowIndexValue(row, index);
-};
-
 const rowValueNullish = (row: QueryRow, key: string, index: number): unknown => {
   const keyed = isRecord(row) ? row[key] : undefined;
   return keyed ?? rowIndexValue(row, index);
@@ -91,12 +86,12 @@ const errorMessage = (err: unknown, fallback: string): string => {
 };
 
 const toSymbolLookupRow = (row: QueryRow): SymbolLookupRow => ({
-  id: rowValueOr(row, 'id', 0),
-  name: rowValueOr(row, 'name', 1),
-  type: rowValueOr(row, 'type', 2),
-  filePath: rowValueOr(row, 'filePath', 3),
-  startLine: rowValueOr(row, 'startLine', 4),
-  endLine: rowValueOr(row, 'endLine', 5),
+  id: rowValueNullish(row, 'id', 0),
+  name: rowValueNullish(row, 'name', 1),
+  type: rowValueNullish(row, 'type', 2),
+  filePath: rowValueNullish(row, 'filePath', 3),
+  startLine: rowValueNullish(row, 'startLine', 4),
+  endLine: rowValueNullish(row, 'endLine', 5),
 });
 
 const toEmbeddingSearchRow = (row: QueryRow): EmbeddingSearchRow => ({

@@ -24,6 +24,7 @@ const { execFileText: realExecFileText } = await vi.importActual<typeof gitProce
 
 import {
   captureWorkspaceInputs,
+  WorkspaceInputCaptureError,
   workspaceConfigurationIdentity,
   type WorkspaceInputCapture,
 } from '../../src/core/analyze-delta.js';
@@ -98,6 +99,29 @@ afterEach(async () => {
 });
 
 describe('workspace input capture', () => {
+  it.each(['ELOOP', 'ENXIO', 'EISDIR', 'ENOTDIR', 'ENAMETOOLONG'])(
+    'refuses an injected %s with exit code 3',
+    async (code) => {
+      const root = await makeRepo();
+      const failure = Object.assign(new Error('input cannot be read'), { code });
+      const error = await capture(root, {
+        hooks: {
+          beforeRead: () => {
+            throw failure;
+          },
+        },
+      }).catch((error: unknown) => error);
+      expect(error).toBeInstanceOf(WorkspaceInputCaptureError);
+      expect(error).toMatchObject({
+        code: 'unsupported',
+        message: 'Workspace capture cannot read input: input cannot be read',
+      });
+      expect((error as WorkspaceInputCaptureError).refusal).toBeUndefined();
+      expect(workspaceBuildExitCode(error)).toBe(3);
+      expect(await pendingCaptures(root)).toEqual([]);
+    },
+  );
+
   it('propagates a transient git timeout unchanged with retryable exit code 1', async () => {
     const root = await makeRepo(true);
     const failure = Object.assign(new Error('git ls-tree timed out'), {
@@ -154,6 +178,19 @@ describe('workspace input capture', () => {
         expect(result.manifest.workspaceCapture!.entries.map((entry) => entry.path)).not.toContain(
           'tsconfig.json',
         );
+      });
+
+      it('refuses a looping config link with its path, kind and exit code 3', async () => {
+        const root = await makeRepo();
+        await fs.symlink('tsconfig.json', path.join(root, 'tsconfig.json'));
+        const error = await capture(root, { includePaths }).catch((error: unknown) => error);
+        expect(error).toBeInstanceOf(WorkspaceInputCaptureError);
+        expect(error).toMatchObject({
+          code: 'unsupported',
+          refusal: { path: 'tsconfig.json', kind: 'symlink' },
+        });
+        expect(workspaceBuildExitCode(error)).toBe(3);
+        expect(await pendingCaptures(root)).toEqual([]);
       });
 
       it('refuses an escaping config link with its relative path and kind', async () => {

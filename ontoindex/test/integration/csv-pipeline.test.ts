@@ -44,6 +44,30 @@ afterAll(async () => {
 });
 
 describe('streamAllCSVsToDisk', () => {
+  it.each([
+    ['ascii', 'a'.repeat(10_000)],
+    ['cjk', '漢'.repeat(10_000)],
+    ['emoji-cut', 'a'.repeat(999) + '😀'.repeat(5_000)],
+    ['emoji-overflow', 'a'.repeat(1000) + '😀'.repeat(5_000)],
+    ['bom', '\ufeff' + 'a'.repeat(10_000)],
+  ])('matches full-read truncation for a large %s file', async (name, content) => {
+    const filePath = `src/prefix-${name}.ts`;
+    await fs.writeFile(path.join(repoDir, filePath), content);
+    const graph = buildTestGraph([{ id: 'file:prefix', label: 'File', name, filePath }]);
+    vi.stubEnv('ONTOINDEX_MAX_FILE_CONTENT_CHARS', '1000');
+    try {
+      const result = await streamAllCSVsToDisk(graph, repoDir, csvDir);
+      const lastCode = content.charCodeAt(999);
+      const end = lastCode >= 0xd800 && lastCode <= 0xdbff ? 999 : 1000;
+      const expected = content.slice(0, end) + '\n... [File content truncated]';
+      await expect(fs.readFile(result.nodeFiles.get('File')!.csvPath, 'utf-8')).resolves.toBe(
+        `id,name,filePath,content\n"file:prefix","${name}","${filePath}","${expected}"\n`,
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('preserves emoji in File content', async () => {
     const content = 'before😀after';
     await fs.writeFile(path.join(repoDir, 'src', 'emoji.ts'), content);
@@ -125,6 +149,12 @@ describe('streamAllCSVsToDisk', () => {
       {
         name: 'binary.ts',
         content: '\0'.repeat(80),
+        expected: '[Binary file - content not stored]',
+      },
+      {
+        // Over the prefix-read threshold: binary bytes after the cap must still be detected.
+        name: 'late-binary.ts',
+        content: 'p'.repeat(70) + '\0'.repeat(900) + 'x'.repeat(4000),
         expected: '[Binary file - content not stored]',
       },
     ];

@@ -225,6 +225,19 @@ describe('gnSafeEditCheck', () => {
     await expect(gnSafeEditCheck(REPO_ID, { symbol })).rejects.toBe(error);
   });
 
+  it.each([NODE_ID, 'parseToken'])(
+    'reports a failed lookup separately from absence for %s',
+    async (symbol) => {
+      mockExecuteParameterized.mockRejectedValue(new Error('lookup query unavailable'));
+      const report = await gnSafeEditCheck(REPO_ID, { symbol, legacyResponse: true });
+      expect(report.verdict).toBe('CAUTION');
+      expect(report.warnings).toContain('symbol lookup failed: lookup query unavailable');
+      expect(report.reasoning).toContain('Symbol lookup failed: lookup query unavailable');
+      expect(report.preChecks[0].detail).toContain('Symbol lookup failed');
+      expect(JSON.stringify(report)).not.toContain('not found in index');
+    },
+  );
+
   it.each([
     ['fetchProcessCount', "r.type = 'PARTICIPATES_IN'"],
     ['fetchClusterCount', "r.type = 'MEMBER_OF'"],

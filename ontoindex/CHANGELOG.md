@@ -4,6 +4,14 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+- When a dirty path is any link in the chain behind a tracked resolver-configuration symlink such as `tsconfig.json`, the planner marks the configuration as changed. This includes a target replaced by a symlink outside the repository, a symlink loop and a retargeted intermediate link. In 3.1.8 these cases printed "Committed base is current" and kept the old aliases.
+- Workspace capture reports `ELOOP`, `ENXIO`, `EISDIR`, `ENOTDIR` and `ENAMETOOLONG` as refusals, so `ontoindex analyze --workspace-graph` exits 3 and `ontoindex watch` waits for the inputs to change. Git timeouts, lock conflicts and permission errors still exit 1 and are retried.
+- Overlay validation rejects a dirty or recorded path whose parent directory resolves outside its expected location, such as a directory replaced by a symlink. Before, only the final path component was checked.
+- `impact` marks a result partial when class or interface seed expansion fails, so single and batch impact report the target as incomplete with `UNKNOWN` batch risk. A database resource error during seed expansion is reported as an error.
+- `audit safe_edit_check` reports `symbol lookup failed: <message>` when the symbol lookup query fails, instead of "symbol not found in index". Symbols that start on line 0 keep their `startLine`.
+- The CSV file-content cache keeps at most 64 Mi UTF-16 characters of ordinary files. When a File content limit is set, OntoIndex reads only as much of a much larger file as the stored prefix needs.
+- Correction to 3.1.7: the File content limit truncates stored File content and the File full-text index. Function, Class, Method and Interface snippets are taken from the full source file and indexed separately, so text past the File limit can still be found when it falls inside a snippet. Snippets have their own length limit.
+
 ## [3.1.8] - 2026-11-16
 
 - When a dirty file is the in-repository target of a tracked resolver-configuration symlink such as `tsconfig.json`, `ontoindex analyze --workspace-graph` and automatic workspace reads plan the link as a configuration change and rebuild the workspace graph. Before, editing only the target left the committed base in use ("Committed base is current"), so imports still resolved through the old aliases. A deleted target also marks its link as changed.

@@ -454,18 +454,36 @@ async function dirtyConfigurationSymlinks(
     if (!CAPTURE_CONFIGURATION.test(name) || ['.gitignore', '.ontoindexignore'].includes(name))
       continue;
     root ??= await fs.realpath(repoPath);
+    const visited = new Set<string>();
+    let current = path.join(root, linkPath);
     try {
-      const target =
-        (await captureReadPath(root, linkPath, true)) ??
-        path.resolve(
-          path.dirname(path.join(root, linkPath)),
-          await fs.readlink(path.join(root, linkPath)),
-        );
-      if (targets.has(path.relative(root, target).split(path.sep).join('/')))
-        matches.push(linkPath);
+      for (let hops = 0; hops <= 40; hops += 1) {
+        const relative = path.relative(root, current);
+        if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative))
+          break;
+        const filePath = relative.split(path.sep).join('/');
+        if (visited.has(filePath)) break;
+        visited.add(filePath);
+        if (hops === 40 || !(await fs.lstat(current)).isSymbolicLink()) break;
+        current = path.resolve(path.dirname(current), await fs.readlink(current));
+      }
     } catch {
-      // Unsafe or unreadable configuration links cannot match a captured input.
+      // A missing or unreadable hop ends the chain; links already visited still count.
     }
+    // The final target may also be reached through a symlinked directory.
+    const resolved = await fs.realpath(path.join(root, linkPath)).catch(() => null);
+    if (resolved) {
+      const relative = path.relative(root, resolved);
+      if (
+        relative &&
+        relative !== '..' &&
+        !relative.startsWith(`..${path.sep}`) &&
+        !path.isAbsolute(relative)
+      )
+        visited.add(relative.split(path.sep).join('/'));
+    }
+    if ([...visited].some((filePath) => filePath !== linkPath && targets.has(filePath)))
+      matches.push(linkPath);
   }
   return matches;
 }
@@ -692,6 +710,13 @@ export async function captureReadPath(
       target = await fs.realpath(filename);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      if ((error as NodeJS.ErrnoException).code === 'ELOOP') {
+        throw new WorkspaceInputCaptureError(
+          'unsupported',
+          `Workspace capture cannot read input: ${(error as Error).message}`,
+          { path: relativePath, kind: 'symlink' },
+        );
+      }
       throw error;
     }
     const targetRelative = path.relative(root, target);
@@ -1323,6 +1348,12 @@ export async function captureWorkspaceInputs(
       check();
       const code = (error as NodeJS.ErrnoException).code;
       if (attempt < 2 && (code === 'ENOENT' || code === 'changed-input')) continue;
+      if (code && ['ELOOP', 'ENXIO', 'EISDIR', 'ENOTDIR', 'ENAMETOOLONG'].includes(code)) {
+        throw new WorkspaceInputCaptureError(
+          'unsupported',
+          `Workspace capture cannot read input: ${(error as Error).message}`,
+        );
+      }
       throw error;
     }
   }

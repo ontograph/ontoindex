@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { runImpactKernel } from '../../src/core/impact/impact-kernel.js';
-import { runImpactBFS } from '../../src/mcp/local/backend-impact.js';
+import { impactResultCompleteness, runImpactBFS } from '../../src/mcp/local/backend-impact.js';
 import * as poolAdapter from '../../src/core/lbug/pool-adapter.js';
 
 vi.mock('../../src/core/lbug/pool-adapter.js', () => ({
@@ -33,6 +33,58 @@ describe('impact kernel traversal', () => {
     vi.resetAllMocks();
     executeParameterized.mockResolvedValue([]);
   });
+
+  it.each(['Constructor', 'File'])('marks a rejected %s seed query partial', async (seedType) => {
+    executeParameterized.mockImplementation(async (_repoId, query) => {
+      if (query.includes(`:${seedType})`)) throw new Error('seed query unavailable');
+      return [];
+    });
+    const symbol = { id: 'Class:src/target.ts:Target', name: 'Target', filePath: 'src/target.ts' };
+    const kernel = await runImpactKernel(
+      repo,
+      { ...symbol, type: 'Class' },
+      {
+        ...traversalOptions,
+        classSeedExpansion: true,
+      },
+    );
+    expect(kernel.partial).toBe(true);
+    expect(kernel.traversalFailed).toBe(false);
+    expect(kernel.warnings).toContain('class seed expansion failed: seed query unavailable');
+
+    const impact = await runImpactBFS(
+      repo as Parameters<typeof runImpactBFS>[0],
+      symbol,
+      'Class',
+      'upstream',
+      { maxDepth: 1, relationTypes: ['CALLS'], includeTests: false, minConfidence: 0 },
+    );
+    expect(impact.partial).toBe(true);
+    expect(impactResultCompleteness(impact)).toBe('partial');
+  });
+
+  it.each(['Constructor', 'File'])(
+    'rethrows resource errors from the %s seed query',
+    async (seedType) => {
+      const error = new Error(
+        'Buffer manager exception: buffer pool is full and no memory could be freed',
+      );
+      executeParameterized.mockImplementation(async (_repoId, query) => {
+        if (query.includes(`:${seedType})`)) throw error;
+        return [];
+      });
+      await expect(
+        runImpactKernel(
+          repo,
+          { id: 'Class:src/target.ts:Target', type: 'Class' },
+          {
+            ...traversalOptions,
+            classSeedExpansion: true,
+          },
+        ),
+      ).rejects.toBe(error);
+    },
+  );
 
   it.each(['Function:src/delete.ts:remove', "Function:src/file's.ts:lookup"])(
     'binds keyword-like or quoted frontier id %s outside query text and traverses it',

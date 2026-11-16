@@ -6,6 +6,8 @@ import { execFileSync } from 'node:child_process';
 import lbug from '@ladybugdb/core';
 import { expect, it, vi } from 'vitest';
 import { runFullAnalysis } from '../../src/core/run-analyze.js';
+import { prepareWorkspaceGraphCommand } from '../../src/cli/analyze.js';
+import * as workspaceRuntime from '../../src/mcp/local/local-backend-repo-runtime.js';
 import { planDirtyOverlay } from '../../src/core/analyze-delta.js';
 import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
 import { closeLbug, initLbug, loadGraphToLbug } from '../../src/core/lbug/lbug-adapter.js';
@@ -385,6 +387,31 @@ it('rebuilds the workspace graph when only a committed resolver-config symlink t
         "MATCH (a:File)-[r:CodeRelation]->(b:File) WHERE a.filePath = 'src/main.ts' AND r.type = 'IMPORTS' RETURN b.filePath AS target",
       ),
     ).toEqual([{ target: 'src/b/util.ts' }]);
+    // Retain the committed base but remove the previous overlay before the unsafe edit.
+    resetOverlaySnapshotCache();
+    await fs.rm(path.join(storagePath, 'overlay'), { recursive: true, force: true });
+    const external = path.join(root, 'external.json');
+    await fs.writeFile(external, config('a'));
+    await fs.unlink(path.join(repo, 'configs/aliases.json'));
+    await fs.symlink(external, path.join(repo, 'configs/aliases.json'));
+    expect(git('status', '--porcelain').trim()).toBe('T configs/aliases.json');
+    const build = vi.spyOn(workspaceRuntime, 'buildWorkspaceGraph').mockImplementation(async () => {
+      await runFullAnalysis(
+        repo,
+        { workspaceGraph: true, skipNativeClose: true },
+        { onProgress: () => {} },
+        dependencies,
+      );
+    });
+    try {
+      await expect(prepareWorkspaceGraphCommand(repo)).rejects.toMatchObject({
+        name: 'WorkspaceInputCaptureError',
+        code: 'unsupported',
+      });
+      expect(build).toHaveBeenCalledOnce();
+    } finally {
+      build.mockRestore();
+    }
   } finally {
     resetOverlaySnapshotCache();
     vi.unstubAllEnvs();

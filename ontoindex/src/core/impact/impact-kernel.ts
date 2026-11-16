@@ -1,4 +1,5 @@
 import { executeParameterized } from '../lbug/pool-adapter.js';
+import { classifyLbugOpenError } from '../lbug/open-error.js';
 import { classifyGraphFactProvenance, type GraphFactProvenance } from '../graph/fact-provenance.js';
 
 export type ImpactKernelDirection = 'upstream' | 'downstream';
@@ -248,7 +249,7 @@ async function expandClassSeeds(
   signal?: AbortSignal,
   query: NonNullable<RunImpactKernelOptions['query']> = (cypher, params) =>
     executeParameterized(repo.id, cypher, params),
-): Promise<{ seedIds: string[]; warnings: string[] }> {
+): Promise<{ seedIds: string[]; warnings: string[]; failed?: true }> {
   const seedIds = [symId];
   const warnings: string[] = [];
   if (symType !== 'Class' && symType !== 'Interface') return { seedIds, warnings };
@@ -282,9 +283,11 @@ async function expandClassSeeds(
     }
   } catch (err) {
     if (isImpactAbortError(err)) throw err;
+    if (classifyLbugOpenError(err) === 'resource') throw err;
     warnings.push(
       `class seed expansion failed: ${err instanceof Error ? err.message : String(err)}`,
     );
+    return { seedIds, warnings, failed: true };
   }
 
   return { seedIds, warnings };
@@ -315,6 +318,9 @@ export async function runImpactKernel(
       ? { seedIds: [symId], warnings: [] }
       : await expandClassSeeds(repo, symId, symType, opts.signal, opts.query);
   warnings.push(...expansion.warnings);
+  if (expansion.failed) {
+    traversalComplete = false;
+  }
 
   const visited = new Set<string>(expansion.seedIds);
   let frontier = [...expansion.seedIds];
