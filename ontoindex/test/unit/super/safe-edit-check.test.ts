@@ -182,6 +182,116 @@ function setupMocks({
 // ---------------------------------------------------------------------------
 
 describe('gnSafeEditCheck', () => {
+  it('caps dependent symbols and heuristic tests, preserving the target and a test reading', async () => {
+    setupMocks({
+      upstreamRows: upstreamImpactRows(11).map((node) => ({ ...node, filePath: 'src/shared.ts' })),
+      testCoverage: {
+        coveringTests: Array.from({ length: 7 }, (_, i) => `test/${6 - i}.test.ts`),
+        likelihoodOfCoverage: 'HIGH',
+      },
+    });
+    const legacy = await gnSafeEditCheck(REPO_ID, { symbol: NODE_ID });
+    const compact = await gnSafeEditCheck(REPO_ID, { symbol: NODE_ID, minimal: true });
+    expect(compact.verdict).toBe(legacy.verdict);
+    expect(compact.reasoning).toBe(legacy.reasoning);
+    expect(compact.warnings).toEqual(legacy.warnings);
+    expect(compact.directDependents).toHaveLength(10);
+    expect(compact.directDependents[0]).toMatchObject({
+      relationType: 'CALLS',
+      confidence: 0.95,
+      provenance: expect.any(String),
+    });
+    expect(compact.dependentScope).toMatchObject({
+      observedCount: 11,
+      relationTypes: ['CALLS', 'REFERENCES'],
+      includeTests: false,
+    });
+    expect(compact.omittedCounts.directDependents).toEqual({ known: 1, upstreamUnknown: false });
+    expect(compact.omittedCounts.candidateTests).toEqual({ known: 2, upstreamUnknown: true });
+    expect(compact.candidateTests).toEqual([
+      'test/0.test.ts',
+      'test/1.test.ts',
+      'test/2.test.ts',
+      'test/3.test.ts',
+      'test/4.test.ts',
+    ]);
+    expect(compact.readFirstFiles).toHaveLength(5);
+    expect(compact.readFirstFiles[0].filePath).toBe('src/auth/token.ts');
+    expect(compact.readFirstFiles[1].source).toBe('test');
+    expect(compact.readFirstFiles.some((file) => file.source === 'caller')).toBe(true);
+    const envelope = await gnSafeEditCheck(REPO_ID, {
+      symbol: NODE_ID,
+      minimal: true,
+      legacyResponse: false,
+    });
+    expect(envelope.limits).toMatchObject({
+      truncated: true,
+      omittedCounts: compact.omittedCounts,
+    });
+    expect(envelope.warnings).toEqual(expect.arrayContaining(compact.warnings));
+    expect(envelope.results.directDependents).toEqual(compact.directDependents);
+  });
+
+  it('preserves defaults and labels name selection and unavailable freshness', async () => {
+    setupMocks();
+    mockResolveTargetContext.mockResolvedValue(null);
+    const implicit = await gnSafeEditCheck(REPO_ID, { symbol: 'parseToken' });
+    const explicit = await gnSafeEditCheck(REPO_ID, { symbol: 'parseToken', minimal: false });
+    const { basedOnReads: implicitReads, ...implicitReport } = implicit;
+    const { basedOnReads: explicitReads, ...explicitReport } = explicit;
+    expect(explicitReport).toEqual(implicitReport);
+    expect(explicitReads).toBeDefined();
+    expect(implicitReads).toBeDefined();
+    expect(explicit).toHaveProperty('blastRadius');
+    const compact = await gnSafeEditCheck(REPO_ID, { symbol: 'parseToken', minimal: true });
+    expect(compact.targetSelection).toMatchObject({
+      mode: 'name-based',
+      recommendation: expect.stringContaining('canonical UID'),
+    });
+    expect(compact.freshness).toEqual({
+      authoritative: false,
+      reason: 'target context unavailable',
+    });
+    expect(compact).not.toHaveProperty('blastRadius');
+  });
+
+  it.each([true, false])(
+    'preserves unresolved caution and failed prechecks (legacy=%s)',
+    async (legacyResponse) => {
+      setupMocks({ resolveRows: [] });
+      const result = await gnSafeEditCheck(REPO_ID, {
+        symbol: 'missing',
+        minimal: true,
+        legacyResponse,
+      });
+      const compact = ('results' in result ? result.results : result) as any;
+      expect(compact.verdict).toBe('CAUTION');
+      expect(compact.preChecks).toEqual([
+        expect.objectContaining({ check: 'symbol_in_index', passed: false }),
+      ]);
+      expect(compact.dependentScope.observedCount).toBeNull();
+      expect(compact.omittedCounts.directDependents).toEqual({ known: 0, upstreamUnknown: true });
+    },
+  );
+
+  it('marks failed upstream evidence and empty test discovery as unknown', async () => {
+    setupMocks({ testCoverage: { coveringTests: [], likelihoodOfCoverage: 'NONE' } });
+    const original =
+      mockExecuteParameterized.getMockImplementation()! as typeof executeParameterized;
+    mockExecuteParameterized.mockImplementation(
+      async (...args: Parameters<typeof executeParameterized>) => {
+        if (args[1].includes('MATCH (caller)-[r:CodeRelation]->(n)'))
+          throw new Error('probe unavailable');
+        return original(...args);
+      },
+    );
+    const compact = await gnSafeEditCheck(REPO_ID, { symbol: NODE_ID, minimal: true });
+    expect(compact.verdict).toBe('CAUTION');
+    expect(compact.omittedCounts.directDependents.upstreamUnknown).toBe(true);
+    expect(compact.testEvidence).toMatchObject({ exhaustive: false, executionCoverage: 'unknown' });
+    expect(compact.warnings.join(' ')).toContain('probe unavailable');
+  });
+
   beforeEach(() => {
     vi.resetAllMocks();
     // Default env state: ONTOINDEX_LSP_REFERENCES should not be set before each test.

@@ -577,6 +577,8 @@ describe('safe edit check facade mapping', () => {
     {},
     { intent: 'modify-body', force: false, docsEvidence: false },
     { intent: 'delete', force: true, docsEvidence: true },
+    { minimal: true, legacyResponse: false },
+    { minimal: false },
   ])('forwards options unchanged without injecting defaults: %j', async (options) => {
     const report = { verdict: 'CAUTION', warnings: ['preserved warning'] };
     dispatchSuperMock.mockReset().mockResolvedValue(report);

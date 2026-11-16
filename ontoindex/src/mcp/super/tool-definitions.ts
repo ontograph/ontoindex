@@ -238,6 +238,11 @@ export const ONTOINDEX_SUPER_TOOLS: ToolDefinition[] = [
             'Bypass BLOCKED verdict guards. Use only when you have confirmed the risk manually. Default: false.',
           default: false,
         },
+        minimal: {
+          type: 'boolean',
+          description:
+            'Return a bounded pre-edit answer with target, verdict, freshness, warnings, direct dependents, heuristic candidate tests, reading files, and explicit omissions. Default: false.',
+        },
         docsEvidence: {
           type: 'boolean',
           description:

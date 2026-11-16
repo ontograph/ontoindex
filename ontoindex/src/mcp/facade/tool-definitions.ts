@@ -872,7 +872,8 @@ export const ONTOINDEX_FACADE_TOOLS: ToolDefinition[] = [
         },
         minimal: {
           type: 'boolean',
-          description: 'For lint: return only the core result summary and next action.',
+          description:
+            'For lint: return only the core result summary and next action. For safe_edit_check: return a bounded pre-edit answer with target, verdict, freshness, warnings, direct dependents, heuristic candidate tests, reading files, and explicit omissions.',
         },
         maxIssues: {
           type: 'number',
