@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { getLanguageFromFilename } from 'ontoindex-shared';
 import { executeParameterized } from '../../core/lbug/pool-adapter.js';
+import { queryRowValue as rowValueNullish } from '../../core/lbug/query-row.js';
 import { classifyLbugOpenError } from '../../core/lbug/open-error.js';
 import { createKnowledgeGraph } from '../../core/graph/graph.js';
 import { createASTCache } from '../../core/ingestion/ast-cache.js';
@@ -203,22 +204,8 @@ function logQueryError(context: string, err: unknown): void {
   console.error(`OntoIndex [${context}]: ${msg}`);
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function rowValueOr(row: QueryRow, key: string, index: number): unknown {
-  const keyed = isRecord(row) ? row[key] : undefined;
-  return keyed || (Array.isArray(row) ? row[index] : undefined);
-}
-
-function rowValueNullish(row: QueryRow, key: string, index: number): unknown {
-  const keyed = isRecord(row) ? row[key] : undefined;
-  return keyed ?? (Array.isArray(row) ? row[index] : undefined);
-}
-
 function rowStringOr(row: QueryRow, key: string, index: number, fallback = ''): string {
-  const value = rowValueOr(row, key, index);
+  const value = rowValueNullish(row, key, index);
   return value === null || value === undefined ? fallback : String(value);
 }
 
@@ -671,14 +658,14 @@ export async function runImpactBFS(
     opts.query ??
     ((cypher: string, params: Record<string, unknown>) =>
       executeParameterized(repo.id, cypher, params));
-  const symId = String(rowValueOr(sym, 'id', 0) || '');
+  const symId = String(rowValueNullish(sym, 'id', 0) || '');
   const kernel = await runImpactKernel(
     repo,
     {
       id: symId,
-      name: rowValueOr(sym, 'name', 1),
+      name: rowValueNullish(sym, 'name', 1),
       type: symType,
-      filePath: rowValueOr(sym, 'filePath', 2),
+      filePath: rowValueNullish(sym, 'filePath', 2),
     },
     {
       direction,
@@ -695,6 +682,17 @@ export async function runImpactBFS(
   const grouped = kernel.byDepth;
   const warnings = [...kernel.warnings];
   let partial = kernel.partial;
+  let enrichmentFailed = false;
+  const enrichmentFailure = (context: string, error: unknown): void => {
+    throwIfAborted(opts.signal);
+    if (classifyLbugOpenError(error) === 'resource') throw error;
+    logQueryError(context, error);
+    partial = true;
+    enrichmentFailed = true;
+    warnings.push(
+      `${context} query failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  };
   const directCount = (grouped[1] || []).length;
   let affectedProcesses: AffectedProcess[] = [];
   let affectedModules: AffectedModule[] = [];
@@ -733,33 +731,48 @@ export async function runImpactBFS(
           MATCH (s)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
           WHERE s.id IN $ids
           WITH p, COUNT(DISTINCT s.id) AS hits, MIN(r.step) AS minStep
-          OPTIONAL MATCH (ep {id: p.entryPointId})
           RETURN p.id AS pId, p.heuristicLabel AS name, p.processType AS processType,
-                 p.entryPointId AS entryPointId, hits, minStep, p.stepCount AS stepCount,
-                 ep.name AS epName, label(ep) AS epType, ep.filePath AS epFilePath
+                 p.entryPointId AS entryPointId, hits, minStep, p.stepCount AS stepCount
         `,
           { ids },
-        ).catch(() => [])) as ProcessImpactRow[];
+        )) as ProcessImpactRow[];
+        // Look entry points up separately. Joining them per process row with an unlabeled
+        // `(ep {id: p.entryPointId})` exhausts the default 64 MiB committed read buffer.
+        const entryPointIds = [
+          ...new Set(
+            rows.map((row) => rowValueNullish(row, 'entryPointId', 3)).filter((id) => id != null),
+          ),
+        ];
+        const entryPoints = new Map<unknown, QueryRow>();
+        if (entryPointIds.length > 0) {
+          const epRows = (await query(
+            `MATCH (ep) WHERE ep.id IN $entryPointIds
+             RETURN ep.id AS id, ep.name AS name, label(ep) AS type, ep.filePath AS filePath`,
+            { entryPointIds },
+          )) as QueryRow[];
+          for (const epRow of epRows) entryPoints.set(rowValueNullish(epRow, 'id', 0), epRow);
+        }
 
         for (const row of rows) {
           const pId = rowValueNullish(row, 'pId', 0);
           const epId = rowValueNullish(row, 'entryPointId', 3) ?? rowValueNullish(row, 'pId', 0);
           if (pId) processToEntryPoint.set(String(pId), String(epId));
+          const epRow = entryPoints.get(rowValueNullish(row, 'entryPointId', 3)) ?? {};
 
           const epNameRaw =
-            rowValueNullish(row, 'epName', 7) ?? rowValueNullish(row, 'name', 1) ?? 'unknown';
+            rowValueNullish(epRow, 'name', 1) ?? rowValueNullish(row, 'name', 1) ?? 'unknown';
           const epName =
             typeof epNameRaw === 'string' && epNameRaw.trim().length > 0
               ? epNameRaw.trim()
               : 'unknown';
 
-          const epTypeRaw = rowValueNullish(row, 'epType', 8) ?? '';
+          const epTypeRaw = rowValueNullish(epRow, 'type', 2) ?? '';
           const epType =
             typeof epTypeRaw === 'string' && epTypeRaw.trim().length > 0
               ? epTypeRaw.trim()
               : 'Function';
 
-          const epFilePathRaw = rowValueNullish(row, 'epFilePath', 9) ?? '';
+          const epFilePathRaw = rowValueNullish(epRow, 'filePath', 3) ?? '';
           const epFilePath =
             typeof epFilePathRaw === 'string' ? epFilePathRaw : String(epFilePathRaw);
           const hitsRaw = rowValueNullish(row, 'hits', 4) ?? 0;
@@ -785,7 +798,7 @@ export async function runImpactBFS(
           ep.earliest_broken_step = Math.min(ep.earliest_broken_step, numberOrInfinity(minStep));
         }
       } catch (e) {
-        logQueryError('impact:process-chunk', e);
+        enrichmentFailure('impact:process-chunk', e);
       }
     }
 
@@ -800,7 +813,7 @@ export async function runImpactBFS(
           RETURN p.id AS pid, MIN(r.step) AS minStep
         `,
           { pIds, ids: allImpactedIds },
-        ).catch(() => [])) as ProcessMinStepRow[];
+        )) as ProcessMinStepRow[];
 
         for (const mr of missingRows) {
           const pid = rowValueNullish(mr, 'pid', 0);
@@ -812,7 +825,7 @@ export async function runImpactBFS(
           ep.earliest_broken_step = Math.min(ep.earliest_broken_step, numberOrInfinity(minStep));
         }
       } catch (e) {
-        logQueryError('impact:process-chunk-backfill', e);
+        enrichmentFailure('impact:process-chunk-backfill', e);
       }
     }
 
@@ -848,18 +861,18 @@ export async function runImpactBFS(
           LIMIT 20
         `,
           { ids: idsChunk },
-        ).catch(() => [])) as ModuleImpactRow[];
+        )) as ModuleImpactRow[];
 
         for (const r of rows) {
           const name = rowValueNullish(r, 'name', 0) ?? null;
-          const hitsRaw = rowValueOr(r, 'hits', 1) || 0;
+          const hitsRaw = rowValueNullish(r, 'hits', 1) || 0;
           const hits = typeof hitsRaw === 'number' ? hitsRaw : Number(hitsRaw) || 0;
           if (!name) continue;
           const moduleName = String(name);
           moduleHitsMap.set(moduleName, (moduleHitsMap.get(moduleName) || 0) + hits);
         }
       } catch (e) {
-        logQueryError('impact:module-chunk', e);
+        enrichmentFailure('impact:module-chunk', e);
       }
     };
 
@@ -878,13 +891,13 @@ export async function runImpactBFS(
           RETURN DISTINCT c.heuristicLabel AS name
         `,
           { ids: idsChunk },
-        ).catch(() => [])) as ModuleImpactRow[];
+        )) as ModuleImpactRow[];
         for (const r of rows) {
           const name = rowValueNullish(r, 'name', 0) ?? null;
           if (name) directModuleSet.add(String(name));
         }
       } catch (e) {
-        logQueryError('impact:direct-module-chunk', e);
+        enrichmentFailure('impact:direct-module-chunk', e);
       }
     };
 
@@ -915,7 +928,7 @@ export async function runImpactBFS(
   const processCount = affectedProcesses.length;
   const moduleCount = affectedModules.length;
   let risk: ImpactSuccessResult['risk'] = 'LOW';
-  if (kernel.traversalFailed) {
+  if (kernel.traversalFailed || enrichmentFailed) {
     risk = 'UNKNOWN';
   } else if (directCount >= 30 || processCount >= 5 || moduleCount >= 5 || impacted.length >= 200) {
     risk = 'CRITICAL';
@@ -928,9 +941,9 @@ export async function runImpactBFS(
   return {
     target: {
       id: symId,
-      name: rowValueOr(sym, 'name', 1),
+      name: rowValueNullish(sym, 'name', 1),
       type: symType,
-      filePath: rowValueOr(sym, 'filePath', 2),
+      filePath: rowValueNullish(sym, 'filePath', 2),
     },
     direction,
     impactedCount: impacted.length,

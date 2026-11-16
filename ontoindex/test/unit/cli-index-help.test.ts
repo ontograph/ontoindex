@@ -420,6 +420,8 @@ describe('CLI help surface', () => {
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('requires an explicit single repository');
     expect(result.stderr).not.toContain('No indexed repositories found');
+    expect(result.stderr).not.toContain('UnhandledPromiseRejection');
+    expect(result.stderr).not.toMatch(/^\s+at /m);
   });
 
   it('detect-changes help exposes compare scope and base-ref flags', () => {

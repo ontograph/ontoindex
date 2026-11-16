@@ -1,3 +1,4 @@
+import { queryRowValue as rowValue } from '../../core/lbug/query-row.js';
 import type {
   QueryFreshnessStatus,
   QueryCapabilityHealth,
@@ -393,13 +394,6 @@ function toBackendSearchInput(params: BackendSearchParams): BackendSearchInput {
     return { mode: 'typed', document: params.typedQuery };
   }
   return { mode: 'plain', query: params.query };
-}
-
-function rowValue(row: LookupRow, key: string, index: number): unknown {
-  if (Array.isArray(row)) {
-    return row[index];
-  }
-  return row[key] ?? row[index];
 }
 
 function toEnrichedSymbolRow(row: LookupRow): EnrichedSymbolRow {

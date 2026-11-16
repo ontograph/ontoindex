@@ -100,7 +100,7 @@ describe('backend-overlay snapshot', () => {
       configurationDigest: 'config',
       parserIdentity: 'parser',
     });
-    repo = fs.mkdtempSync(path.join(os.tmpdir(), 'ovl-'));
+    repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ovl-')));
     storage = path.join(repo, '.ontoindex');
     git(repo, 'init', '-q');
     git(repo, 'config', 'user.name', 't');
@@ -692,6 +692,25 @@ describe('backend-overlay snapshot', () => {
       expect(readFile.mock.calls.some(([file]) => [filename, target].includes(String(file)))).toBe(
         false,
       );
+    } finally {
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a dirty path whose parent is swapped to an outside symlink', async () => {
+    const contents = 'export const a = 2;\n';
+    fs.writeFileSync(path.join(repo, 'src/a.ts'), contents);
+    publishFixture();
+    vi.mocked(planDirtyOverlay).mockResolvedValueOnce(await planDirtyOverlay(repo));
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'overlay-outside-'));
+    try {
+      fs.writeFileSync(path.join(outside, 'a.ts'), contents);
+      fs.renameSync(path.join(repo, 'src'), path.join(repo, 'original-src'));
+      fs.symlinkSync(outside, path.join(repo, 'src'));
+      expect(await getOverlaySnapshot(handle())).toMatchObject({
+        usable: false,
+        reason: 'cannot read src/a.ts',
+      });
     } finally {
       fs.rmSync(outside, { recursive: true, force: true });
     }

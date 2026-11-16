@@ -70,12 +70,6 @@ interface ToolMapResult {
   modelPacks: EntryPointModelPackSummary[];
 }
 
-type QueryRow = Record<string, unknown>;
-
-function rowValue<T>(row: QueryRow, key: string, index: number): T | undefined {
-  return row[key] as T | undefined;
-}
-
 async function getEntryPointModelPackSummary(
   repo: RepoHandle,
   provides: string[],

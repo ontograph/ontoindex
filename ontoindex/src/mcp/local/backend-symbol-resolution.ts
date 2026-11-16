@@ -1,3 +1,4 @@
+import { queryRowValue as rowValue } from '../../core/lbug/query-row.js';
 import { executeParameterized } from '../../core/lbug/pool-adapter.js';
 import { CONTENT_NODE_TABLES } from '../../core/lbug/schema.js';
 import {
@@ -73,12 +74,6 @@ type SymbolResolutionOutcome =
   | { kind: 'not_found'; warning?: string };
 
 type QueryRow = Record<string, unknown> | readonly unknown[];
-
-function rowValue(row: QueryRow, key: string, index: number): unknown {
-  const keyedValue = (row as Record<string, unknown>)[key];
-  if (keyedValue != null) return keyedValue;
-  return Array.isArray(row) ? row[index] : row[String(index)];
-}
 
 /** Read content by table and primary key without scanning unrelated content columns. */
 export async function readNodeContent(

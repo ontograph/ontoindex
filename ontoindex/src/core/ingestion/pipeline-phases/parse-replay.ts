@@ -14,7 +14,7 @@ import { buildHeritageMap } from '../model/heritage-map.js';
 import { createResolutionContext } from '../model/resolution-context.js';
 import { restoreSemanticModelRegistrations } from '../model/semantic-model.js';
 import type { runChunkedParseAndResolve } from './parse-impl.js';
-import { getScanMaxFileSizeBytes, type ScannedFile } from '../filesystem-walker.js';
+import type { ScannedFile } from '../filesystem-walker.js';
 import { loadImportConfigs } from '../language-config.js';
 import { workspaceParserIdentity } from '../../tree-sitter/parser-identity.js';
 import type {
@@ -169,9 +169,8 @@ export async function admitScopeRetentionParseReplay(
     check();
     if (!beforeIdentity || beforeIdentity !== evidence.parserCodeIdentity)
       fail('parser identity mismatch');
-    // Replay stays bounded even when discovery's configurable size cap is disabled.
+    // Bound the total bytes admitted for replay.
     const totalByteLimit = 64 * 1024 * 1024;
-    const maxBytes = Math.min(getScanMaxFileSizeBytes() ?? totalByteLimit, totalByteLimit);
     let totalBytes = 0;
     for (const source of evidence.sources) {
       check();
@@ -196,7 +195,6 @@ export async function admitScopeRetentionParseReplay(
           !before.isFile() ||
           !Number.isSafeInteger(before.size) ||
           before.size < 0 ||
-          before.size > maxBytes ||
           before.size > totalByteLimit - totalBytes
         ) {
           fail('invalid source or byte limit');

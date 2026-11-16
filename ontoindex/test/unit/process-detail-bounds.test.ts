@@ -53,7 +53,7 @@ describe('process detail bounds', () => {
     ]);
   });
 
-  it('maps cluster rows using object fields or tuple indexes with || fallback', async () => {
+  it('maps cluster rows using object fields or tuple indexes with nullish fallback', async () => {
     lbugMocks.executeQuery.mockResolvedValueOnce([
       {
         id: '',
@@ -64,7 +64,7 @@ describe('process detail bounds', () => {
         2: 'Auth from index',
         cohesion: 0,
         3: 0.6,
-        symbolCount: 0,
+        symbolCount: null,
         4: 6,
       },
       ['payments-id', 'Payments', undefined, 0.25, 7],
@@ -83,17 +83,17 @@ describe('process detail bounds', () => {
         subCommunities: 1,
       },
       {
-        id: 'cluster-from-index',
-        label: 'Auth from index',
-        heuristicLabel: 'Auth from index',
+        id: '',
+        label: 'Unknown',
+        heuristicLabel: 'Unknown',
         symbolCount: 6,
-        cohesion: 0.6,
+        cohesion: 0,
         subCommunities: 1,
       },
     ]);
   });
 
-  it('maps process rows using object fields or tuple indexes with || fallback', async () => {
+  it('maps process rows using object fields or tuple indexes with nullish fallback', async () => {
     lbugMocks.executeQuery.mockResolvedValueOnce([
       {
         id: '',
@@ -115,11 +115,11 @@ describe('process detail bounds', () => {
 
     expect(result.processes).toEqual([
       {
-        id: 'process-from-index',
-        label: 'Process from index',
-        heuristicLabel: 'Heuristic from index',
-        processType: 'workflow',
-        stepCount: 12,
+        id: '',
+        label: '',
+        heuristicLabel: '',
+        processType: '',
+        stepCount: 0,
       },
       {
         id: 'tuple-process',
@@ -210,14 +210,14 @@ describe('process detail bounds', () => {
     });
   });
 
-  it('shapes cluster detail members from object fallback, tuple rows, and weighted aggregate metadata', async () => {
+  it('shapes cluster detail members with nullish fallback, tuple rows, and weighted aggregate metadata', async () => {
     lbugMocks.executeParameterized
       .mockResolvedValueOnce([
         { id: 'c-small', label: 'Auth A', heuristicLabel: 'Auth', cohesion: 0.5, symbolCount: 4 },
         { id: 'c-large', label: 'Auth B', heuristicLabel: 'Auth', cohesion: 1, symbolCount: 6 },
       ])
       .mockResolvedValueOnce([
-        { name: '', 0: 'login', type: '', 1: 'Function', filePath: '', 2: 'src/auth.ts' },
+        { name: null, 0: 'login', type: '', 1: 'Function', filePath: '', 2: 'src/auth.ts' },
         ['logout', 'Function', 'src/logout.ts'],
       ]);
 
@@ -234,16 +234,16 @@ describe('process detail bounds', () => {
       subCommunities: 2,
     });
     expect(result.members).toEqual([
-      { name: 'login', type: 'Function', filePath: 'src/auth.ts' },
+      { name: 'login', type: '', filePath: '' },
       { name: 'logout', type: 'Function', filePath: 'src/logout.ts' },
     ]);
   });
 
-  it('shapes process detail steps using object fields or tuple indexes with || fallback', async () => {
+  it('shapes process detail steps using object fields or tuple indexes with nullish fallback', async () => {
     lbugMocks.executeParameterized
       .mockResolvedValueOnce([
         {
-          id: '',
+          id: null,
           0: 'process-from-index',
           label: '',
           1: 'Process from index',
@@ -259,7 +259,7 @@ describe('process detail bounds', () => {
         {
           name: '',
           0: 'step-from-index',
-          type: '',
+          type: false,
           1: 'Function',
           filePath: '',
           2: 'src/step.ts',
@@ -278,14 +278,14 @@ describe('process detail bounds', () => {
     });
     expect(result.process).toEqual({
       id: 'process-from-index',
-      label: 'Process from index',
-      heuristicLabel: 'Heuristic from index',
-      processType: 'workflow',
-      stepCount: 2,
+      label: '',
+      heuristicLabel: '',
+      processType: '',
+      stepCount: 0,
       truncated: false,
     });
     expect(result.steps).toEqual([
-      { name: 'step-from-index', type: 'Function', filePath: 'src/step.ts', step: 4 },
+      { name: '', type: false, filePath: '', step: 0 },
       { name: 'tuple-step', type: 'Class', filePath: 'src/tuple.ts', step: 5 },
     ]);
   });

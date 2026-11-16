@@ -8,9 +8,6 @@ import {
   getLanguageFromShebang,
   type SupportedLanguages,
 } from 'ontoindex-shared';
-import { getScanMaxFileSizeBytes } from './scan-config.js';
-
-export { getScanMaxFileSizeBytes };
 
 export interface FileEntry {
   path: string;
@@ -31,7 +28,6 @@ export interface ScannedFile {
 }
 
 export interface WalkRepositoryOptions {
-  onSkippedLargeFile?: (file: ScannedFile) => void;
   onUnreadableFile?: (file: ScannedFile, error: unknown) => void;
   includePaths?: string[];
   /** Exact root-level regular files allowed past built-in file ignores. User ignores still apply. */

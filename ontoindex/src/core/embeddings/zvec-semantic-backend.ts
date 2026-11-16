@@ -4,6 +4,7 @@ import { createRequire } from 'node:module';
 
 import { EMBEDDING_TABLE_NAME } from '../lbug/schema.js';
 import { executeQuery } from '../lbug/pool-adapter.js';
+import { queryRowValue as rowValueNullish } from '../lbug/query-row.js';
 import { getStoragePath, loadMeta } from '../../storage/repo-manager.js';
 import {
   computeZvecEmbeddingRowsDigest,
@@ -72,14 +73,6 @@ const zvecRuntimeCache = new Map<string, Promise<ZvecSemanticSearchDriver | null
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
-
-const rowIndexValue = (row: QueryRow, index: number): unknown =>
-  Array.isArray(row) ? row[index] : undefined;
-
-const rowValueNullish = (row: QueryRow, key: string, index: number): unknown => {
-  const keyed = isRecord(row) ? row[key] : undefined;
-  return keyed ?? rowIndexValue(row, index);
-};
 
 const errorMessage = (error: unknown): string => {
   if (error instanceof Error) return error.message || error.name;

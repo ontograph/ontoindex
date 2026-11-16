@@ -12,7 +12,6 @@
 
 import type { PipelinePhase, PipelineContext } from './types.js';
 import { walkRepositoryPaths } from '../filesystem-walker.js';
-import v8 from 'node:v8';
 
 export interface ScanOutput {
   scannedFiles: { path: string; size: number }[];
@@ -51,7 +50,6 @@ export const scanPhase: PipelinePhase<ScanOutput> = {
         });
       },
       {
-        onSkippedLargeFile: (file) => skippedLargeFiles.push(file),
         includePaths: ctx.options?.includePaths,
       },
     );
@@ -59,32 +57,9 @@ export const scanPhase: PipelinePhase<ScanOutput> = {
     const comparePaths = (a: { path: string }, b: { path: string }) =>
       a.path < b.path ? -1 : a.path > b.path ? 1 : 0;
     scannedFiles.sort(comparePaths);
-    skippedLargeFiles.sort(comparePaths);
 
     const totalFiles = scannedFiles.length;
     const allPaths = scannedFiles.map((f) => f.path);
-    if (skippedLargeFiles.length > 0 && ctx.options?.onTelemetry) {
-      const memory = process.memoryUsage();
-      const heap = v8.getHeapStatistics();
-      ctx.options.onTelemetry({
-        event: 'scan-degraded-files',
-        phaseName: 'scan',
-        elapsedMs: Date.now() - ctx.pipelineStart,
-        rssBytes: memory.rss,
-        heapUsedBytes: memory.heapUsed,
-        heapTotalBytes: memory.heapTotal,
-        heapLimitBytes: heap.heap_size_limit,
-        graphNodes: ctx.graph.nodeCount,
-        graphRelationships: ctx.graph.relationshipCount,
-        chunkFiles: skippedLargeFiles.length,
-        chunkBytes: skippedLargeFiles.reduce((sum, file) => sum + file.size, 0),
-        degradedReason: 'scan-file-size-cap',
-        degradedFiles: skippedLargeFiles.slice(0, 100).map((file) => ({
-          filePath: file.path,
-          reason: `file exceeds scan file-size cap (${file.size} bytes); set ONTOINDEX_SCAN_MAX_FILE_KB=0 to include`,
-        })),
-      });
-    }
 
     ctx.onProgress({
       phase: 'extracting',

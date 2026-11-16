@@ -9,7 +9,6 @@ import { execFileText } from './process/exec-file.js';
 import { createIgnoreFilter, loadIgnoreRules, shouldIgnorePath } from '../config/ignore-service.js';
 import { getCurrentCommit } from '../storage/git.js';
 import { getStoragePaths, loadMeta, readActiveGenerationMeta } from '../storage/repo-manager.js';
-import { getScanMaxFileSizeBytes } from './ingestion/scan-config.js';
 import { workspaceParserIdentity } from './tree-sitter/parser-identity.js';
 import { removeCaptureOwner, sweepDeadCaptures, writeCaptureOwner } from './capture-owner.js';
 import {
@@ -23,7 +22,6 @@ import {
 } from './indexing/source-manifest.js';
 
 const GIT_TIMEOUT_MS = 5_000;
-const OVERLAY_SIZE_STAT_CONCURRENCY = 16;
 
 const SOURCE_FILE_EXTENSIONS = new Set([
   '.ts',
@@ -373,17 +371,42 @@ function parseDirtyOverlayStatus(output: string): Array<{ status: string; paths:
   return entries;
 }
 
-// Git status deliberately omits these entries; conservatively treat present files as modified.
-async function hiddenIndexPaths(repoPath: string): Promise<string[]> {
-  const output = await execFileText('git', ['ls-files', '-v', '-z'], {
+interface TrackedIndexEntry {
+  path: string;
+  mode: string;
+  hidden: boolean;
+}
+
+async function readIndexEntries(repoPath: string): Promise<TrackedIndexEntry[]> {
+  const output = await execFileText('git', ['ls-files', '-s', '-v', '-z'], {
     cwd: repoPath,
     timeoutMs: GIT_TIMEOUT_MS,
     maxBuffer: null,
   });
-  const paths: string[] = [];
+  const entries: TrackedIndexEntry[] = [];
   for (const entry of output.split('\0')) {
-    if (!/^[a-zS] /.test(entry)) continue;
-    const filePath = entry.slice(2);
+    if (!entry) continue;
+    const separator = entry.indexOf('\t');
+    // Unmerged paths repeat once per conflict stage; keep the first entry only.
+    if (entries.at(-1)?.path === entry.slice(separator + 1)) continue;
+    entries.push({
+      path: entry.slice(separator + 1),
+      mode: entry.slice(2, 8),
+      hidden: /^[a-zS] /.test(entry),
+    });
+  }
+  return entries;
+}
+
+// Git status deliberately omits these entries; conservatively treat present files as modified.
+async function hiddenIndexPaths(
+  repoPath: string,
+  entries?: readonly TrackedIndexEntry[],
+): Promise<string[]> {
+  const paths: string[] = [];
+  for (const entry of entries ?? (await readIndexEntries(repoPath))) {
+    if (!entry.hidden) continue;
+    const filePath = entry.path;
     try {
       await fs.lstat(path.join(repoPath, filePath));
       paths.push(filePath);
@@ -433,6 +456,7 @@ export async function workingTreeMatchesHead(
 async function dirtyConfigurationSymlinks(
   repoPath: string,
   dirtyPaths: ReadonlySet<string>,
+  entries: readonly TrackedIndexEntry[],
 ): Promise<string[]> {
   const targets = new Set(
     [...dirtyPaths].filter(
@@ -440,39 +464,62 @@ async function dirtyConfigurationSymlinks(
     ),
   );
   if (targets.size === 0) return [];
-  const tracked = await execFileText('git', ['ls-files', '-s', '-z'], {
-    cwd: repoPath,
-    timeoutMs: GIT_TIMEOUT_MS,
-    maxBuffer: null,
-  });
   let root: string | undefined;
   const matches: string[] = [];
-  for (const entry of tracked.split('\0')) {
-    if (!entry.startsWith('120000 ')) continue;
-    const linkPath = entry.slice(entry.indexOf('\t') + 1);
+  for (const entry of entries) {
+    if (entry.mode !== '120000') continue;
+    const linkPath = entry.path;
     const name = path.posix.basename(linkPath);
     if (!CAPTURE_CONFIGURATION.test(name) || ['.gitignore', '.ontoindexignore'].includes(name))
       continue;
     root ??= await fs.realpath(repoPath);
+    const visited = new Set<string>();
+    const dependencies = new Set<string>();
+    const addDependencies = (filePath: string): void => {
+      for (
+        let current = filePath;
+        current && current !== '.';
+        current = path.posix.dirname(current)
+      ) {
+        dependencies.add(current);
+      }
+    };
+    let current = path.join(root, linkPath);
     try {
-      const target =
-        (await captureReadPath(root, linkPath, true)) ??
-        path.resolve(
-          path.dirname(path.join(root, linkPath)),
-          await fs.readlink(path.join(root, linkPath)),
-        );
-      if (targets.has(path.relative(root, target).split(path.sep).join('/')))
-        matches.push(linkPath);
+      for (let hops = 0; hops <= 40; hops += 1) {
+        const relative = path.relative(root, current);
+        if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative))
+          break;
+        const filePath = relative.split(path.sep).join('/');
+        if (visited.has(filePath)) break;
+        visited.add(filePath);
+        addDependencies(filePath);
+        if (hops === 40 || !(await fs.lstat(current)).isSymbolicLink()) break;
+        current = path.resolve(path.dirname(current), await fs.readlink(current));
+      }
     } catch {
-      // Unsafe or unreadable configuration links cannot match a captured input.
+      // A missing or unreadable hop ends the chain; links already visited still count.
     }
+    // The final target may also be reached through a symlinked directory.
+    const resolved = await fs.realpath(path.join(root, linkPath)).catch(() => null);
+    if (resolved) {
+      const relative = path.relative(root, resolved);
+      if (
+        relative &&
+        relative !== '..' &&
+        !relative.startsWith(`..${path.sep}`) &&
+        !path.isAbsolute(relative)
+      )
+        addDependencies(relative.split(path.sep).join('/'));
+    }
+    if ([...dependencies].some((filePath) => filePath !== linkPath && targets.has(filePath)))
+      matches.push(linkPath);
   }
   return matches;
 }
 
 export async function planDirtyOverlay(repoPath: string): Promise<DirtyOverlayPlan> {
   const includePaths = new Set<string>();
-  const sizeExcludedPaths = new Set<string>();
   const tombstones = new Set<string>();
   const skipped = new Set<string>();
   const ignoreRules = await loadIgnoreRules(repoPath);
@@ -517,48 +564,27 @@ export async function planDirtyOverlay(repoPath: string): Promise<DirtyOverlayPl
     }
   }
 
-  const dirtyPaths = new Set([...skipped, ...includePaths, ...tombstones]);
-  for (const linkPath of await dirtyConfigurationSymlinks(repoPath, dirtyPaths)) {
-    skipped.add(linkPath);
-  }
-
-  for (const filePath of await hiddenIndexPaths(repoPath)) {
+  const entries = await readIndexEntries(repoPath);
+  const hiddenPaths = await hiddenIndexPaths(repoPath, entries);
+  for (const filePath of hiddenPaths) {
     if (isSourceFilePath(filePath) && !isIgnored(filePath)) includePaths.add(filePath);
   }
 
-  const maxFileSizeBytes = getScanMaxFileSizeBytes();
-  if (maxFileSizeBytes !== null) {
-    const candidates = [...includePaths];
-    for (let offset = 0; offset < candidates.length; offset += OVERLAY_SIZE_STAT_CONCURRENCY) {
-      const batch = candidates.slice(offset, offset + OVERLAY_SIZE_STAT_CONCURRENCY);
-      await Promise.all(
-        batch.map(async (filePath) => {
-          try {
-            const stat = await fs.stat(path.join(repoPath, filePath));
-            if (stat.size > maxFileSizeBytes) {
-              includePaths.delete(filePath);
-              sizeExcludedPaths.add(filePath);
-              skipped.add(filePath);
-            }
-          } catch {
-            // A missing or unreadable path may still be an overlay candidate; retain it fail-open.
-          }
-        }),
-      );
-    }
+  const dirtyPaths = new Set([...skipped, ...includePaths, ...tombstones, ...hiddenPaths]);
+  for (const linkPath of await dirtyConfigurationSymlinks(repoPath, dirtyPaths, entries)) {
+    skipped.add(linkPath);
   }
 
-  const allDirtyPaths = [...new Set([...includePaths, ...sizeExcludedPaths, ...tombstones])].sort();
+  const allDirtyPaths = [...new Set([...includePaths, ...tombstones])].sort();
   const tooMany = false; // Retained output field for compatibility; there is no count cap.
   const plannedIncludePaths = [...includePaths].sort();
-  const uncoveredPaths = [...sizeExcludedPaths].sort();
   const configPaths = [...skipped]
     .filter((filePath) => CAPTURE_CONFIGURATION.test(path.posix.basename(filePath)))
     .filter((filePath) => !isIgnored(filePath))
     .sort();
   return {
     includePaths: plannedIncludePaths,
-    uncoveredPaths,
+    uncoveredPaths: [],
     allDirtyPaths,
     tombstones: [...tombstones].sort(),
     tooMany,
@@ -692,6 +718,13 @@ export async function captureReadPath(
       target = await fs.realpath(filename);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      if ((error as NodeJS.ErrnoException).code === 'ELOOP') {
+        throw new WorkspaceInputCaptureError(
+          'unsupported',
+          `Workspace capture cannot read input: ${(error as Error).message}`,
+          { path: relativePath, kind: 'symlink' },
+        );
+      }
       throw error;
     }
     const targetRelative = path.relative(root, target);
@@ -1322,7 +1355,15 @@ export async function captureWorkspaceInputs(
       await dispose();
       check();
       const code = (error as NodeJS.ErrnoException).code;
-      if (attempt < 2 && (code === 'ENOENT' || code === 'changed-input')) continue;
+      const unsupported =
+        code && ['ELOOP', 'ENXIO', 'EISDIR', 'ENOTDIR', 'ENAMETOOLONG'].includes(code);
+      if (attempt < 2 && (code === 'ENOENT' || code === 'changed-input' || unsupported)) continue;
+      if (unsupported) {
+        throw new WorkspaceInputCaptureError(
+          'unsupported',
+          `Workspace capture cannot read input: ${(error as Error).message}`,
+        );
+      }
       throw error;
     }
   }

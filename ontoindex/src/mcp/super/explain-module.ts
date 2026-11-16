@@ -1,3 +1,4 @@
+import { queryRowValue as rowValue } from '../../core/lbug/query-row.js';
 import { resolveRegistryEntry } from '../shared/target-context.js';
 import { sourceLine } from '../shared/response-source-lines.js';
 /**
@@ -145,10 +146,6 @@ function isQueryNode(value: unknown): value is QueryNode {
 
 function toQueryRow(row: unknown): QueryRow {
   return (isQueryNode(row) ? row : {}) as QueryRow;
-}
-
-function rowValue(row: QueryRow, key: string, tupleIndex: number): unknown {
-  return row[key] ?? row[tupleIndex];
 }
 
 function nodeFromRow(row: unknown, key: string): QueryNode {

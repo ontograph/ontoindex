@@ -506,7 +506,7 @@ describe.each(readers)('$reader static nonregular input', ({ reader, relativePat
         const writes = vi.spyOn(fs, 'writeFile');
 
         await expect(readInputs(root, reader)).rejects.toMatchObject({
-          code: reader === 'capture' && kind === 'socket' ? 'ENXIO' : 'unsupported',
+          code: 'unsupported',
         });
 
         const expectedHandles = reader === 'capture' && kind === 'fifo' ? 1 : 0;
@@ -519,7 +519,7 @@ describe.each(readers)('$reader static nonregular input', ({ reader, relativePat
         );
         expect(
           attempts.mock.calls.filter(([prefix]) => String(prefix).includes('/capture-')),
-        ).toHaveLength(reader === 'capture' ? 1 : 0);
+        ).toHaveLength(reader === 'capture' ? (kind === 'socket' ? 2 : 1) : 0);
         expect(
           writes.mock.calls.filter(
             ([file]) =>

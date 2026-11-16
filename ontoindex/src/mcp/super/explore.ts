@@ -7,6 +7,7 @@
  * Pure facade — no caching, no DB writes, no process-global side effects.
  */
 
+import { queryRowValue as rowValue } from '../../core/lbug/query-row.js';
 import { registryRepoIds, resolveRegistryEntry } from '../shared/target-context.js';
 import {
   classifyIntent,
@@ -151,11 +152,6 @@ interface ExploreQueryResult {
   process_symbols?: QuerySymbol[];
   definitions?: QuerySymbol[];
   retrieval_diagnostics?: RetrievalDiagnostics;
-}
-
-function rowValue(row: QueryRow, key: string, index: number): unknown {
-  const values = row as Record<string, unknown>;
-  return values[key] ?? values[index];
 }
 
 function rowString(row: QueryRow, key: string, index: number): string {

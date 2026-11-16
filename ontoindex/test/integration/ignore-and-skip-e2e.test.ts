@@ -117,29 +117,19 @@ describe('ignore + language-skip E2E', () => {
     it('includes large files despite the legacy discovery cap override', async () => {
       process.env.ONTOINDEX_SCAN_MAX_FILE_KB = '512';
       await fs.writeFile(path.join(tmpDir, 'src', 'huge.js'), 'x'.repeat(513 * 1024));
-      const skipped: { path: string; size: number }[] = [];
-
-      const files = await walkRepositoryPaths(tmpDir, undefined, {
-        onSkippedLargeFile: (file) => skipped.push(file),
-      });
+      const files = await walkRepositoryPaths(tmpDir);
       const paths = files.map((f) => f.path.replace(/\\/g, '/'));
 
       expect(paths).toContain('src/huge.js');
-      expect(skipped).toEqual([]);
     });
 
     it('includes large files with the legacy zero override', async () => {
       process.env.ONTOINDEX_SCAN_MAX_FILE_KB = '0';
       await fs.writeFile(path.join(tmpDir, 'src', 'huge.js'), 'x'.repeat(513 * 1024));
-      const skipped: { path: string; size: number }[] = [];
-
-      const files = await walkRepositoryPaths(tmpDir, undefined, {
-        onSkippedLargeFile: (file) => skipped.push(file),
-      });
+      const files = await walkRepositoryPaths(tmpDir);
       const paths = files.map((f) => f.path.replace(/\\/g, '/'));
 
       expect(paths).toContain('src/huge.js');
-      expect(skipped).toEqual([]);
     });
   });
 

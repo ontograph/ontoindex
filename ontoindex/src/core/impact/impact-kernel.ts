@@ -1,4 +1,6 @@
+import { queryRowValue as rowValueNullish } from '../lbug/query-row.js';
 import { executeParameterized } from '../lbug/pool-adapter.js';
+import { classifyLbugOpenError } from '../lbug/open-error.js';
 import { classifyGraphFactProvenance, type GraphFactProvenance } from '../graph/fact-provenance.js';
 
 export type ImpactKernelDirection = 'upstream' | 'downstream';
@@ -187,24 +189,8 @@ export function clampImpactDepth(value: unknown, fallback = 3): number {
   return Math.max(1, Math.min(Math.trunc(value), MAX_IMPACT_DEPTH));
 }
 
-function rowValueOr(row: QueryRow, key: string, index: number): unknown {
-  const keyed =
-    typeof row === 'object' && row !== null && !Array.isArray(row)
-      ? (row as Record<string, unknown>)[key]
-      : undefined;
-  return keyed || (Array.isArray(row) ? row[index] : undefined);
-}
-
-function rowValueNullish(row: QueryRow, key: string, index: number): unknown {
-  const keyed =
-    typeof row === 'object' && row !== null && !Array.isArray(row)
-      ? (row as Record<string, unknown>)[key]
-      : undefined;
-  return keyed ?? (Array.isArray(row) ? row[index] : undefined);
-}
-
 function rowStringOr(row: QueryRow, key: string, index: number, fallback = ''): string {
-  const value = rowValueOr(row, key, index);
+  const value = rowValueNullish(row, key, index);
   return value === null || value === undefined ? fallback : String(value);
 }
 
@@ -248,7 +234,7 @@ async function expandClassSeeds(
   signal?: AbortSignal,
   query: NonNullable<RunImpactKernelOptions['query']> = (cypher, params) =>
     executeParameterized(repo.id, cypher, params),
-): Promise<{ seedIds: string[]; warnings: string[] }> {
+): Promise<{ seedIds: string[]; warnings: string[]; failed?: true }> {
   const seedIds = [symId];
   const warnings: string[] = [];
   if (symType !== 'Class' && symType !== 'Interface') return { seedIds, warnings };
@@ -282,9 +268,11 @@ async function expandClassSeeds(
     }
   } catch (err) {
     if (isImpactAbortError(err)) throw err;
+    if (classifyLbugOpenError(err) === 'resource') throw err;
     warnings.push(
       `class seed expansion failed: ${err instanceof Error ? err.message : String(err)}`,
     );
+    return { seedIds, warnings, failed: true };
   }
 
   return { seedIds, warnings };
@@ -315,6 +303,10 @@ export async function runImpactKernel(
       ? { seedIds: [symId], warnings: [] }
       : await expandClassSeeds(repo, symId, symType, opts.signal, opts.query);
   warnings.push(...expansion.warnings);
+  if (expansion.failed) {
+    traversalComplete = false;
+    traversalFailed = true;
+  }
 
   const visited = new Set<string>(expansion.seedIds);
   let frontier = [...expansion.seedIds];
@@ -346,6 +338,7 @@ export async function runImpactKernel(
       })) as ImpactRelatedRow[];
     } catch (err) {
       if (isImpactAbortError(err)) throw err;
+      if (classifyLbugOpenError(err) === 'resource') throw err;
       traversalComplete = false;
       traversalFailed = true;
       warnings.push(`depth traversal failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -369,7 +362,7 @@ export async function runImpactKernel(
         if (!includeTests && isTestFilePath(filePath)) continue;
 
         const storedConfidence = rowValueNullish(rel, 'confidence', 6);
-        const relationTypeRaw = rowValueOr(rel, 'relType', 5);
+        const relationTypeRaw = rowValueNullish(rel, 'relType', 5);
         const relationType = typeof relationTypeRaw === 'string' ? relationTypeRaw : undefined;
         if (
           relationType === 'MENTIONS' &&
@@ -395,8 +388,8 @@ export async function runImpactKernel(
           impacted.push({
             depth,
             id: relId,
-            name: rowValueOr(rel, 'name', 2),
-            type: rowValueOr(rel, 'type', 3),
+            name: rowValueNullish(rel, 'name', 2),
+            type: rowValueNullish(rel, 'type', 3),
             filePath,
             relationType,
             confidence: effectiveConfidence,
@@ -410,6 +403,7 @@ export async function runImpactKernel(
       }
     } catch (err) {
       if (isImpactAbortError(err)) throw err;
+      if (classifyLbugOpenError(err) === 'resource') throw err;
       traversalComplete = false;
       traversalFailed = true;
       warnings.push(`depth traversal failed: ${err instanceof Error ? err.message : String(err)}`);

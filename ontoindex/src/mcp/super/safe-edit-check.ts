@@ -251,7 +251,10 @@ function definitionRank(row: QueryRow): number {
 // single MCP request cannot fan out all graph probes at once.
 // ---------------------------------------------------------------------------
 
-async function resolveSymbol(repoId: string, symbol: string): Promise<ResolvedSymbol | null> {
+async function resolveSymbol(
+  repoId: string,
+  symbol: string,
+): Promise<ResolvedSymbol | { lookupError: string } | null> {
   if (CANONICAL_NODE_ID_RE.test(symbol)) {
     try {
       const rows = (await executeParameterized(
@@ -271,7 +274,7 @@ async function resolveSymbol(repoId: string, symbol: string): Promise<ResolvedSy
       };
     } catch (err) {
       if (classifyLbugOpenError(err) === 'resource') throw err;
-      return null;
+      return { lookupError: err instanceof Error ? err.message : String(err) };
     }
   }
 
@@ -311,7 +314,7 @@ async function resolveSymbol(repoId: string, symbol: string): Promise<ResolvedSy
     };
   } catch (err) {
     if (classifyLbugOpenError(err) === 'resource') throw err;
-    return null;
+    return { lookupError: err instanceof Error ? err.message : String(err) };
   }
 }
 
@@ -356,6 +359,7 @@ async function fetchUpstream(repoId: string, symbol: ResolvedSymbol): Promise<Up
       warnings: result.warnings,
     };
   } catch (err) {
+    if (classifyLbugOpenError(err) === 'resource') throw err;
     return {
       count: 0,
       files: [],
@@ -392,6 +396,7 @@ async function fetchDownstream(repoId: string, symbol: ResolvedSymbol): Promise<
       warnings: result.warnings,
     };
   } catch (err) {
+    if (classifyLbugOpenError(err) === 'resource') throw err;
     return {
       count: 0,
       warnings: [
@@ -819,7 +824,9 @@ export async function gnSafeEditCheck(
   }
 
   // --- 1. Resolve symbol ------------------------------------------------
-  const resolved = await resolveSymbol(repoId, params.symbol);
+  const resolution = await resolveSymbol(repoId, params.symbol);
+  const lookupError = resolution && 'lookupError' in resolution ? resolution.lookupError : null;
+  const resolved = resolution && !('lookupError' in resolution) ? resolution : null;
 
   if (resolved?.nodeId) {
     recordEvidenceReadSafe({
@@ -833,7 +840,9 @@ export async function gnSafeEditCheck(
   }
 
   if (!resolved || !resolved.nodeId) {
-    warnings.push('symbol not found in index');
+    warnings.push(
+      lookupError !== null ? `symbol lookup failed: ${lookupError}` : 'symbol not found in index',
+    );
     const report: EditCheckReport = {
       version: 1,
       symbol: { nodeId: '', name: params.symbol, filePath: '', kind: '' },
@@ -843,7 +852,9 @@ export async function gnSafeEditCheck(
       // and impact's UNKNOWN handling for the same condition.
       verdict: 'CAUTION',
       reasoning:
-        'Symbol not found in index — no graph risk assessed. Absence of graph evidence is not evidence of edit safety; the index may be stale or the symbol may be new.',
+        lookupError !== null
+          ? `Symbol lookup failed: ${lookupError} — no graph risk assessed. Resolve the lookup failure before editing.`
+          : 'Symbol not found in index — no graph risk assessed. Absence of graph evidence is not evidence of edit safety; the index may be stale or the symbol may be new.',
       blastRadius: {
         upstreamCount: 0,
         upstreamFiles: [],
@@ -858,7 +869,9 @@ export async function gnSafeEditCheck(
           check: 'symbol_in_index',
           passed: false,
           detail:
-            'Symbol not found in graph index. Verify the symbol name and index freshness before editing.',
+            lookupError !== null
+              ? `Symbol lookup failed: ${lookupError}. Resolve the lookup failure before editing.`
+              : 'Symbol not found in graph index. Verify the symbol name and index freshness before editing.',
         },
       ],
       warnings,

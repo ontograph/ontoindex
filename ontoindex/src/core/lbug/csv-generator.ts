@@ -84,15 +84,17 @@ export const isBinaryContent = (content: string): boolean => {
 };
 
 const MAX_CACHED_FILE_BYTES = 4 * 1024 * 1024;
+export const MAX_CACHED_CHARS = 64 * 1024 * 1024;
 
 /**
  * LRU content cache — avoids re-reading the same source file for every
- * symbol defined in it. Sized generously so most files stay cached during
- * the single-pass node iteration. Files above MAX_CACHED_FILE_BYTES are kept
- * in a single slot so retained memory stays bounded.
+ * symbol defined in it. Ordinary files are bounded by entry count and
+ * MAX_CACHED_CHARS. Files above MAX_CACHED_FILE_BYTES bypass that budget and
+ * share one slot, so at most one large file (plus its split lines) is retained.
  */
-class FileContentCache {
+export class FileContentCache {
   private cache = new Map<string, { content: string; lines?: string[] }>();
+  private cachedChars = 0;
   private large?: { key: string; entry: { content: string; lines?: string[] } };
   private maxSize: number;
   private repoPath: string;
@@ -106,6 +108,49 @@ class FileContentCache {
     return (await this.getEntry(relativePath)).content;
   }
 
+  /** Retained LRU characters, excluding the separate large-file slot. */
+  get retainedChars(): number {
+    return this.cachedChars;
+  }
+
+  async getPrefix(relativePath: string, maxChars: number): Promise<string> {
+    if (!relativePath) return '';
+    const cached = this.getCachedEntry(relativePath);
+    if (cached) return cached.content;
+    const fullPath = path.join(this.repoPath, relativePath);
+    const prefixBytes = 3 * Math.max(maxChars, 1000) + 4;
+    try {
+      const stat = await fs.stat(fullPath);
+      if (stat.size <= prefixBytes) return this.get(relativePath);
+      const handle = await fs.open(fullPath, 'r');
+      try {
+        const buffer = Buffer.alloc(prefixBytes);
+        let bytesRead = 0;
+        while (bytesRead < buffer.length) {
+          const result = await handle.read(buffer, bytesRead, buffer.length - bytesRead, bytesRead);
+          if (result.bytesRead === 0) break;
+          bytesRead += result.bytesRead;
+        }
+        // Preserve a leading BOM just as readFile('utf-8') does.
+        const content = new TextDecoder('utf-8', { ignoreBOM: true }).decode(
+          buffer.subarray(0, bytesRead),
+        );
+        // Keep enough text for binary detection, which samples the first 1000 units.
+        const end = Math.min(content.length, Math.max(maxChars + 1, 1000));
+        const lastCode = content.charCodeAt(end - 1);
+        if (lastCode >= 0xd800 && lastCode <= 0xdbff) {
+          // Keep the overflow unit visible to truncation without returning a lone surrogate.
+          return content.slice(0, end - 1) + '\ufffd';
+        }
+        return content.slice(0, end);
+      } finally {
+        await handle.close();
+      }
+    } catch {
+      return '';
+    }
+  }
+
   async getLines(relativePath: string): Promise<string[]> {
     const entry = await this.getEntry(relativePath);
     if (!entry.content) return [];
@@ -113,8 +158,7 @@ class FileContentCache {
     return entry.lines;
   }
 
-  private async getEntry(relativePath: string): Promise<{ content: string; lines?: string[] }> {
-    if (!relativePath) return { content: '' };
+  private getCachedEntry(relativePath: string): { content: string; lines?: string[] } | undefined {
     const cached = this.cache.get(relativePath);
     if (cached !== undefined) {
       this.cache.delete(relativePath);
@@ -122,6 +166,13 @@ class FileContentCache {
       return cached;
     }
     if (this.large?.key === relativePath) return this.large.entry;
+    return undefined;
+  }
+
+  private async getEntry(relativePath: string): Promise<{ content: string; lines?: string[] }> {
+    if (!relativePath) return { content: '' };
+    const cached = this.getCachedEntry(relativePath);
+    if (cached) return cached;
     try {
       const fullPath = path.join(this.repoPath, relativePath);
       const stat = await fs.stat(fullPath);
@@ -137,12 +188,18 @@ class FileContentCache {
   }
 
   private set(key: string, content: string): { content: string; lines?: string[] } {
-    if (this.cache.size >= this.maxSize) {
+    while (
+      this.cache.size >= this.maxSize ||
+      this.cachedChars + content.length > MAX_CACHED_CHARS
+    ) {
       const oldest = this.cache.keys().next().value;
-      if (oldest) this.cache.delete(oldest);
+      if (oldest === undefined) break;
+      this.cachedChars -= this.cache.get(oldest)!.content.length;
+      this.cache.delete(oldest);
     }
     const entry = { content };
     this.cache.set(key, entry);
+    this.cachedChars += content.length;
     return entry;
   }
 }
@@ -167,7 +224,10 @@ const extractContent = async (
 ): Promise<string> => {
   const filePath = node.properties.filePath;
   if (node.label !== 'File' && limits.maxSnippetChars === 0) return '';
-  const content = await contentCache.get(filePath);
+  const content =
+    node.label === 'File' && limits.maxFileContentChars > 0
+      ? await contentCache.getPrefix(filePath, limits.maxFileContentChars)
+      : await contentCache.get(filePath);
   if (!content) return '';
   if (node.label === 'Folder') return '';
   if (isBinaryContent(content)) return '[Binary file - content not stored]';

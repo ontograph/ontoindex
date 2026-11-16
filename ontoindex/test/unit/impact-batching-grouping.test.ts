@@ -92,9 +92,6 @@ describe('impact: batching and grouping', () => {
         return [
           {
             entryPointId: `ep-${Math.floor(idx)}`,
-            epName: `epName-${idx}`,
-            epType: 'Function',
-            epFilePath: `/path/${idx}`,
             hits: cnt,
             minStep: 1,
           },
@@ -135,39 +132,34 @@ describe('impact: batching and grouping', () => {
     executeParameterizedMock.mockImplementation(async (...args: any[]) => {
       const query = typeof args[1] === 'string' ? args[1] : String(args[0] ?? '');
       if (query.includes('$frontierIds')) return impactedRows(6);
+      if (query.includes('$entryPointIds'))
+        return [1, 2, 3].map((n) => ({
+          id: `ep-${n}`,
+          name: `EP${n}`,
+          type: 'Function',
+          filePath: `/p/${n}`,
+        }));
       if (!query.includes('STEP_IN_PROCESS'))
         return [{ id: 'symA', name: 'TargetA', filePath: 'f' }];
       // For STEP_IN_PROCESS in this test, return grouping rows
       return [
         {
           entryPointId: 'ep-1',
-          epName: 'EP1',
-          epType: 'Function',
-          epFilePath: '/p/1',
           hits: 2,
           minStep: 1,
         },
         {
           entryPointId: 'ep-2',
-          epName: 'EP2',
-          epType: 'Function',
-          epFilePath: '/p/2',
           hits: 2,
           minStep: 2,
         },
         {
           entryPointId: 'ep-1',
-          epName: 'EP1',
-          epType: 'Function',
-          epFilePath: '/p/1',
           hits: 1,
           minStep: 3,
         },
         {
           entryPointId: 'ep-3',
-          epName: 'EP3',
-          epType: 'Function',
-          epFilePath: '/p/3',
           hits: 1,
           minStep: 1,
         },
@@ -219,9 +211,6 @@ describe('impact: batching and grouping', () => {
         return [
           {
             entryPointId: 'ep-x',
-            epName: 'EPX',
-            epType: 'Function',
-            epFilePath: '/p/x',
             hits: ids.length,
             minStep: 1,
           },

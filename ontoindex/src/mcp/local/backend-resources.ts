@@ -1,3 +1,4 @@
+import { queryRowValue as rowValueOr } from '../../core/lbug/query-row.js';
 import { executeQuery, executeParameterized } from '../../core/lbug/pool-adapter.js';
 
 interface ResourceRepoHandle {
@@ -80,12 +81,6 @@ const MAX_PROCESS_DETAIL_STEPS = (() => {
   const raw = Number.parseInt(process.env.ONTOINDEX_PROCESS_DETAIL_STEP_LIMIT ?? '', 10);
   return Number.isFinite(raw) && raw > 0 ? Math.min(raw, 10_000) : 1_000;
 })();
-
-function rowValueOr(row: QueryRow, key: string, index: number): unknown {
-  const record = row as Record<string, unknown>;
-  const indexed = Array.isArray(row) ? row[index] : record[String(index)];
-  return record[key] || indexed;
-}
 
 function toClusterRow(row: ClusterQueryRow): RawCluster {
   return {

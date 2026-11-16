@@ -225,6 +225,42 @@ describe('gnSafeEditCheck', () => {
     await expect(gnSafeEditCheck(REPO_ID, { symbol })).rejects.toBe(error);
   });
 
+  it.each(['upstream', 'downstream'])(
+    'rethrows resource failures from %s impact',
+    async (direction) => {
+      setupMocks();
+      const originalQuery = mockExecuteParameterized.getMockImplementation() as (
+        ...args: unknown[]
+      ) => Promise<unknown>;
+      const error = new Error(
+        'Buffer manager exception: buffer pool is full and no memory could be freed',
+      );
+      mockExecuteParameterized.mockImplementation(async (...args) => {
+        const query = args[1] as string;
+        const shape =
+          direction === 'upstream'
+            ? 'MATCH (caller)-[r:CodeRelation]->(n)'
+            : 'MATCH (n)-[r:CodeRelation]->(callee)';
+        if (query.includes(shape)) throw error;
+        return originalQuery(...args);
+      });
+      await expect(gnSafeEditCheck(REPO_ID, { symbol: NODE_ID })).rejects.toBe(error);
+    },
+  );
+
+  it.each([NODE_ID, 'parseToken'])(
+    'reports a failed lookup separately from absence for %s',
+    async (symbol) => {
+      mockExecuteParameterized.mockRejectedValue(new Error('lookup query unavailable'));
+      const report = await gnSafeEditCheck(REPO_ID, { symbol, legacyResponse: true });
+      expect(report.verdict).toBe('CAUTION');
+      expect(report.warnings).toContain('symbol lookup failed: lookup query unavailable');
+      expect(report.reasoning).toContain('Symbol lookup failed: lookup query unavailable');
+      expect(report.preChecks[0].detail).toContain('Symbol lookup failed');
+      expect(JSON.stringify(report)).not.toContain('not found in index');
+    },
+  );
+
   it.each([
     ['fetchProcessCount', "r.type = 'PARTICIPATES_IN'"],
     ['fetchClusterCount', "r.type = 'MEMBER_OF'"],

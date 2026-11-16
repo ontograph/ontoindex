@@ -482,25 +482,17 @@ function formatFileScopePreview(preview: FileScopePreview, includePaths?: string
     includePaths?.length
       ? `  Scope: selected include paths: ${includePaths.join(', ')}`
       : '  Scope: repository',
-    '  Counts cover matching candidates after ignore rules; skipped files are oversized.',
+    '  Counts cover matching candidates after ignore rules; large files are included.',
     ...(includePaths?.length ? ['  Full-root file total is not measured.'] : []),
     '',
     `  Total candidates: ${preview.totalCandidates.toLocaleString()}`,
     `  Included: ${preview.includedCount.toLocaleString()}`,
-    `  Skipped: ${preview.skippedCount.toLocaleString()}`,
     '',
     '  Included by extension:',
   ];
 
   for (const [ext, count] of Object.entries(preview.includedByExtension)) {
     lines.push(`    ${ext}: ${count.toLocaleString()}`);
-  }
-
-  if (preview.topSkippedDirectories.length > 0) {
-    lines.push('', '  Top skipped directories:');
-    for (const item of preview.topSkippedDirectories) {
-      lines.push(`    ${item.path}: ${item.count.toLocaleString()} (${item.reason})`);
-    }
   }
 
   if (preview.largestIncludedFiles.length > 0) {
