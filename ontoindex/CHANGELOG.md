@@ -4,6 +4,8 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [3.1.9] - 2026-11-16
+
 - When a dirty path is any link in the chain behind a tracked resolver-configuration symlink such as `tsconfig.json`, the planner marks the configuration as changed. This covers a target replaced by a symlink outside the repository, a symlink loop, a retargeted intermediate link, a retargeted directory link on the path to the target, and a target marked assume-unchanged or skip-worktree. In 3.1.8 these cases printed "Committed base is current" and kept the old aliases. The planner reads the git index once per plan, where it used to read it twice.
 - Workspace capture retries once when an input reports `ELOOP`, `ENXIO`, `EISDIR`, `ENOTDIR` or `ENAMETOOLONG`, and refuses it only if the error persists. Then `ontoindex analyze --workspace-graph` exits 3 and `ontoindex watch` waits for the inputs to change. A read error caused by a brief type swap during capture no longer stops watch. An input that capture itself rejects, such as a FIFO or a looping configuration symlink, is still refused without a retry. Git timeouts, lock conflicts and permission errors still exit 1 and are retried.
 - Overlay validation rejects a dirty or recorded path whose parent directory resolves outside its expected location, such as a directory replaced by a symlink. Before, only the final path component was checked.
