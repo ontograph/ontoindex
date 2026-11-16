@@ -172,6 +172,7 @@ describe('super argument validation', () => {
     [{ symbol: 1 }, 'symbol: expected string'],
     [{ symbol: 'parseToken', intent: 'invalid' }, 'intent: expected one of'],
     [{ symbol: 'parseToken', force: 'no' }, 'force: expected boolean'],
+    [{ symbol: 'parseToken', minimal: 'no' }, 'minimal: expected boolean'],
     [{ symbol: 'parseToken', docsEvidence: 'no' }, 'docsEvidence: expected boolean'],
     [{ symbol: 'parseToken', legacyResponse: 'no' }, 'legacyResponse: expected boolean'],
   ] as const)(

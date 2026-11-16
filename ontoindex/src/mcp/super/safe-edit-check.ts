@@ -20,6 +20,7 @@ import {
   SAFE_EDIT_DOWNSTREAM_RELATION_TYPES,
   SAFE_EDIT_UPSTREAM_RELATION_TYPES,
   type ImpactKernelRawCounts,
+  type ImpactKernelNode,
 } from '../../core/impact/impact-kernel.js';
 import { lspBridge } from '../../core/lsp/bridge.js';
 import {
@@ -33,6 +34,7 @@ import {
 } from '../shared/tool-registry.js';
 import { resolveTargetContext, type TargetContext } from '../shared/target-context.js';
 import { findTestFiles, type TestCoverageResult } from './_helpers/test-coverage.js';
+import { projectReadFirstFiles } from '../shared/read-first-projection.js';
 import { collectAdvisoryDocsEvidence, type AdvisoryDocsEvidenceReport } from './docs-evidence.js';
 import {
   summarizeBasedOnReads,
@@ -57,6 +59,7 @@ export interface SafeEditCheckParams {
   force?: boolean; // bypass verdict guards
   docsEvidence?: boolean; // opt-in advisory Markdown docs evidence
   legacyResponse?: boolean;
+  minimal?: boolean;
 }
 
 export interface RequiredRead {
@@ -323,6 +326,9 @@ interface UpstreamResult {
   files: string[];
   rawCounts?: ImpactKernelRawCounts;
   warnings: string[];
+  impacted: ImpactKernelNode[];
+  partial: boolean;
+  traversalFailed: boolean;
 }
 
 interface DownstreamResult {
@@ -357,12 +363,18 @@ async function fetchUpstream(repoId: string, symbol: ResolvedSymbol): Promise<Up
       files,
       rawCounts: result.rawCounts,
       warnings: result.warnings,
+      impacted: result.impacted,
+      partial: result.partial,
+      traversalFailed: result.traversalFailed,
     };
   } catch (err) {
     if (classifyLbugOpenError(err) === 'resource') throw err;
     return {
       count: 0,
       files: [],
+      impacted: [],
+      partial: true,
+      traversalFailed: true,
       warnings: [
         `safe-edit upstream impact failed: ${err instanceof Error ? err.message : String(err)}`,
       ],
@@ -784,9 +796,111 @@ function buildSuggestedNext(
 // Main export
 // ---------------------------------------------------------------------------
 
+function compactEditCheck(
+  report: EditCheckReport,
+  params: SafeEditCheckParams,
+  upstream?: UpstreamResult,
+) {
+  const dependents = [...(upstream?.impacted ?? [])].sort((a, b) => a.id.localeCompare(b.id));
+  const tests = uniqueStrings(report.testCoverage.coveringTests).sort();
+  const upstreamOmissionsUnknown = !upstream || upstream.partial || upstream.traversalFailed;
+  const reading = projectReadFirstFiles(
+    [
+      ...(report.symbol.filePath
+        ? [
+            {
+              filePath: report.symbol.filePath,
+              reason: 'Edit target definition.',
+              source: 'definition',
+              priority: 0,
+            },
+          ]
+        : []),
+      ...tests.map((filePath, index) => ({
+        filePath,
+        reason:
+          'Candidate test from import/co-change heuristics; inspect before choosing validation.',
+        source: 'test',
+        priority: index === 0 ? 1 : 3,
+      })),
+      ...dependents.map((node) => ({
+        filePath: node.filePath,
+        reason: `Direct dependent ${String(node.name)} via ${node.relationType ?? 'unknown relation'}.`,
+        source: 'caller',
+        priority: 2,
+      })),
+    ],
+    { maxFiles: 5 },
+  );
+  const omittedCounts = {
+    directDependents: {
+      known: Math.max(0, dependents.length - 10),
+      upstreamUnknown: upstreamOmissionsUnknown,
+    },
+    candidateTests: { known: Math.max(0, tests.length - 5), upstreamUnknown: true },
+    readFirstFiles: { ...reading.omittedCounts, upstreamUnknown: true },
+  };
+  return {
+    version: report.version,
+    symbol: report.symbol,
+    targetSelection: {
+      mode: CANONICAL_NODE_ID_RE.test(params.symbol) ? 'canonical-uid' : 'name-based',
+      resolved: report.symbol.nodeId.length > 0,
+      ...(!CANONICAL_NODE_ID_RE.test(params.symbol)
+        ? {
+            recommendation:
+              'Use the returned canonical UID to avoid name ambiguity; existing name selection is unchanged.',
+          }
+        : {}),
+    },
+    verdict: report.verdict,
+    reasoning: report.reasoning,
+    freshness: report.freshness ?? { authoritative: false, reason: 'target context unavailable' },
+    warnings: report.warnings,
+    preChecks: report.preChecks,
+    directDependents: dependents.slice(0, 10),
+    dependentScope: {
+      observedCount: upstream?.count ?? null,
+      maxDepth: 1,
+      relationTypes: SAFE_EDIT_UPSTREAM_RELATION_TYPES,
+      includeTests: false,
+      partial: upstreamOmissionsUnknown,
+      traversalFailed: upstream?.traversalFailed ?? true,
+    },
+    candidateTests: tests.slice(0, 5),
+    testEvidence: {
+      source: 'import/co-change heuristics',
+      likelihoodOfCoverage: report.testCoverage.likelihoodOfCoverage,
+      exhaustive: false,
+      executionCoverage: 'unknown',
+      limitation:
+        'Discovery may omit tests; empty results cannot distinguish no matches from a failed query.',
+    },
+    readFirstFiles: reading.readFirstFiles,
+    omittedCounts,
+    limits: {
+      maxDirectDependents: 10,
+      maxCandidateTests: 5,
+      maxReadFirstFiles: 5,
+      truncated:
+        omittedCounts.directDependents.known > 0 ||
+        omittedCounts.candidateTests.known > 0 ||
+        reading.omittedCounts.truncated > 0,
+      upstreamOmissionsUnknown: true,
+      omittedCounts,
+    },
+  };
+}
+
+export type CompactEditCheckReport = ReturnType<typeof compactEditCheck>;
+
 export async function gnSafeEditCheck(
   repoId: string,
-  params: SafeEditCheckParams & { legacyResponse?: true },
+  params: SafeEditCheckParams & { minimal: true; legacyResponse?: true },
+): Promise<CompactEditCheckReport>;
+export async function gnSafeEditCheck(
+  repoId: string,
+  params: SafeEditCheckParams & { minimal?: false; legacyResponse?: true },
 ): Promise<EditCheckReport>;
 export async function gnSafeEditCheck(
   repoId: string,
@@ -795,11 +909,15 @@ export async function gnSafeEditCheck(
 export async function gnSafeEditCheck(
   repoId: string,
   params: SafeEditCheckParams,
-): Promise<EditCheckReport | CapabilityResponseEnvelope<Record<string, unknown>>>;
+): Promise<
+  EditCheckReport | CompactEditCheckReport | CapabilityResponseEnvelope<Record<string, unknown>>
+>;
 export async function gnSafeEditCheck(
   repoId: string,
   params: SafeEditCheckParams,
-): Promise<EditCheckReport | CapabilityResponseEnvelope<Record<string, unknown>>> {
+): Promise<
+  EditCheckReport | CompactEditCheckReport | CapabilityResponseEnvelope<Record<string, unknown>>
+> {
   const warnings: string[] = [];
   const intent = params.intent ?? 'general';
   const force = params.force === true;
@@ -878,13 +996,27 @@ export async function gnSafeEditCheck(
       freshness,
       suggestedNext: [],
     };
-    if (params.legacyResponse !== false) {
-      return report;
-    }
+    const output = params.minimal === true ? compactEditCheck(report, params) : report;
+    if (params.legacyResponse !== false) return output;
     return createEnvelopeFromLegacy({
-      legacy: report as unknown as Record<string, unknown>,
+      legacy: output as unknown as Record<string, unknown>,
+      ...(params.minimal === true ? { limits: (output as CompactEditCheckReport).limits } : {}),
       tool: 'gn_safe_edit_check',
       status: 'degraded',
+      ...(params.minimal === true
+        ? {
+            freshness: {
+              status: freshness.authoritative ? ('fresh' as const) : ('degraded' as const),
+              actionable: freshness.authoritative,
+              reason: freshness.reason,
+              ...(freshness.indexedCommit ? { indexedCommit: freshness.indexedCommit } : {}),
+              ...(freshness.headCommit ? { headCommit: freshness.headCommit } : {}),
+              ...(freshness.dirtyFileCount != null
+                ? { dirtyFileCount: freshness.dirtyFileCount }
+                : {}),
+            },
+          }
+        : {}),
       targetContext,
       capabilitiesUsed: ['symbol-graph'],
       nextTools: ['gn_find_related', 'gn_explain_module'],
@@ -1064,9 +1196,8 @@ export async function gnSafeEditCheck(
       ? { rawCounts: { upstream: upstream.rawCounts, downstream: downstream.rawCounts } }
       : {}),
   };
-  if (params.legacyResponse !== false) {
-    return report;
-  }
+  const output = params.minimal === true ? compactEditCheck(report, params, upstream) : report;
+  if (params.legacyResponse !== false) return output;
 
   const docsQualityDegraded =
     params.docsEvidence === true &&
@@ -1074,7 +1205,8 @@ export async function gnSafeEditCheck(
     docsEvidence.sidecar.status !== 'available';
 
   return createEnvelopeFromLegacy({
-    legacy: report as unknown as Record<string, unknown>,
+    legacy: output as unknown as Record<string, unknown>,
+    ...(params.minimal === true ? { limits: (output as CompactEditCheckReport).limits } : {}),
     tool: 'gn_safe_edit_check',
     status:
       verdict === 'BLOCKED'

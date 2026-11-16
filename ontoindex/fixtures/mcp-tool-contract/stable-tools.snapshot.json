@@ -212,6 +212,10 @@
             "description": "Bypass BLOCKED verdict guards. Use only when you have confirmed the risk manually. Default: false.",
             "default": false
           },
+          "minimal": {
+            "type": "boolean",
+            "description": "Return a bounded pre-edit answer with target, verdict, freshness, warnings, direct dependents, heuristic candidate tests, reading files, and explicit omissions. Default: false."
+          },
           "docsEvidence": {
             "type": "boolean",
             "description": "Opt in to advisory Markdown docs evidence for related requirements, API specs, and route drift. Does not affect verdict/risk scoring. Default: false.",
@@ -4426,7 +4430,7 @@
           },
           "minimal": {
             "type": "boolean",
-            "description": "For lint: return only the core result summary and next action."
+            "description": "For lint: return only the core result summary and next action. For safe_edit_check: return a bounded pre-edit answer with target, verdict, freshness, warnings, direct dependents, heuristic candidate tests, reading files, and explicit omissions."
           },
           "maxIssues": {
             "type": "number",
