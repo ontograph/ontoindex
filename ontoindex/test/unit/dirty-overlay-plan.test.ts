@@ -42,6 +42,37 @@ function withGitRepo(test: (repoPath: string) => Promise<void>): () => Promise<v
 }
 
 describe('dirty overlay planner', () => {
+  it(
+    'marks a tracked configuration symlink when a directory link is retargeted',
+    withGitRepo(async (repoDir) => {
+      writeFile(repoDir, 'configs-a/x.json', '{"compilerOptions":{}}\n');
+      writeFile(repoDir, 'configs-b/x.json', '{"compilerOptions":{"strict":true}}\n');
+      fs.symlinkSync('configs-a', path.join(repoDir, 'alias'));
+      fs.symlinkSync('alias/x.json', path.join(repoDir, 'tsconfig.json'));
+      commitFiles(repoDir);
+      fs.unlinkSync(path.join(repoDir, 'alias'));
+      fs.symlinkSync('configs-b', path.join(repoDir, 'alias'));
+
+      expect((await planDirtyOverlay(repoDir)).configPaths).toEqual(['tsconfig.json']);
+    }),
+  );
+
+  it(
+    'marks a tracked configuration symlink when its source target is assume-unchanged',
+    withGitRepo(async (repoDir) => {
+      writeFile(repoDir, 'configs/aliases.ts', '{"compilerOptions":{}}\n');
+      fs.symlinkSync('configs/aliases.ts', path.join(repoDir, 'tsconfig.json'));
+      commitFiles(repoDir);
+      runGit(repoDir, ['update-index', '--assume-unchanged', 'configs/aliases.ts']);
+      writeFile(repoDir, 'configs/aliases.ts', '{"compilerOptions":{"strict":true}}\n');
+      expect(runGit(repoDir, ['status', '--porcelain'])).toBe('');
+
+      const plan = await planDirtyOverlay(repoDir);
+      expect(plan.configPaths).toEqual(['tsconfig.json']);
+      expect(plan.includePaths).toEqual(['configs/aliases.ts']);
+    }),
+  );
+
   it.each(['external', 'self-loop'])(
     'marks a tracked configuration symlink when its target becomes an %s link',
     (replacement) =>

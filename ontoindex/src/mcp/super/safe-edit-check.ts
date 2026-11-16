@@ -359,6 +359,7 @@ async function fetchUpstream(repoId: string, symbol: ResolvedSymbol): Promise<Up
       warnings: result.warnings,
     };
   } catch (err) {
+    if (classifyLbugOpenError(err) === 'resource') throw err;
     return {
       count: 0,
       files: [],
@@ -395,6 +396,7 @@ async function fetchDownstream(repoId: string, symbol: ResolvedSymbol): Promise<
       warnings: result.warnings,
     };
   } catch (err) {
+    if (classifyLbugOpenError(err) === 'resource') throw err;
     return {
       count: 0,
       warnings: [

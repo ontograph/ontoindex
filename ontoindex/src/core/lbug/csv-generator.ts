@@ -88,9 +88,9 @@ export const MAX_CACHED_CHARS = 64 * 1024 * 1024;
 
 /**
  * LRU content cache — avoids re-reading the same source file for every
- * symbol defined in it. Sized generously so most files stay cached during
- * the single-pass node iteration. Files above MAX_CACHED_FILE_BYTES are kept
- * in a single slot so retained memory stays bounded.
+ * symbol defined in it. Ordinary files are bounded by entry count and
+ * MAX_CACHED_CHARS. Files above MAX_CACHED_FILE_BYTES bypass that budget and
+ * share one slot, so at most one large file (plus its split lines) is retained.
  */
 export class FileContentCache {
   private cache = new Map<string, { content: string; lines?: string[] }>();

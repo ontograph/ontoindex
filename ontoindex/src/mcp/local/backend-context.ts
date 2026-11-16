@@ -62,7 +62,7 @@ function logContextQueryError(context: string, err: unknown): void {
 
 function rowValue(row: QueryRow, key: string, index: number): unknown {
   const namedValue = !Array.isArray(row) ? row[key] : undefined;
-  return namedValue || row[index];
+  return namedValue ?? row[index];
 }
 
 function symbolTupleValue(sym: ResolvedContextSymbol, index: number): unknown {

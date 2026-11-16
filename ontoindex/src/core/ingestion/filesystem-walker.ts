@@ -8,9 +8,6 @@ import {
   getLanguageFromShebang,
   type SupportedLanguages,
 } from 'ontoindex-shared';
-import { getScanMaxFileSizeBytes } from './scan-config.js';
-
-export { getScanMaxFileSizeBytes };
 
 export interface FileEntry {
   path: string;

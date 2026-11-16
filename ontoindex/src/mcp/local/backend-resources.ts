@@ -84,7 +84,7 @@ const MAX_PROCESS_DETAIL_STEPS = (() => {
 function rowValueOr(row: QueryRow, key: string, index: number): unknown {
   const record = row as Record<string, unknown>;
   const indexed = Array.isArray(row) ? row[index] : record[String(index)];
-  return record[key] || indexed;
+  return record[key] ?? indexed;
 }
 
 function toClusterRow(row: ClusterQueryRow): RawCluster {

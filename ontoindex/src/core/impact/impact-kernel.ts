@@ -188,14 +188,6 @@ export function clampImpactDepth(value: unknown, fallback = 3): number {
   return Math.max(1, Math.min(Math.trunc(value), MAX_IMPACT_DEPTH));
 }
 
-function rowValueOr(row: QueryRow, key: string, index: number): unknown {
-  const keyed =
-    typeof row === 'object' && row !== null && !Array.isArray(row)
-      ? (row as Record<string, unknown>)[key]
-      : undefined;
-  return keyed || (Array.isArray(row) ? row[index] : undefined);
-}
-
 function rowValueNullish(row: QueryRow, key: string, index: number): unknown {
   const keyed =
     typeof row === 'object' && row !== null && !Array.isArray(row)
@@ -205,7 +197,7 @@ function rowValueNullish(row: QueryRow, key: string, index: number): unknown {
 }
 
 function rowStringOr(row: QueryRow, key: string, index: number, fallback = ''): string {
-  const value = rowValueOr(row, key, index);
+  const value = rowValueNullish(row, key, index);
   return value === null || value === undefined ? fallback : String(value);
 }
 
@@ -320,6 +312,7 @@ export async function runImpactKernel(
   warnings.push(...expansion.warnings);
   if (expansion.failed) {
     traversalComplete = false;
+    traversalFailed = true;
   }
 
   const visited = new Set<string>(expansion.seedIds);
@@ -352,6 +345,7 @@ export async function runImpactKernel(
       })) as ImpactRelatedRow[];
     } catch (err) {
       if (isImpactAbortError(err)) throw err;
+      if (classifyLbugOpenError(err) === 'resource') throw err;
       traversalComplete = false;
       traversalFailed = true;
       warnings.push(`depth traversal failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -375,7 +369,7 @@ export async function runImpactKernel(
         if (!includeTests && isTestFilePath(filePath)) continue;
 
         const storedConfidence = rowValueNullish(rel, 'confidence', 6);
-        const relationTypeRaw = rowValueOr(rel, 'relType', 5);
+        const relationTypeRaw = rowValueNullish(rel, 'relType', 5);
         const relationType = typeof relationTypeRaw === 'string' ? relationTypeRaw : undefined;
         if (
           relationType === 'MENTIONS' &&
@@ -401,8 +395,8 @@ export async function runImpactKernel(
           impacted.push({
             depth,
             id: relId,
-            name: rowValueOr(rel, 'name', 2),
-            type: rowValueOr(rel, 'type', 3),
+            name: rowValueNullish(rel, 'name', 2),
+            type: rowValueNullish(rel, 'type', 3),
             filePath,
             relationType,
             confidence: effectiveConfidence,
@@ -416,6 +410,7 @@ export async function runImpactKernel(
       }
     } catch (err) {
       if (isImpactAbortError(err)) throw err;
+      if (classifyLbugOpenError(err) === 'resource') throw err;
       traversalComplete = false;
       traversalFailed = true;
       warnings.push(`depth traversal failed: ${err instanceof Error ? err.message : String(err)}`);

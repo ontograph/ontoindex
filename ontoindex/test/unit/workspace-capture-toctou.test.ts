@@ -519,7 +519,7 @@ describe.each(readers)('$reader static nonregular input', ({ reader, relativePat
         );
         expect(
           attempts.mock.calls.filter(([prefix]) => String(prefix).includes('/capture-')),
-        ).toHaveLength(reader === 'capture' ? 1 : 0);
+        ).toHaveLength(reader === 'capture' ? (kind === 'socket' ? 2 : 1) : 0);
         expect(
           writes.mock.calls.filter(
             ([file]) =>

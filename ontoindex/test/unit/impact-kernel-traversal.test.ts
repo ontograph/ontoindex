@@ -49,7 +49,7 @@ describe('impact kernel traversal', () => {
       },
     );
     expect(kernel.partial).toBe(true);
-    expect(kernel.traversalFailed).toBe(false);
+    expect(kernel.traversalFailed).toBe(true);
     expect(kernel.warnings).toContain('class seed expansion failed: seed query unavailable');
 
     const impact = await runImpactBFS(
@@ -60,7 +60,8 @@ describe('impact kernel traversal', () => {
       { maxDepth: 1, relationTypes: ['CALLS'], includeTests: false, minConfidence: 0 },
     );
     expect(impact.partial).toBe(true);
-    expect(impactResultCompleteness(impact)).toBe('partial');
+    expect(impact.risk).toBe('UNKNOWN');
+    expect(impactResultCompleteness(impact)).toBe('failed');
   });
 
   it.each(['Constructor', 'File'])(

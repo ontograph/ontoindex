@@ -542,6 +542,7 @@ registerReportCommands(program);
 registerPrCommands(program);
 
 program.parseAsync(process.argv).catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
+  const showStack = process.env.ONTOINDEX_DEBUG && error instanceof Error && error.stack;
+  console.error(showStack ? error.stack : error instanceof Error ? error.message : String(error));
   process.exitCode = 1;
 });

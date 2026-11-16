@@ -100,17 +100,34 @@ afterEach(async () => {
 
 describe('workspace input capture', () => {
   it.each(['ELOOP', 'ENXIO', 'EISDIR', 'ENOTDIR', 'ENAMETOOLONG'])(
+    'retries an injected %s that occurs only on the first attempt',
+    async (code) => {
+      const root = await makeRepo();
+      const failure = Object.assign(new Error('input cannot be read'), { code });
+      const beforeRead = vi.fn().mockImplementationOnce(() => {
+        throw failure;
+      });
+      const result = await capture(root, { hooks: { beforeRead } });
+
+      expect(result.capturedPaths).toContain('src/main.ts');
+      expect(beforeRead.mock.calls[0]?.[1]).toBe(1);
+      expect(beforeRead.mock.calls.length).toBeGreaterThan(1);
+      expect(beforeRead.mock.calls.slice(1).every(([, attempt]) => attempt === 2)).toBe(true);
+    },
+  );
+
+  it.each(['ELOOP', 'ENXIO', 'EISDIR', 'ENOTDIR', 'ENAMETOOLONG'])(
     'refuses an injected %s with exit code 3',
     async (code) => {
       const root = await makeRepo();
       const failure = Object.assign(new Error('input cannot be read'), { code });
+      const beforeRead = vi.fn(() => {
+        throw failure;
+      });
       const error = await capture(root, {
-        hooks: {
-          beforeRead: () => {
-            throw failure;
-          },
-        },
+        hooks: { beforeRead },
       }).catch((error: unknown) => error);
+      expect(beforeRead).toHaveBeenCalledTimes(2);
       expect(error).toBeInstanceOf(WorkspaceInputCaptureError);
       expect(error).toMatchObject({
         code: 'unsupported',
