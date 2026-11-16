@@ -14,7 +14,7 @@
  *     impacted ids reached by >1 target, which highlights symbols that
  *     sit at the confluence of multiple change fronts.
  */
-import { runImpact } from './backend-impact.js';
+import { impactResultCompleteness, runImpact } from './backend-impact.js';
 // Local RepoHandle alias — see backend-route.ts note.
 type RepoHandle = { readonly id: string; readonly name: string; readonly repoPath?: string };
 type RunImpactResult = Awaited<ReturnType<typeof runImpact>>;
@@ -35,6 +35,8 @@ interface ImpactBatchUnion {
   maxDepth: number;
   risk: 'NONE' | 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL' | 'UNKNOWN';
   failedTargets?: string[];
+  /** Targets with usable nodes but incomplete traversal evidence. */
+  incompleteTargets?: string[];
   sharedNodes: number;
 }
 
@@ -220,7 +222,7 @@ export async function runImpactBatch(
     let unionMaxDepth = 0;
 
     for (const { result } of results) {
-      if (!result || result.error) continue;
+      if (impactResultCompleteness(result) === 'failed') continue;
       const impacted = flattenImpactedNodes(result);
       totalRelationships += impacted.length;
       for (const item of impacted) {
@@ -238,7 +240,12 @@ export async function runImpactBatch(
     }
 
     const totalAffectedNodes = hits.size;
-    const failedTargets = results.filter(({ result }) => result?.error).map(({ target }) => target);
+    const failedTargets = results
+      .filter(({ result }) => impactResultCompleteness(result) === 'failed')
+      .map(({ target }) => target);
+    const incompleteTargets = results
+      .filter(({ result }) => impactResultCompleteness(result) === 'partial')
+      .map(({ target }) => target);
     const allFailed = failedTargets.length === results.length;
 
     return {
@@ -252,8 +259,12 @@ export async function runImpactBatch(
         totalAffectedNodes,
         totalRelationships,
         maxDepth: unionMaxDepth,
-        risk: failedTargets.length > 0 ? 'UNKNOWN' : classifyRisk(totalAffectedNodes),
+        risk:
+          failedTargets.length > 0 || incompleteTargets.length > 0
+            ? 'UNKNOWN'
+            : classifyRisk(totalAffectedNodes),
         ...(failedTargets.length > 0 ? { failedTargets } : {}),
+        ...(incompleteTargets.length > 0 ? { incompleteTargets } : {}),
         sharedNodes,
       },
       ...(allFailed ? { error: 'Impact analysis failed for every target.' } : {}),

@@ -9,6 +9,18 @@ import { createRequire } from 'node:module';
 import { SupportedLanguages } from 'ontoindex-shared';
 import { createParserForLanguage } from '../../src/core/tree-sitter/parser-loader.js';
 import { loadAnalysisCatalog } from '../../src/analysis-packs/catalog.js';
+import * as gitProcess from '../../src/core/process/exec-file.js';
+import { workspaceBuildExitCode } from '../../src/mcp/local/workspace-build-supervisor.js';
+
+vi.mock('../../src/core/process/exec-file.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/core/process/exec-file.js')>()),
+  execFileText: vi.fn((...args: Parameters<typeof gitProcess.execFileText>) =>
+    realExecFileText(...args),
+  ),
+}));
+const { execFileText: realExecFileText } = await vi.importActual<typeof gitProcess>(
+  '../../src/core/process/exec-file.js',
+);
 
 import {
   captureWorkspaceInputs,
@@ -80,11 +92,30 @@ async function pendingCaptures(root: string): Promise<string[]> {
 }
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(captures.splice(0).map((result) => result.dispose()));
   await Promise.all(roots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
 });
 
 describe('workspace input capture', () => {
+  it('propagates a transient git timeout unchanged with retryable exit code 1', async () => {
+    const root = await makeRepo(true);
+    const failure = Object.assign(new Error('git ls-tree timed out'), {
+      killed: true,
+      signal: 'SIGTERM',
+    });
+    vi.mocked(gitProcess.execFileText).mockImplementation(async (command, args, options) => {
+      if (command === 'git' && args[0] === 'ls-tree') throw failure;
+      return realExecFileText(command, args, options);
+    });
+    try {
+      await expect(capture(root)).rejects.toBe(failure);
+      expect(workspaceBuildExitCode(failure)).toBe(1);
+      expect(await pendingCaptures(root)).toEqual([]);
+    } finally {
+      vi.mocked(gitProcess.execFileText).mockImplementation(realExecFileText);
+    }
+  });
   describe.each<unknown>([undefined, ['src/main.ts']])(
     'configuration symlinks with scope %j',
     (includePaths: readonly string[] | undefined) => {
@@ -1093,7 +1124,7 @@ describe('workspace input capture', () => {
     await largeSource.dispose();
     await fs.writeFile(path.join(root, 'src/main.ts'), 'export const value = 1;\n');
     await fs.chmod(path.join(root, 'src/main.ts'), 0);
-    await expect(capture(root)).rejects.toMatchObject({ code: 'unsupported' });
+    await expect(capture(root)).rejects.toMatchObject({ code: 'EACCES' });
     await fs.chmod(path.join(root, 'src/main.ts'), 0o600);
     const controller = new AbortController();
     await expect(

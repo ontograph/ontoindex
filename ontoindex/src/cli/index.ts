@@ -541,4 +541,7 @@ registerExportCommands(program);
 registerReportCommands(program);
 registerPrCommands(program);
 
-program.parse(process.argv);
+program.parseAsync(process.argv).catch((error) => {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exitCode = 1;
+});

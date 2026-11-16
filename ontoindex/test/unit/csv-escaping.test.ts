@@ -128,8 +128,12 @@ describe('sanitizeUTF8', () => {
     expect(sanitizeUTF8('hello\nworld')).toBe('hello\nworld');
   });
 
-  it('strips lone surrogates', () => {
-    expect(sanitizeUTF8('hello\uD800world')).toBe('helloworld');
+  it.each(['before😀after', '𝔘'])('preserves supplementary characters in %s', (text) => {
+    expect(sanitizeUTF8(text)).toBe(text);
+  });
+
+  it.each(['\uD800', '\uDC00'])('strips a lone surrogate %j', (surrogate) => {
+    expect(sanitizeUTF8(`hello${surrogate}world`)).toBe('helloworld');
   });
 
   it('strips BOM-like characters (FFFE/FFFF)', () => {

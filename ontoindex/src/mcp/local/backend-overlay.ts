@@ -33,6 +33,29 @@ import {
   readActiveGenerationMeta,
 } from '../../storage/repo-manager.js';
 
+async function readRegularFileDigest(filename: string): Promise<string | null> {
+  const beforeOpen = await fs.lstat(filename);
+  let handle;
+  try {
+    handle = await fs.open(
+      filename,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    );
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ELOOP') return null;
+    throw error;
+  }
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.dev !== beforeOpen.dev || stat.ino !== beforeOpen.ino) return null;
+    return createHash('sha256')
+      .update(await handle.readFile())
+      .digest('hex');
+  } finally {
+    await handle.close();
+  }
+}
+
 /** Read the activation setting per request so explicit disablement takes effect immediately. */
 export function isAutomaticWorkspaceEnabled(): boolean {
   const value = process.env.ONTOINDEX_AUTO_WORKSPACE;
@@ -671,36 +694,16 @@ async function computeSnapshot(
               reason: `workspace graph input is not a regular file: ${rel}; rebuild`,
             };
             if (!filename) return notRegular;
-            const beforeOpen = await fs.lstat(filename);
-            let handle;
-            try {
-              handle = await fs.open(
-                filename,
-                constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
-              );
-            } catch (error) {
-              if ((error as NodeJS.ErrnoException).code === 'ELOOP') return notRegular;
-              throw error;
-            }
-            try {
-              const stat = await handle.stat();
-              if (!stat.isFile() || stat.dev !== beforeOpen.dev || stat.ino !== beforeOpen.ino)
-                return notRegular;
-              // Metadata can be preserved across byte changes, so every input needs a digest.
-              const digest = createHash('sha256')
-                .update(await handle.readFile())
-                .digest('hex');
-              return {
-                rel,
-                digest,
-                reason:
-                  digest !== recorded[3]
-                    ? `overlay is stale for ${rel}; rebuild: ontoindex analyze --dirty-overlay`
-                    : null,
-              };
-            } finally {
-              await handle.close();
-            }
+            const digest = await readRegularFileDigest(filename);
+            if (digest === null) return notRegular;
+            return {
+              rel,
+              digest,
+              reason:
+                digest !== recorded[3]
+                  ? `overlay is stale for ${rel}; rebuild: ontoindex analyze --dirty-overlay`
+                  : null,
+            };
           }),
         );
         for (const result of results) {
@@ -720,9 +723,8 @@ async function computeSnapshot(
   }
   for (const rel of overlayPaths) {
     try {
-      const digest = createHash('sha256')
-        .update(await fs.readFile(path.join(repo.repoPath, rel)))
-        .digest('hex');
+      const digest = await readRegularFileDigest(path.join(repo.repoPath, rel));
+      if (digest === null) return { ...base, usable: false, reason: `cannot read ${rel}` };
       validatedInputs.set(rel, digest);
       if (inputs?.[rel] !== digest) {
         return {

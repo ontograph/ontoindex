@@ -1241,7 +1241,7 @@ BENEFIT: Processes N symbols ~2x slower than 1 symbol (not N times slower like N
 
 Output:
 - perSymbol: impact result for each target (same format as impact() tool)
-- union: combined statistics (totalAffectedNodes, totalRelationships, risk level)`,
+- union: combined statistics (totalAffectedNodes, totalRelationships, risk level); failedTargets lists targets without usable impact evidence, incompleteTargets lists partial targets, and risk is UNKNOWN when either list is non-empty`,
     inputSchema: {
       type: 'object',
       properties: {

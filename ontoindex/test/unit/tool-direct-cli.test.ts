@@ -30,14 +30,16 @@ vi.mock('../../src/mcp/local/local-backend.js', () => ({
 vi.mock('node:fs', () => ({
   writeSync: writeSyncMock,
   mkdirSync: vi.fn(),
-  appendFileSync: telemetryStartMock,
+  appendFileSync: (...args: [string, string, string]) =>
+    (JSON.parse(args[1]).phase === 'start' ? telemetryStartMock : telemetryEndMock)(...args),
+  statSync: vi.fn(() => {
+    throw new Error('missing');
+  }),
+  renameSync: vi.fn(),
 }));
 
 vi.mock('node:fs/promises', async (importOriginal) => ({
   ...(await importOriginal<typeof import('node:fs/promises')>()),
-  mkdir: vi.fn(),
-  stat: vi.fn().mockRejectedValue(new Error('missing')),
-  appendFile: telemetryEndMock,
 }));
 
 vi.mock('../../src/storage/repo-manager.js', async (importOriginal) => ({

@@ -659,6 +659,44 @@ describe('backend-overlay snapshot', () => {
     expect([...s.tombstones]).toEqual(['src/gone.ts']);
   });
 
+  it('refuses a dirty path swapped to an outside symlink without reading its target', async () => {
+    const filename = path.join(repo, 'src/a.ts');
+    fs.writeFileSync(filename, 'export const a = 2;\n');
+    publishFixture();
+    vi.mocked(planDirtyOverlay).mockResolvedValueOnce(await planDirtyOverlay(repo));
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'overlay-outside-'));
+    const target = path.join(outside, 'secret.ts');
+    fs.writeFileSync(target, 'export const a = 2;\n');
+    const lstat = asyncFs.lstat;
+    let swapped = false;
+    vi.spyOn(asyncFs, 'lstat').mockImplementation(async (file, options) => {
+      const stat = await lstat(file, options);
+      if (String(file) === filename && !swapped) {
+        swapped = true;
+        fs.unlinkSync(filename);
+        fs.symlinkSync(target, filename);
+      }
+      return stat;
+    });
+    const open = vi.spyOn(asyncFs, 'open');
+    const readFile = vi.spyOn(asyncFs, 'readFile');
+    try {
+      expect(await getOverlaySnapshot(handle())).toMatchObject({
+        usable: false,
+        reason: 'cannot read src/a.ts',
+      });
+      expect(swapped).toBe(true);
+      const index = open.mock.calls.findIndex(([file]) => String(file) === filename);
+      expect(index).toBeGreaterThanOrEqual(0);
+      await expect(open.mock.results[index].value).rejects.toMatchObject({ code: 'ELOOP' });
+      expect(readFile.mock.calls.some(([file]) => [filename, target].includes(String(file)))).toBe(
+        false,
+      );
+    } finally {
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
   it('becomes unusable when a dirty file changes content after the overlay was built', async () => {
     fs.writeFileSync(path.join(repo, 'src/a.ts'), 'export const a = 2;\n');
     publishFixture();

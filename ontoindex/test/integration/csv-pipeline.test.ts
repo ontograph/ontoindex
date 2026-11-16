@@ -44,6 +44,52 @@ afterAll(async () => {
 });
 
 describe('streamAllCSVsToDisk', () => {
+  it('preserves emoji in File content', async () => {
+    const content = 'before😀after';
+    await fs.writeFile(path.join(repoDir, 'src', 'emoji.ts'), content);
+    const graph = buildTestGraph([
+      { id: 'file:emoji', label: 'File', name: 'emoji.ts', filePath: 'src/emoji.ts' },
+    ]);
+    const result = await streamAllCSVsToDisk(graph, repoDir, csvDir);
+    await expect(fs.readFile(result.nodeFiles.get('File')!.csvPath, 'utf-8')).resolves.toBe(
+      `id,name,filePath,content\n"file:emoji","emoji.ts","src/emoji.ts","${content}"\n`,
+    );
+  });
+
+  it('writes files above the cache budget and snippets past the File content cap', async () => {
+    const prefix = 'a'.repeat(4 * 1024 * 1024 + 1);
+    const tail = 'export function lateSymbol() {}';
+    const content = `${prefix}\n\n\n\n${tail}`;
+    await fs.writeFile(path.join(repoDir, 'src', 'oversized.ts'), content);
+    const graph = buildTestGraph([
+      { id: 'file:large', label: 'File', name: 'oversized.ts', filePath: 'src/oversized.ts' },
+      {
+        id: 'func:late',
+        label: 'Function',
+        name: 'lateSymbol',
+        filePath: 'src/oversized.ts',
+        startLine: 5,
+        endLine: 5,
+      },
+    ]);
+    vi.stubEnv('ONTOINDEX_MAX_FILE_CONTENT_CHARS', '64');
+    try {
+      const result = await streamAllCSVsToDisk(graph, repoDir, csvDir);
+      await expect(fs.readFile(result.nodeFiles.get('File')!.csvPath, 'utf-8')).resolves.toBe(
+        `id,name,filePath,content\n"file:large","oversized.ts","src/oversized.ts","${prefix.slice(0, 64)}\n... [File content truncated]"\n`,
+      );
+      const functionCsv = await fs.readFile(result.nodeFiles.get('Function')!.csvPath, 'utf-8');
+      expect(functionCsv).toContain(`"\n${tail}"`);
+      vi.stubEnv('ONTOINDEX_MAX_FILE_CONTENT_CHARS', '0');
+      const fullResult = await streamAllCSVsToDisk(graph, repoDir, csvDir);
+      await expect(fs.readFile(fullResult.nodeFiles.get('File')!.csvPath, 'utf-8')).resolves.toBe(
+        `id,name,filePath,content\n"file:large","oversized.ts","src/oversized.ts","${content}"\n`,
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it.each([
     ['default settings', undefined, 1],
     ['a zero content limit', '0', 1],

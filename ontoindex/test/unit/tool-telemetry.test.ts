@@ -1,5 +1,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  appendFileSync,
+  mkdirSync,
+  renameSync,
+  statSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -7,12 +16,19 @@ import { pathToFileURL } from 'node:url';
 
 // Mock fs/promises and os before importing the module
 vi.mock('node:fs/promises', () => ({
-  appendFile: vi.fn().mockResolvedValue(undefined),
   readFile: vi.fn().mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' })),
-  rename: vi.fn().mockResolvedValue(undefined),
-  stat: vi.fn().mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' })),
-  mkdir: vi.fn().mockResolvedValue(undefined),
 }));
+
+vi.mock('node:fs', async (importOriginal) => {
+  const fs = await importOriginal<typeof import('node:fs')>();
+  return {
+    ...fs,
+    appendFileSync: vi.fn(fs.appendFileSync),
+    mkdirSync: vi.fn(fs.mkdirSync),
+    renameSync: vi.fn(),
+    statSync: vi.fn(fs.statSync),
+  };
+});
 
 vi.mock('node:os', async (importOriginal) => ({
   ...(await importOriginal<typeof import('node:os')>()),
@@ -28,11 +44,11 @@ import {
   hasToolCallTelemetryScope,
   toolCallErrorFields,
 } from '../../src/mcp/local/tool-telemetry.js';
-import { appendFile, readFile, stat } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 
-const appendMock = appendFile as unknown as ReturnType<typeof vi.fn>;
+const appendMock = appendFileSync as unknown as ReturnType<typeof vi.fn>;
 const readFileMock = readFile as unknown as ReturnType<typeof vi.fn>;
-const statMock = stat as unknown as ReturnType<typeof vi.fn>;
+const statMock = statSync as unknown as ReturnType<typeof vi.fn>;
 
 describe('recordToolCall', () => {
   let originalTelemetryDir: string | undefined;
@@ -41,8 +57,11 @@ describe('recordToolCall', () => {
     originalTelemetryDir = process.env.ONTOINDEX_TELEMETRY_DIR;
     delete process.env.ONTOINDEX_TELEMETRY_DIR;
     vi.clearAllMocks();
-    statMock.mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
-    appendMock.mockResolvedValue(undefined);
+    statMock.mockImplementation(() => {
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    });
+    vi.mocked(mkdirSync).mockImplementation(() => undefined);
+    appendMock.mockImplementation(() => undefined);
   });
 
   afterEach(() => {
@@ -61,8 +80,6 @@ describe('recordToolCall', () => {
       responseSizeBytes: 456,
       ok: true,
     });
-    // Give the fire-and-forget a tick to run
-    await new Promise((r) => setTimeout(r, 10));
     expect(appendMock).toHaveBeenCalledOnce();
     const [path, line] = appendMock.mock.calls[0];
     expect(path).toBe(join('/fake/home', '.ontoindex', 'telemetry.jsonl'));
@@ -84,7 +101,6 @@ describe('recordToolCall', () => {
       code: 'TOOL_FAILED',
       reason: 'timeout',
     });
-    await new Promise((r) => setTimeout(r, 10));
     expect(JSON.parse(appendMock.mock.calls[0][1])).toMatchObject({
       id: '1-2',
       code: 'TOOL_FAILED',
@@ -99,7 +115,10 @@ describe('recordToolCall', () => {
     await expect(readRecentOversizedToolCalls()).resolves.toEqual(['query']);
   });
 
-  it('writes start records synchronously and swallows write failures', () => {
+  it('writes start records synchronously and swallows write failures', async () => {
+    const realFs = await vi.importActual<typeof import('node:fs')>('node:fs');
+    appendMock.mockImplementation(realFs.appendFileSync);
+    vi.mocked(mkdirSync).mockImplementation(realFs.mkdirSync);
     const dir = mkdtempSync(join(tmpdir(), 'ontoindex-telemetry-'));
     vi.stubEnv('ONTOINDEX_TELEMETRY_DIR', dir);
     try {
@@ -158,10 +177,9 @@ describe('recordToolCall', () => {
   });
 
   it('uses the telemetry directory override for appends, rotation and reads', async () => {
-    const { mkdir, rename } = await import('node:fs/promises');
     vi.stubEnv('ONTOINDEX_TELEMETRY_DIR', '/isolated/telemetry');
     const telemetryPath = join('/isolated/telemetry', 'telemetry.jsonl');
-    statMock.mockResolvedValue({ size: 11 * 1024 * 1024 });
+    statMock.mockReturnValue({ size: 11 * 1024 * 1024 });
     recordToolCall({
       ts: '2026-01-01T00:00:00.000Z',
       method: 'list_repos',
@@ -170,10 +188,10 @@ describe('recordToolCall', () => {
       responseSizeBytes: 600 * 1024,
       ok: true,
     });
-    await vi.waitFor(() => expect(appendMock).toHaveBeenCalledOnce());
-    expect(mkdir).toHaveBeenCalledWith('/isolated/telemetry', { recursive: true });
+    expect(appendMock).toHaveBeenCalledOnce();
+    expect(mkdirSync).toHaveBeenCalledWith('/isolated/telemetry', { recursive: true });
     expect(statMock).toHaveBeenCalledWith(telemetryPath);
-    expect(rename).toHaveBeenCalledWith(telemetryPath, telemetryPath + '.1');
+    expect(renameSync).toHaveBeenCalledWith(telemetryPath, telemetryPath + '.1');
     expect(appendMock.mock.calls[0][0]).toBe(telemetryPath);
 
     readFileMock.mockResolvedValue(appendMock.mock.calls[0][1]);
@@ -181,8 +199,10 @@ describe('recordToolCall', () => {
     expect(readFileMock).toHaveBeenCalledWith(telemetryPath, 'utf8');
   });
 
-  it('does not throw when appendFile rejects', async () => {
-    appendMock.mockRejectedValue(new Error('disk full'));
+  it('does not throw when appendFileSync throws', () => {
+    appendMock.mockImplementation(() => {
+      throw new Error('disk full');
+    });
     expect(() =>
       recordToolCall({
         ts: new Date().toISOString(),
@@ -193,13 +213,11 @@ describe('recordToolCall', () => {
         ok: false,
       }),
     ).not.toThrow();
-    await new Promise((r) => setTimeout(r, 10));
   });
 
   it('triggers rotation when file exceeds 10 MB', async () => {
-    const { rename } = await import('node:fs/promises');
-    const renameMock = rename as unknown as ReturnType<typeof vi.fn>;
-    statMock.mockResolvedValue({ size: 11 * 1024 * 1024 });
+    const renameMock = vi.mocked(renameSync);
+    statMock.mockReturnValue({ size: 11 * 1024 * 1024 });
     recordToolCall({
       ts: new Date().toISOString(),
       method: 'impact',
@@ -208,7 +226,6 @@ describe('recordToolCall', () => {
       responseSizeBytes: 100,
       ok: true,
     });
-    await new Promise((r) => setTimeout(r, 10));
     expect(renameMock).toHaveBeenCalledOnce();
     expect(renameMock.mock.calls[0][1]).toContain('.1');
   });
@@ -255,14 +272,18 @@ describe('recordToolCall', () => {
 });
 
 describe('tool-call telemetry scope', () => {
+  beforeEach(async () => {
+    const realFs = await vi.importActual<typeof import('node:fs')>('node:fs');
+    appendMock.mockImplementation(realFs.appendFileSync);
+    vi.mocked(mkdirSync).mockImplementation(realFs.mkdirSync);
+    statMock.mockImplementation(realFs.statSync);
+  });
   it.each(['success', 'throw', 'fail'] as const)(
     'records one matched pair for %s',
     async (mode) => {
       const dir = mkdtempSync(join(tmpdir(), 'ontoindex-scope-'));
       vi.stubEnv('ONTOINDEX_TELEMETRY_DIR', dir);
       appendMock.mockClear();
-      appendMock.mockResolvedValue(undefined);
-      statMock.mockRejectedValue(new Error('missing'));
       const failure = Object.assign(new Error('failed'), {
         code: 'TOOL_FAILED',
         diagnostics: { reason: 'timeout' },
@@ -283,9 +304,11 @@ describe('tool-call telemetry scope', () => {
         );
         if (mode === 'throw') await expect(result).rejects.toBe(failure);
         else await expect(result).resolves.toBe('result');
-        await vi.waitFor(() => expect(appendMock).toHaveBeenCalledOnce());
-        const start = JSON.parse(readFileSync(join(dir, 'telemetry.jsonl'), 'utf8').trim());
-        const completion = JSON.parse(appendMock.mock.calls[0][1]);
+        expect(appendMock).toHaveBeenCalledTimes(2);
+        const [start, completion] = readFileSync(join(dir, 'telemetry.jsonl'), 'utf8')
+          .trim()
+          .split('\n')
+          .map((line) => JSON.parse(line));
         expect(start).toMatchObject({
           phase: 'start',
           method: 'inspect.context',
@@ -309,7 +332,6 @@ describe('tool-call telemetry scope', () => {
     const dir = mkdtempSync(join(tmpdir(), 'ontoindex-closed-scope-'));
     vi.stubEnv('ONTOINDEX_TELEMETRY_DIR', dir);
     appendMock.mockClear();
-    appendMock.mockResolvedValue(undefined);
     let finish!: () => void;
     let background!: Promise<void>;
     try {
@@ -325,13 +347,13 @@ describe('tool-call telemetry scope', () => {
       });
       finish();
       await background;
-      await vi.waitFor(() => expect(appendMock).toHaveBeenCalledOnce());
-      expect(JSON.parse(appendMock.mock.calls[0][1])).toMatchObject({
+      expect(appendMock).toHaveBeenCalledTimes(2);
+      expect(JSON.parse(appendMock.mock.calls[1][1])).toMatchObject({
         repo: '',
         ok: true,
         responseSizeBytes: 7,
       });
-      expect(JSON.parse(appendMock.mock.calls[0][1])).not.toHaveProperty('code');
+      expect(JSON.parse(appendMock.mock.calls[1][1])).not.toHaveProperty('code');
     } finally {
       vi.unstubAllEnvs();
       rmSync(dir, { recursive: true, force: true });

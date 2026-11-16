@@ -1,5 +1,5 @@
-import { appendFile, mkdir, readFile, rename, stat } from 'node:fs/promises';
-import { appendFileSync, mkdirSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
+import { appendFileSync, mkdirSync, renameSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { AsyncLocalStorage } from 'node:async_hooks';
@@ -127,11 +127,11 @@ export function recordToolCallStart(record: ToolCallStartRecord): void {
   }
 }
 
-async function rotateIfNeeded(telemetryPath: string): Promise<void> {
+function rotateIfNeeded(telemetryPath: string): void {
   try {
-    const s = await stat(telemetryPath);
+    const s = statSync(telemetryPath);
     if (s.size >= ROTATE_BYTES) {
-      await rename(telemetryPath, telemetryPath + '.1');
+      renameSync(telemetryPath, telemetryPath + '.1');
     }
   } catch {
     // file doesn't exist yet — nothing to rotate
@@ -139,18 +139,15 @@ async function rotateIfNeeded(telemetryPath: string): Promise<void> {
 }
 
 export function recordToolCall(record: TelemetryRecord): void {
-  // Fire-and-forget: telemetry must never fail a tool call
-  void (async () => {
-    try {
-      const telemetryDir = process.env.ONTOINDEX_TELEMETRY_DIR ?? join(homedir(), '.ontoindex');
-      const telemetryPath = join(telemetryDir, 'telemetry.jsonl');
-      await mkdir(telemetryDir, { recursive: true });
-      await rotateIfNeeded(telemetryPath);
-      await appendFile(telemetryPath, JSON.stringify(record) + '\n', 'utf8');
-    } catch {
-      // intentionally swallowed
-    }
-  })();
+  try {
+    const telemetryDir = process.env.ONTOINDEX_TELEMETRY_DIR ?? join(homedir(), '.ontoindex');
+    const telemetryPath = join(telemetryDir, 'telemetry.jsonl');
+    mkdirSync(telemetryDir, { recursive: true });
+    rotateIfNeeded(telemetryPath);
+    appendFileSync(telemetryPath, JSON.stringify(record) + '\n', 'utf8');
+  } catch {
+    // intentionally swallowed
+  }
 }
 
 export async function readRecentOversizedToolCalls(

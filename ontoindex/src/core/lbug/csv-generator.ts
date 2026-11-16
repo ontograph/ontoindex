@@ -35,7 +35,7 @@ export const sanitizeUTF8 = (str: string): string => {
     .replace(/\r\n/g, '\n')
     .replace(/\r/g, '\n')
     .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
-    .replace(/[\uD800-\uDFFF]/g, '')
+    .replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '')
     .replace(/[\uFFFE\uFFFF]/g, '');
 };
 
@@ -83,13 +83,17 @@ export const isBinaryContent = (content: string): boolean => {
   return nonPrintable / sample.length > 0.1;
 };
 
+const MAX_CACHED_FILE_BYTES = 4 * 1024 * 1024;
+
 /**
  * LRU content cache — avoids re-reading the same source file for every
  * symbol defined in it. Sized generously so most files stay cached during
- * the single-pass node iteration.
+ * the single-pass node iteration. Files above MAX_CACHED_FILE_BYTES are kept
+ * in a single slot so retained memory stays bounded.
  */
 class FileContentCache {
   private cache = new Map<string, { content: string; lines?: string[] }>();
+  private large?: { key: string; entry: { content: string; lines?: string[] } };
   private maxSize: number;
   private repoPath: string;
 
@@ -117,9 +121,15 @@ class FileContentCache {
       this.cache.set(relativePath, cached);
       return cached;
     }
+    if (this.large?.key === relativePath) return this.large.entry;
     try {
       const fullPath = path.join(this.repoPath, relativePath);
+      const stat = await fs.stat(fullPath);
       const content = await fs.readFile(fullPath, 'utf-8');
+      if (stat.size > MAX_CACHED_FILE_BYTES) {
+        this.large = { key: relativePath, entry: { content } };
+        return this.large.entry;
+      }
       return this.set(relativePath, content);
     } catch {
       return this.set(relativePath, '');
