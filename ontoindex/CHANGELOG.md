@@ -4,6 +4,8 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [3.1.8] - 2026-11-16
+
 - When a dirty file is the in-repository target of a tracked resolver-configuration symlink such as `tsconfig.json`, `ontoindex analyze --workspace-graph` and automatic workspace reads plan the link as a configuration change and rebuild the workspace graph. Before, editing only the target left the committed base in use ("Committed base is current"), so imports still resolved through the old aliases. A deleted target also marks its link as changed.
 - `impact` batch lists targets marked `partial: true` or `traversalComplete: false` in `union.incompleteTargets` and reports `union.risk: UNKNOWN` when any target failed or is incomplete. Incomplete targets still contribute the nodes they found. A target counts as failed when its result has an error or reports `risk: UNKNOWN` with no impacted nodes. That now covers ambiguous and source-only matches, symbols-only overlays without graph impact and a failed first traversal, which 3.1.7 treated as complete, so the batch could report `NONE` or `LOW`.
 - Index CSV writing keeps valid supplementary characters such as emoji and removes only unpaired surrogate halves. Before, every surrogate code unit was removed, so `😀` disappeared from stored content and search.
