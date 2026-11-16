@@ -649,9 +649,6 @@ async function computeSnapshot(
         onUnreadableFile: () => {
           unreadable = true;
         },
-        onSkippedLargeFile: () => {
-          unreadable = true;
-        },
       });
       if (unreadable)
         return { ...base, usable: false, reason: 'workspace graph has unreadable inputs; rebuild' };

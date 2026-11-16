@@ -13,6 +13,7 @@
  * may not yet be present in all indexes (added by P1 gitMining streaming fix);
  * the query returns 0 rows for absent types without error.
  */
+import { queryRowValue as rowValue } from '../lbug/query-row.js';
 import { executeParameterized } from '../lbug/pool-adapter.js';
 
 export interface GraphPathEdge {
@@ -81,10 +82,6 @@ const EDGE_WEIGHTS: Record<string, number> = {
 };
 
 type GraphPathQueryRow = Record<string, unknown> & { readonly [index: number]: unknown };
-
-function rowValue(row: GraphPathQueryRow, key: string, index: number): unknown {
-  return row[key] ?? row[index];
-}
 
 function createReport(traversalStrategy: GraphTraversalStrategy): GraphPathReport {
   return {

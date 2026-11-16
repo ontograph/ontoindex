@@ -50,7 +50,6 @@ export const scanPhase: PipelinePhase<ScanOutput> = {
         });
       },
       {
-        onSkippedLargeFile: (file) => skippedLargeFiles.push(file),
         includePaths: ctx.options?.includePaths,
       },
     );
@@ -58,7 +57,6 @@ export const scanPhase: PipelinePhase<ScanOutput> = {
     const comparePaths = (a: { path: string }, b: { path: string }) =>
       a.path < b.path ? -1 : a.path > b.path ? 1 : 0;
     scannedFiles.sort(comparePaths);
-    skippedLargeFiles.sort(comparePaths);
 
     const totalFiles = scannedFiles.length;
     const allPaths = scannedFiles.map((f) => f.path);

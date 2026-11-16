@@ -8,16 +8,12 @@ vi.mock('../../src/core/ingestion/filesystem-walker.js', () => ({
 }));
 
 describe('scanPhase', () => {
-  it('orders scanned and skipped paths deterministically', async () => {
-    vi.mocked(walkRepositoryPaths).mockImplementation(async (_repoPath, _progress, options) => {
-      options?.onSkippedLargeFile?.({ path: 'z-large.ts', size: 20 });
-      options?.onSkippedLargeFile?.({ path: 'A-large.ts', size: 10 });
-      return [
-        { path: 'z.ts', size: 3 },
-        { path: 'a.ts', size: 2 },
-        { path: 'A.ts', size: 1 },
-      ];
-    });
+  it('orders scanned paths deterministically and retains an empty skipped list', async () => {
+    vi.mocked(walkRepositoryPaths).mockResolvedValue([
+      { path: 'z.ts', size: 3 },
+      { path: 'a.ts', size: 2 },
+      { path: 'A.ts', size: 1 },
+    ]);
 
     const result = await scanPhase.execute(
       { repoPath: '/repo', graph: createKnowledgeGraph(), onProgress: () => {}, pipelineStart: 0 },
@@ -26,6 +22,6 @@ describe('scanPhase', () => {
 
     expect(result.scannedFiles.map((file) => file.path)).toEqual(['A.ts', 'a.ts', 'z.ts']);
     expect(result.allPaths).toEqual(['A.ts', 'a.ts', 'z.ts']);
-    expect(result.skippedLargeFiles.map((file) => file.path)).toEqual(['A-large.ts', 'z-large.ts']);
+    expect(result.skippedLargeFiles).toEqual([]);
   });
 });

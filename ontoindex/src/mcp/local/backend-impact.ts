@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { getLanguageFromFilename } from 'ontoindex-shared';
 import { executeParameterized } from '../../core/lbug/pool-adapter.js';
+import { queryRowValue as rowValueNullish } from '../../core/lbug/query-row.js';
 import { classifyLbugOpenError } from '../../core/lbug/open-error.js';
 import { createKnowledgeGraph } from '../../core/graph/graph.js';
 import { createASTCache } from '../../core/ingestion/ast-cache.js';
@@ -201,15 +202,6 @@ export function impactResultCompleteness(
 function logQueryError(context: string, err: unknown): void {
   const msg = err instanceof Error ? err.message : String(err);
   console.error(`OntoIndex [${context}]: ${msg}`);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function rowValueNullish(row: QueryRow, key: string, index: number): unknown {
-  const keyed = isRecord(row) ? row[key] : undefined;
-  return keyed ?? (Array.isArray(row) ? row[index] : undefined);
 }
 
 function rowStringOr(row: QueryRow, key: string, index: number, fallback = ''): string {
@@ -739,33 +731,48 @@ export async function runImpactBFS(
           MATCH (s)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
           WHERE s.id IN $ids
           WITH p, COUNT(DISTINCT s.id) AS hits, MIN(r.step) AS minStep
-          OPTIONAL MATCH (ep {id: p.entryPointId})
           RETURN p.id AS pId, p.heuristicLabel AS name, p.processType AS processType,
-                 p.entryPointId AS entryPointId, hits, minStep, p.stepCount AS stepCount,
-                 ep.name AS epName, label(ep) AS epType, ep.filePath AS epFilePath
+                 p.entryPointId AS entryPointId, hits, minStep, p.stepCount AS stepCount
         `,
           { ids },
         )) as ProcessImpactRow[];
+        // Look entry points up separately. Joining them per process row with an unlabeled
+        // `(ep {id: p.entryPointId})` exhausts the default 64 MiB committed read buffer.
+        const entryPointIds = [
+          ...new Set(
+            rows.map((row) => rowValueNullish(row, 'entryPointId', 3)).filter((id) => id != null),
+          ),
+        ];
+        const entryPoints = new Map<unknown, QueryRow>();
+        if (entryPointIds.length > 0) {
+          const epRows = (await query(
+            `MATCH (ep) WHERE ep.id IN $entryPointIds
+             RETURN ep.id AS id, ep.name AS name, label(ep) AS type, ep.filePath AS filePath`,
+            { entryPointIds },
+          )) as QueryRow[];
+          for (const epRow of epRows) entryPoints.set(rowValueNullish(epRow, 'id', 0), epRow);
+        }
 
         for (const row of rows) {
           const pId = rowValueNullish(row, 'pId', 0);
           const epId = rowValueNullish(row, 'entryPointId', 3) ?? rowValueNullish(row, 'pId', 0);
           if (pId) processToEntryPoint.set(String(pId), String(epId));
+          const epRow = entryPoints.get(rowValueNullish(row, 'entryPointId', 3)) ?? {};
 
           const epNameRaw =
-            rowValueNullish(row, 'epName', 7) ?? rowValueNullish(row, 'name', 1) ?? 'unknown';
+            rowValueNullish(epRow, 'name', 1) ?? rowValueNullish(row, 'name', 1) ?? 'unknown';
           const epName =
             typeof epNameRaw === 'string' && epNameRaw.trim().length > 0
               ? epNameRaw.trim()
               : 'unknown';
 
-          const epTypeRaw = rowValueNullish(row, 'epType', 8) ?? '';
+          const epTypeRaw = rowValueNullish(epRow, 'type', 2) ?? '';
           const epType =
             typeof epTypeRaw === 'string' && epTypeRaw.trim().length > 0
               ? epTypeRaw.trim()
               : 'Function';
 
-          const epFilePathRaw = rowValueNullish(row, 'epFilePath', 9) ?? '';
+          const epFilePathRaw = rowValueNullish(epRow, 'filePath', 3) ?? '';
           const epFilePath =
             typeof epFilePathRaw === 'string' ? epFilePathRaw : String(epFilePathRaw);
           const hitsRaw = rowValueNullish(row, 'hits', 4) ?? 0;

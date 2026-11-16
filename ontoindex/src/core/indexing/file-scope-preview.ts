@@ -26,10 +26,8 @@ export async function collectFileScopePreview(
   options: CollectFileScopePreviewOptions = {},
 ): Promise<FileScopePreview> {
   const limit = Math.max(1, Math.min(options.limit ?? DEFAULT_LIMIT, 100));
-  const skippedLargeFiles: Array<{ path: string; size: number }> = [];
   const files = await walkRepositoryPaths(repoPath, undefined, {
     includePaths: options.includePaths,
-    onSkippedLargeFile: (file) => skippedLargeFiles.push(file),
   });
 
   const includedByExtension: Record<string, number> = {};
@@ -42,17 +40,13 @@ export async function collectFileScopePreview(
     if (warning) warnings.push(warning);
   }
 
-  for (const file of skippedLargeFiles.slice(0, limit)) {
-    warnings.push(`large-file-skipped:${file.path}:${file.size}`);
-  }
-
   return {
     repoPath,
-    totalCandidates: files.length + skippedLargeFiles.length,
+    totalCandidates: files.length,
     includedCount: files.length,
-    skippedCount: skippedLargeFiles.length,
+    skippedCount: 0,
     includedByExtension: sortRecord(includedByExtension),
-    topSkippedDirectories: summarizeSkippedDirectories(skippedLargeFiles, limit),
+    topSkippedDirectories: [],
     largestIncludedFiles: files
       .slice()
       .sort((a, b) => b.size - a.size)
@@ -81,21 +75,6 @@ function suspiciousIncludedWarning(filePath: string): string | null {
     return `generated-like-include:${filePath}`;
   }
   return null;
-}
-
-function summarizeSkippedDirectories(
-  files: Array<{ path: string; size: number }>,
-  limit: number,
-): Array<{ path: string; count: number; reason: string }> {
-  const counts = new Map<string, number>();
-  for (const file of files) {
-    const dir = path.posix.dirname(file.path.replace(/\\/g, '/'));
-    counts.set(dir, (counts.get(dir) ?? 0) + 1);
-  }
-  return [...counts.entries()]
-    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-    .slice(0, limit)
-    .map(([dir, count]) => ({ path: dir, count, reason: 'large-file' }));
 }
 
 function sortRecord(record: Record<string, number>): Record<string, number> {

@@ -1,3 +1,4 @@
+import { queryRowValue as rowValueNullish } from '../../core/lbug/query-row.js';
 import {
   executeParameterized,
   executeQuery,
@@ -64,14 +65,6 @@ const rowKeys = (row: QueryRow): string[] => Object.keys(row);
 
 const rowKeyValue = (row: QueryRow, key: string): unknown =>
   (row as unknown as Record<string, unknown>)[key];
-
-const rowIndexValue = (row: QueryRow, index: number): unknown =>
-  Array.isArray(row) ? row[index] : undefined;
-
-const rowValueNullish = (row: QueryRow, key: string, index: number): unknown => {
-  const keyed = isRecord(row) ? row[key] : undefined;
-  return keyed ?? rowIndexValue(row, index);
-};
 
 const stringifyRowValue = (value: unknown): string => {
   if (value === null || value === undefined) return '';

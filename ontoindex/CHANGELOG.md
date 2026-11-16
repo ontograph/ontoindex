@@ -12,6 +12,8 @@ All notable changes to OntoIndex will be documented in this file.
 - Query results keep values of `0`, `""` and `false`. Before, symbol search, `impact`, `inspect context`, and process and cluster resources replaced them with a positional value or dropped them, so a symbol on line 0 lost its `startLine` and a process step 0 lost its number.
 - The CSV file-content cache keeps at most 64 Mi UTF-16 characters of ordinary files, plus one file larger than 4 MiB. When a File content limit is set, OntoIndex reads only as much of a much larger file as the stored prefix needs.
 - With `ONTOINDEX_DEBUG` set, a failed CLI command prints its stack trace.
+- `impact` looks up the entry points of affected processes in one separate query by id per batch. Before, a per-row entry-point lookup scanned every node table and failed with "buffer pool is full" at the default 64 MiB committed read buffer, even on small indexes. In 3.1.8 the failure was dropped, so committed-mode `impact` returned no affected processes.
+- `ontoindex analyze --dry-run` no longer prints a "Skipped" count of oversized files. Large files have been indexed since the scan size cap was removed, so the count was always 0. The `diagnose` file-scope preview keeps `skippedCount: 0` and `topSkippedDirectories: []`.
 - Removed the unused scan size-cap code path. `ONTOINDEX_SCAN_MAX_FILE_KB` has had no effect since 3.1.2.
 
 ## [3.1.8] - 2026-11-16

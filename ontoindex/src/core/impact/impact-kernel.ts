@@ -1,3 +1,4 @@
+import { queryRowValue as rowValueNullish } from '../lbug/query-row.js';
 import { executeParameterized } from '../lbug/pool-adapter.js';
 import { classifyLbugOpenError } from '../lbug/open-error.js';
 import { classifyGraphFactProvenance, type GraphFactProvenance } from '../graph/fact-provenance.js';
@@ -186,14 +187,6 @@ export function resolveRelationTypes(types: string[] | undefined): string[] {
 export function clampImpactDepth(value: unknown, fallback = 3): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
   return Math.max(1, Math.min(Math.trunc(value), MAX_IMPACT_DEPTH));
-}
-
-function rowValueNullish(row: QueryRow, key: string, index: number): unknown {
-  const keyed =
-    typeof row === 'object' && row !== null && !Array.isArray(row)
-      ? (row as Record<string, unknown>)[key]
-      : undefined;
-  return keyed ?? (Array.isArray(row) ? row[index] : undefined);
 }
 
 function rowStringOr(row: QueryRow, key: string, index: number, fallback = ''): string {

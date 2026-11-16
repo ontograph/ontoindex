@@ -1,3 +1,4 @@
+import { queryRowValue as rowValue } from '../../core/lbug/query-row.js';
 import { executeParameterized } from '../../core/lbug/pool-adapter.js';
 import {
   isAutomaticWorkspaceEnabled,
@@ -58,11 +59,6 @@ function retryCalls(repoId: string, nodeId: string, name: string): string[] {
 function logContextQueryError(context: string, err: unknown): void {
   const msg = err instanceof Error ? err.message : String(err);
   console.error(`OntoIndex [${context}]: ${msg}`);
-}
-
-function rowValue(row: QueryRow, key: string, index: number): unknown {
-  const namedValue = !Array.isArray(row) ? row[key] : undefined;
-  return namedValue ?? row[index];
 }
 
 function symbolTupleValue(sym: ResolvedContextSymbol, index: number): unknown {

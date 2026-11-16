@@ -122,7 +122,6 @@ export async function computeSourceManifest(
   const capture = options.capture;
   const entries = await walkRepositoryPaths(repoPath, capture ? () => capture.check() : undefined, {
     includePaths,
-    onSkippedLargeFile: (file) => scanDegradedPaths.push(file.path),
     onUnreadableFile: (file) => scanDegradedPaths.push(file.path),
   });
   capture?.check();

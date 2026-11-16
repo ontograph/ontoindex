@@ -11,9 +11,9 @@ import { createMCPServer } from '../../src/mcp/server.js';
 
 describe('navigation with a small native read buffer', () => {
   const repoName = 'committed-small-buffer';
-  // Stored File content (4 x 32 MiB) exceeds the buffer, so an unlabeled content read cannot fit.
-  // 48 MiB left too little headroom for optional search enrichment and failed intermittently.
-  const bufferMiB = 96;
+  // Stored File content (4 x 32 MiB, uncapped below) exceeds the default 64 MiB committed buffer,
+  // so an unlabeled content read cannot fit. Below about 56 MiB, aggregate queries fail on any graph.
+  const bufferMiB = 64;
   const payloadBytes = 32 * 1024 * 1024;
   let root: string;
   let backend: LocalBackend;
@@ -31,7 +31,7 @@ describe('navigation with a small native read buffer', () => {
     vi.stubEnv('ONTOINDEX_VECTOR_BACKEND', 'lbug');
     vi.stubEnv('ONTOINDEX_MCP_AUTO_ANALYZE', '0');
     vi.stubEnv('ONTOINDEX_AUTO_REFRESH', '0');
-    vi.stubEnv('ONTOINDEX_SCAN_MAX_FILE_KB', '0');
+    vi.stubEnv('ONTOINDEX_MAX_FILE_CONTENT_CHARS', '0');
     // Analyze at the default buffer; the small buffer applies to a fresh reader.
     vi.stubEnv('ONTOINDEX_LBUG_BUFFER_MB', '0');
     await fs.mkdir(path.join(repo, 'src'), { recursive: true });
@@ -42,7 +42,7 @@ describe('navigation with a small native read buffer', () => {
     );
     await fs.writeFile(
       path.join(repo, 'src/caller.ts'),
-      "import { fuseRanks } from './ranks';\nexport function rankCaller() { return fuseRanks(1, 2); }\n",
+      "import { fuseRanks } from './ranks';\nexport function rankCaller() { return fuseRanks(1, 2); }\nexport function rankEntry() { return rankCaller(); }\n",
     );
     // File.content is stored in full. Plain text avoids allocating parse workers.
     for (let i = 0; i < 4; i++) {
@@ -125,6 +125,7 @@ describe('navigation with a small native read buffer', () => {
     expect(result.risk).not.toBe('UNKNOWN');
     expect(result.target.name).toBe('fuseRanks');
     expect(JSON.stringify(result.byDepth)).toContain('rankCaller');
+    expect(JSON.stringify(result.affected_processes)).toContain('rankEntry');
   });
 
   it('safe_edit_check resolves the symbol instead of reporting it absent', async () => {

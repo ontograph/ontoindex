@@ -136,3 +136,65 @@
   tests.
 - `~/.codex/config.toml` still launches 3.1.4. This is a user-owned config and
   is reported only.
+
+## 3.1.9 follow-up: deferred items
+
+### D1. `onSkippedLargeFile` hook
+
+1. Delete the whole chain, including the `skippedLargeFiles` pipeline field
+   and the preview counts. Rejected: the field is persisted in scope-retention
+   manifests and compared by `scope-retention-candidate-reader.ts`, and
+   `diagnose` returns the preview counts.
+2. Remove only the never-called hook, its four registrations, the dead preview
+   collector and the CLI "Skipped" output. Keep `skippedLargeFiles: []`,
+   `skippedCount: 0` and `topSkippedDirectories: []`. **Chosen.**
+3. Leave it. Rejected: it prints a count that is always 0.
+
+### D2. Row-value helper
+
+1. Add `src/core/lbug/query-row.ts` (`queryRowValue`) and replace the 12
+   identical keyed-then-positional readers with it. **Chosen.**
+2. Leave the copies. Rejected: they have already drifted once (`||` vs `??`).
+3. Add a lint rule against local copies. Rejected: more machinery than the
+   helper itself.
+
+Readers with different null handling (`backend-overview`, `safe-refactor`,
+the fallback readers, typed readers and the `||` code in `wiki/graph-queries.ts`)
+are kept on purpose.
+
+### D3. "buffer pool is full" in `committed-read-small-buffer`
+
+Root cause: `runImpactBFS` process enrichment joined
+`OPTIONAL MATCH (ep {id: p.entryPointId})` per row. The unlabeled lookup scans
+every node table; on the ontoindex, ontocode and hypbase indexes it failed every
+time at the default 64 MiB committed buffer and passed at 96 MiB.
+
+1. Reach the entry point through the step-1 `STEP_IN_PROCESS` edge. Rejected
+   after review: it changes results for partial or imported graphs.
+2. Look entry points up in one separate `ep.id IN $entryPointIds` query per
+   chunk and join in a `Map`. Same semantics; measured OK at 64 MiB on all three
+   real indexes. **Chosen.**
+3. Raise the default committed buffer. Rejected: masks the query shape and
+   costs memory on every read.
+
+The regression test now uses 64 MiB, disables the file-content cap so the
+payload really exceeds the buffer, and asserts an affected process. On this
+small fixture the old code also passes at 64 MiB (it fails at 48 MiB); the
+real-index probes are the evidence for the fix.
+
+Follow-up candidates with unlabeled `id IN` lookups on hot paths:
+`backend-search.ts` (618, 2201-2260), `backend-context.ts` (359, 374, 401),
+`safe-edit-check.ts` (418, 441, 522, 1007), the module and backfill queries in
+`backend-impact.ts`, and `backend-resources.ts` (280).
+
+### D4. Symlink cases in `workspace-graph-snapshot`
+
+1. Move them to unit tests. Rejected: both cases assert end-to-end rebuild
+   behavior that unit tests cannot reach.
+2. Merge case B into case A. Rejected: saves about 1.5-2 s in a 14 s file and
+   couples two independent failure modes.
+3. Keep them. **Chosen.**
+
+### D5. `~/.codex/config.toml`
+
+Still launches 3.1.4. User-owned; reported only.

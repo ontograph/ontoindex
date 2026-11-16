@@ -17,6 +17,7 @@
  * NOTE: graph-path.ts (citation BFS) is NOT modified — it is a separate use case
  * at depth=4 with a different edge-type set.
  */
+import { queryRowValue as rowValue } from '../lbug/query-row.js';
 import { executeParameterized } from '../lbug/pool-adapter.js';
 import type { EnrichedSymbolRow } from './symbol-merge.js';
 
@@ -89,10 +90,6 @@ const EDGE_WEIGHTS: Record<GraphEdgeType, number> = {
 };
 
 type GraphTraversalQueryRow = Record<string, unknown> & { readonly [index: number]: unknown };
-
-function rowValue(row: GraphTraversalQueryRow, key: string, index: number): unknown {
-  return row[key] ?? row[index];
-}
 
 function createReport(
   traversalStrategy: GraphTraversalRankStrategy,
