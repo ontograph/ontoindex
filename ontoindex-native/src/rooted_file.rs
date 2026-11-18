@@ -26,11 +26,20 @@ impl NativeRootedDirectory {
                     Error::from_reason(format!("rooted regular file open failed: {error}"))
                 })
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(target_os = "macos")]
+        {
+            use std::os::fd::{AsRawFd, IntoRawFd};
+            macos::open_regular(directory.as_raw_fd(), &relative)
+                .map(|file| file.into_raw_fd())
+                .map_err(|error| {
+                    Error::from_reason(format!("rooted regular file open failed: {error}"))
+                })
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
             let _ = (directory, relative);
             Err(Error::from_reason(
-                "rooted file opens require Linux openat2",
+                "rooted file opens require Linux or macOS",
             ))
         }
     }
@@ -51,11 +60,19 @@ pub fn open_rooted_directory(root: String) -> Result<NativeRootedDirectory> {
             })
             .map_err(|error| Error::from_reason(format!("rooted directory open failed: {error}")))
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        macos::open_root(&root)
+            .map(|directory| NativeRootedDirectory {
+                directory: Some(directory),
+            })
+            .map_err(|error| Error::from_reason(format!("rooted directory open failed: {error}")))
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let _ = root;
         Err(Error::from_reason(
-            "rooted file opens require Linux openat2",
+            "rooted file opens require Linux or macOS",
         ))
     }
 }
@@ -242,5 +259,181 @@ mod linux {
         let transferred = file.into_raw_fd();
         assert!(unsafe { libc::fcntl(transferred, libc::F_GETFD) } >= 0);
         drop(unsafe { File::from_raw_fd(transferred) });
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod macos {
+    use std::ffi::{CStr, CString};
+    use std::fs::File;
+    use std::io::{self, ErrorKind};
+    use std::os::fd::{AsRawFd, FromRawFd, RawFd};
+
+    fn validate_relative(path: &str) -> io::Result<()> {
+        if path
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
+        {
+            return Err(io::Error::new(
+                ErrorKind::InvalidInput,
+                "expected a nonempty normal relative path",
+            ));
+        }
+        CString::new(path)
+            .map_err(|_| io::Error::new(ErrorKind::InvalidInput, "path contains NUL"))?;
+        Ok(())
+    }
+
+    fn open_at(directory: RawFd, path: &CStr, flags: libc::c_int) -> io::Result<File> {
+        let fd = unsafe { libc::openat(directory, path.as_ptr(), flags) };
+        if fd < 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            // Take ownership immediately so metadata checks and error exits close it.
+            Ok(unsafe { File::from_raw_fd(fd) })
+        }
+    }
+
+    fn open_directory(directory: RawFd, name: &CStr) -> io::Result<File> {
+        open_at(
+            directory,
+            name,
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    }
+
+    fn open_slash() -> io::Result<File> {
+        let fd = unsafe {
+            libc::open(
+                c"/".as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+            )
+        };
+        if fd < 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(unsafe { File::from_raw_fd(fd) })
+        }
+    }
+
+    pub(super) fn open_root(root: &str) -> io::Result<File> {
+        let relative = root
+            .strip_prefix('/')
+            .ok_or_else(|| io::Error::new(ErrorKind::InvalidInput, "root must be absolute"))?;
+        if relative.is_empty() {
+            return open_slash();
+        }
+        validate_relative(relative)?;
+
+        // Walk from '/' using a pinned directory descriptor at each component.
+        // O_NOFOLLOW rejects symlink ancestors even if they are swapped concurrently.
+        let mut directory = open_slash()?;
+        for component in relative.split('/') {
+            let name = CString::new(component)
+                .map_err(|_| io::Error::new(ErrorKind::InvalidInput, "path contains NUL"))?;
+            directory = open_directory(directory.as_raw_fd(), &name)?;
+        }
+        Ok(directory)
+    }
+
+    fn regular_file(file: File) -> io::Result<File> {
+        if !file.metadata()?.is_file() {
+            return Err(io::Error::new(
+                ErrorKind::InvalidInput,
+                "target is not a regular file",
+            ));
+        }
+        Ok(file)
+    }
+
+    pub(super) fn open_regular(directory: RawFd, relative: &str) -> io::Result<File> {
+        validate_relative(relative)?;
+        let mut components = relative.split('/').peekable();
+        let mut parent = None;
+
+        while let Some(component) = components.next() {
+            let parent_fd = parent
+                .as_ref()
+                .map(|opened: &File| opened.as_raw_fd())
+                .unwrap_or(directory);
+            let name = CString::new(component)
+                .map_err(|_| io::Error::new(ErrorKind::InvalidInput, "path contains NUL"))?;
+            if components.peek().is_some() {
+                parent = Some(open_directory(parent_fd, &name)?);
+            } else {
+                let file = open_at(
+                    parent_fd,
+                    &name,
+                    libc::O_RDONLY | libc::O_NONBLOCK | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                )?;
+                return regular_file(file);
+            }
+        }
+
+        unreachable!("validated relative path has a final component")
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod macos_tests {
+    use super::macos;
+    use std::fs;
+    use std::io::Read;
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::symlink;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn rooted_file_open_is_anchored_and_rejects_symlinks() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temporary = std::env::temp_dir().join(format!("ontoindex-rooted-macos-{suffix}"));
+        let root_path = temporary.join("root");
+        let outside = temporary.join("outside");
+        fs::create_dir_all(root_path.join("nested")).unwrap();
+        fs::create_dir(&outside).unwrap();
+        fs::write(root_path.join("nested/file"), "inside").unwrap();
+        fs::write(outside.join("file"), "outside").unwrap();
+        symlink(&outside, root_path.join("directory-link")).unwrap();
+        symlink(outside.join("file"), root_path.join("file-link")).unwrap();
+
+        let canonical_root = fs::canonicalize(&root_path).unwrap();
+        let root = macos::open_root(canonical_root.to_str().unwrap()).unwrap();
+        let mut file = macos::open_regular(root.as_raw_fd(), "nested/file").unwrap();
+        let mut contents = String::new();
+        file.read_to_string(&mut contents).unwrap();
+        assert_eq!(contents, "inside");
+
+        for relative in [
+            "",
+            "/etc/passwd",
+            "../outside/file",
+            "nested/../file",
+            "nested//file",
+            "directory-link/file",
+            "file-link",
+        ] {
+            assert!(
+                macos::open_regular(root.as_raw_fd(), relative).is_err(),
+                "{relative:?}"
+            );
+        }
+
+        let root_link = temporary.join("root-link");
+        symlink(&canonical_root, &root_link).unwrap();
+        assert!(macos::open_root(root_link.to_str().unwrap()).is_err());
+
+        let moved_root = temporary.join("moved-root");
+        fs::rename(&root_path, &moved_root).unwrap();
+        symlink(&outside, &root_path).unwrap();
+        let mut pinned = macos::open_regular(root.as_raw_fd(), "nested/file").unwrap();
+        let mut pinned_contents = String::new();
+        pinned.read_to_string(&mut pinned_contents).unwrap();
+        assert_eq!(pinned_contents, "inside");
+
+        drop((file, pinned, root));
+        fs::remove_dir_all(temporary).unwrap();
     }
 }

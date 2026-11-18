@@ -11,7 +11,7 @@ const DEBOUNCE_MS = 150;
 const IS_DARWIN = process.platform === 'darwin';
 // FSEvents can take longer to deliver/coalesce notifications than inotify.
 const SETTLE_MS = DEBOUNCE_MS + (IS_DARWIN ? 2000 : 450);
-const WATCHER_WARMUP_MS = IS_DARWIN ? 300 : 0;
+const WATCHER_WARMUP_MS = IS_DARWIN ? SETTLE_MS + DEBOUNCE_MS : 0;
 
 describe('real fs.watch editor save patterns', () => {
   let parent: string;
@@ -44,7 +44,11 @@ describe('real fs.watch editor save patterns', () => {
       log: (message) => logs.push(message),
     });
     watcher.start();
-    if (WATCHER_WARMUP_MS) await delay(WATCHER_WARMUP_MS);
+    if (WATCHER_WARMUP_MS) {
+      await delay(WATCHER_WARMUP_MS);
+      // Ignore FSEvents replay from files created before the watcher was armed.
+      refreshes.length = 0;
+    }
   });
 
   afterEach(() => {

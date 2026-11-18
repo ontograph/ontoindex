@@ -63,7 +63,16 @@ export const isNativeFeatureEnabled = (env: NodeJS.ProcessEnv, featureFlag: stri
   truthyNativeFlag(env[featureFlag]);
 
 export const loadOntoIndexNativeModule = async (): Promise<OntoIndexNativeModule> => {
+  const nativePlatform =
+    process.platform === 'linux'
+      ? `${process.platform}-${process.arch}`
+      : process.platform === 'darwin' && process.arch === 'arm64'
+        ? 'darwin-arm64'
+        : null;
+  if (!nativePlatform) {
+    throw new Error(`OntoIndex native addon is unavailable on ${process.platform}/${process.arch}`);
+  }
   return require(
-    fileURLToPath(new URL('../../dist/native/addon/index.cjs', import.meta.url)),
+    fileURLToPath(new URL(`../../dist/native/addon/${nativePlatform}/index.cjs`, import.meta.url)),
   ) as OntoIndexNativeModule;
 };

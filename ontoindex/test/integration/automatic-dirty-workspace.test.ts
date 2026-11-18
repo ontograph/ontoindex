@@ -333,10 +333,23 @@ it('replays current workspace mutations through persistent stdio MCP and foregro
     const head = git('rev-parse', 'HEAD').trim();
     if (process.env.ONTOINDEX_TEST_CGROUP_ROOT)
       scope = createCpuScope(process.env.ONTOINDEX_TEST_CGROUP_ROOT);
-    const timed = {
-      command: '/usr/bin/time',
-      args: ['-f', '%x', '-o', exitFile, process.execPath, ...cli, 'mcp'],
-    };
+    let timed: { command: string; args: string[] };
+    if (process.platform === 'linux') {
+      timed = {
+        command: '/usr/bin/time',
+        args: ['-f', '%x', '-o', exitFile, process.execPath, ...cli, 'mcp'],
+      };
+    } else {
+      const exitRecorder = path.join(root, 'record-mcp-exit.cjs');
+      await fs.writeFile(
+        exitRecorder,
+        `process.on('exit', (code) => require('node:fs').writeFileSync(${JSON.stringify(exitFile)}, String(code ?? 0)));\n`,
+      );
+      timed = {
+        command: process.execPath,
+        args: ['--require', exitRecorder, ...cli, 'mcp'],
+      };
+    }
     const launch = scope?.wrap(timed.command, timed.args) ?? timed;
     transport = new StdioClientTransport({
       ...launch,

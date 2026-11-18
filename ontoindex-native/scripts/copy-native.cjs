@@ -9,7 +9,13 @@ const root = fs.realpathSync(path.resolve(__dirname, '..'));
 const outDir = path.join(root, 'native');
 const provenancePath = path.join(outDir, 'build-provenance.json');
 const addonPath = path.join(outDir, 'ontoindex_native.node');
-const sourcePaths = ['Cargo.toml', 'build.rs', 'scripts/copy-native.cjs', 'src'];
+const sourcePaths = [
+  '.cargo/config.toml',
+  'Cargo.toml',
+  'build.rs',
+  'scripts/copy-native.cjs',
+  'src',
+];
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 
 function sourceDigest() {

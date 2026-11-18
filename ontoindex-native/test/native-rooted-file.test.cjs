@@ -38,7 +38,10 @@ if (!isMainThread) {
 }
 
 async function main() {
-  assert.equal(process.platform, 'linux', 'rooted-file acceptance requires Linux');
+  assert.ok(
+    process.platform === 'linux' || process.platform === 'darwin',
+    'rooted-file acceptance requires Linux or macOS',
+  );
   const { openRootedDirectory } = require('../index.cjs');
   assert.equal(typeof openRootedDirectory, 'function');
   const temporary = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ontoindex-rooted-')));

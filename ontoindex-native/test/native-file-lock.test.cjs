@@ -105,7 +105,10 @@ async function waitClosed(state) {
 }
 
 async function main() {
-  assert.equal(process.platform, 'linux', 'native file-lock tests require Linux');
+  assert.ok(
+    process.platform === 'linux' || process.platform === 'darwin',
+    'native file-lock tests require Linux or macOS',
+  );
   const { tryAcquireFileLock } = require('../index.cjs');
   assert.equal(typeof tryAcquireFileLock, 'function', 'index.cjs exports tryAcquireFileLock');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ontoindex-native-lock-'));

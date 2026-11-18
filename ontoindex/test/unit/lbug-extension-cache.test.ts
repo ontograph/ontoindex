@@ -14,6 +14,7 @@ describe('LadybugDB extension cache lookup', () => {
     if (process.platform === 'linux' || process.platform === 'win32') {
       return `${process.platform}_${arch}`;
     }
+    if (process.platform === 'darwin' && process.arch === 'arm64') return 'osx_arm64';
     return null;
   })();
 

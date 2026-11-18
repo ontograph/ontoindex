@@ -125,7 +125,9 @@ it('compares native graph properties while ignoring database table and insertion
   }
 }, 120_000);
 
-it('benchmarks an actual compiled full/full/replay pair and persists both reports', async () => {
+// The process-tree RSS sampler uses Linux /proc and GNU time.
+const linuxOnlyIt = process.platform === 'linux' ? it : it.skip;
+linuxOnlyIt('benchmarks an actual compiled full/full/replay pair and persists both reports', async () => {
   expect(existsSync(builtCli), 'Build the package before running the workspace pair smoke').toBe(
     true,
   );

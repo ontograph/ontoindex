@@ -3,6 +3,10 @@
     "linux_amd64": {
       "fts": "327230badf037615f21fc52c347f0cb9d4b55b62a7e295bdd577379aacd842f4",
       "vector": "681015fe4bed16dea89f34d643e07e0058096af552c014bd6142e5294a360959"
+    },
+    "osx_arm64": {
+      "fts": "b7ab6ba81e48f0350f91836a13348ee0f2fb493c824604ea2ecedaf7fb62ac80",
+      "vector": "b81284dd470f9d17e962b4b95871516db572327dc884c0180b6d7739accdd593"
     }
   }
 }

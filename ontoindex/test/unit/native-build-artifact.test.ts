@@ -29,12 +29,14 @@ async function fixture(
   options: {
     mutate?: string;
     source?: string;
+    cargoConfig?: string;
     addon?: string;
     lock?: string;
     metadataUnavailable?: boolean;
     writeFailure?: boolean;
     reverseEntries?: boolean;
     missingBuildScript?: boolean;
+    platform?: NodeJS.Platform;
   } = {},
 ) {
   const source = await fs.readFile(scriptUrl, 'utf8');
@@ -45,6 +47,7 @@ async function fixture(
     if (options.writeFailure) throw new Error('write failed');
   });
   const files = new Map([
+    ['.cargo/config.toml', options.cargoConfig || 'cargo config'],
     ['Cargo.toml', 'manifest'],
     ['build.rs', 'build script'],
     ['scripts/copy-native.cjs', 'copy script'],
@@ -91,7 +94,7 @@ async function fixture(
     evaluate: () =>
       vm.runInNewContext(source, {
         __dirname: scriptDirectory,
-        process: { platform: 'linux' },
+        process: { platform: options.platform ?? 'linux' },
         Buffer,
         require: (specifier: string) => {
           if (specifier === 'node:fs')
@@ -139,6 +142,22 @@ describe('Cargo-selected native build artifact', () => {
     );
     expect(build.copyFileSync).toHaveBeenCalledExactlyOnceWith(
       artifactPath,
+      path.join(root, 'native', 'ontoindex_native.node'),
+    );
+  });
+
+  it('copies the macOS Cargo dynamic library as the Node addon', async () => {
+    const darwinArtifact = '/custom/cargo-target/release/libontoindex_native.dylib';
+    const build = await fixture(
+      [artifact({ filenames: [darwinArtifact] })],
+      undefined,
+      false,
+      root,
+      { platform: 'darwin' },
+    );
+    build.evaluate();
+    expect(build.copyFileSync).toHaveBeenCalledExactlyOnceWith(
+      darwinArtifact,
       path.join(root, 'native', 'ontoindex_native.node'),
     );
   });
@@ -218,6 +237,7 @@ describe('Cargo-selected native build artifact', () => {
 
   it.each([
     { source: 'changed', field: 'nativeSourceSha256' },
+    { cargoConfig: 'changed', field: 'nativeSourceSha256' },
     { lock: 'changed', field: 'cargoLockSha256' },
     { addon: 'changed', field: 'addonSha256' },
   ])('changes the digest when $field changes', async ({ field, ...options }) => {
@@ -230,7 +250,7 @@ describe('Cargo-selected native build artifact', () => {
     expect(digest(after.provenance())).not.toBe(digest(before.provenance()));
   });
 
-  it.each(['src/a.rs', 'Cargo.lock', 'build.rs'])(
+  it.each(['src/a.rs', 'Cargo.lock', 'build.rs', '.cargo/config.toml'])(
     'rejects inputs mutated during Cargo: %s',
     async (mutate) => {
       const build = await fixture([artifact()], undefined, false, root, { mutate });
