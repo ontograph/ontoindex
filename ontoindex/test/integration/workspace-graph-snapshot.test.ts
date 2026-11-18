@@ -7,6 +7,7 @@ import lbug from '@ladybugdb/core';
 import { expect, it, vi } from 'vitest';
 import { runFullAnalysis } from '../../src/core/run-analyze.js';
 import { prepareWorkspaceGraphCommand } from '../../src/cli/analyze.js';
+import { LocalBackend } from '../../src/mcp/local/local-backend.js';
 import * as workspaceRuntime from '../../src/mcp/local/local-backend-repo-runtime.js';
 import { planDirtyOverlay } from '../../src/core/analyze-delta.js';
 import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
@@ -65,7 +66,9 @@ async function readGraph(file: string) {
 }
 
 it('publishes a partial captured workspace graph with parse-error paths without mutating committed state and rolls back failures', async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ontoindex-workspace-graph-'));
+  const root = await fs.realpath(
+    await fs.mkdtemp(path.join(os.tmpdir(), 'ontoindex-workspace-graph-')),
+  );
   const repo = path.join(root, 'repo');
   const home = path.join(root, 'home');
   const copy = path.join(root, 'independent');
@@ -310,35 +313,25 @@ it('publishes a partial captured workspace graph with parse-error paths without 
   }
 }, 120_000);
 
-it('rebuilds the workspace graph when only a committed resolver-config symlink target changes', async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ontoindex-workspace-config-target-'));
+it('replaces indexed symbols after a valid dirty edit larger than the old scan limit', async () => {
+  const root = await fs.realpath(
+    await fs.mkdtemp(path.join(os.tmpdir(), 'ontoindex-workspace-large-edit-')),
+  );
   const repo = path.join(root, 'repo');
   const home = path.join(root, 'home');
   const git = (...args: string[]) =>
     execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' });
-  const config = (target: string) =>
-    JSON.stringify({ compilerOptions: { baseUrl: '.', paths: { '@lib/*': [`src/${target}/*`] } } });
+  let backend: LocalBackend | undefined;
   try {
     vi.stubEnv('ONTOINDEX_HOME', home);
     vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
+    vi.stubEnv('ONTOINDEX_AUTO_REFRESH', '0');
     await fs.mkdir(home);
     await fs.writeFile(path.join(home, 'registry.json'), '[]\n');
-    await fs.mkdir(path.join(repo, 'configs'), { recursive: true });
-    for (const target of ['a', 'b']) {
-      await fs.mkdir(path.join(repo, 'src', target), { recursive: true });
-      await fs.writeFile(
-        path.join(repo, 'src', target, 'util.ts'),
-        `export function util() { return '${target}'; }\n`,
-      );
-    }
+    await fs.mkdir(path.join(repo, 'src'), { recursive: true });
     await fs.writeFile(path.join(repo, '.gitignore'), '.ontoindex/\n');
-    await fs.writeFile(path.join(repo, '.gitignore'), '.ontoindex/\n.claude/\n');
-    await fs.writeFile(path.join(repo, 'configs/aliases.json'), config('a'));
-    await fs.symlink('configs/aliases.json', path.join(repo, 'tsconfig.json'));
-    await fs.writeFile(
-      path.join(repo, 'src/main.ts'),
-      "import { util } from '@lib/util';\nexport function main() { return util(); }\n",
-    );
+    const sourcePath = path.join(repo, 'src/callee.ts');
+    await fs.writeFile(sourcePath, 'export function callee() { return 1; }\n');
     git('init', '-q');
     git('add', '.');
     git(
@@ -365,63 +358,329 @@ it('rebuilds the workspace graph when only a committed resolver-config symlink t
     );
     await closeLbug();
     const { storagePath } = repoManager.getStoragePaths(repo);
-    const baseline = await readGraph(repoManager.getStoragePaths(repo).lbugPath);
-    expect(baseline.edges).toContain(
-      JSON.stringify(['File:src/main.ts', 'File:src/a/util.ts', 'IMPORTS']),
+    expect((await readGraph(repoManager.getStoragePaths(repo).lbugPath)).nodes).toContain(
+      'Function:src/callee.ts:callee',
     );
-    expect(git('status', '--porcelain')).toBe('');
-    await fs.writeFile(path.join(repo, 'configs/aliases.json'), config('b'));
-    expect(git('status', '--porcelain').trim()).toBe('M configs/aliases.json');
-    expect((await planDirtyOverlay(repo)).configPaths).toEqual(['tsconfig.json']);
+    const replacement =
+      `/*${'x'.repeat(512 * 1024 + 1)}*/\n\n\n\n` +
+      "export function replacementOnly() { return 'large-edit-replacement-marker'; }\n";
+    expect(Buffer.byteLength(replacement)).toBeGreaterThan(512 * 1024);
+    await fs.writeFile(sourcePath, replacement);
     await runFullAnalysis(
       repo,
       { workspaceGraph: true, skipNativeClose: true },
       { onProgress: () => {} },
       dependencies,
     );
-    const overlayRepo = { id: 'config-target-test', repoPath: repo, storagePath };
-    expect(await getOverlaySnapshot(overlayRepo)).toMatchObject({ usable: true, reason: null });
-    expect(
-      await queryOverlay(
-        overlayRepo,
-        "MATCH (a:File)-[r:CodeRelation]->(b:File) WHERE a.filePath = 'src/main.ts' AND r.type = 'IMPORTS' RETURN b.filePath AS target",
-      ),
-    ).toEqual([{ target: 'src/b/util.ts' }]);
-    // Retain the committed base but remove the previous overlay before the unsafe edit.
-    resetOverlaySnapshotCache();
-    await fs.rm(path.join(storagePath, 'overlay'), { recursive: true, force: true });
-    const external = path.join(root, 'external.json');
-    await fs.writeFile(external, config('a'));
-    await fs.unlink(path.join(repo, 'configs/aliases.json'));
-    await fs.symlink(external, path.join(repo, 'configs/aliases.json'));
-    expect(git('status', '--porcelain').trim()).toBe('T configs/aliases.json');
-    const build = vi.spyOn(workspaceRuntime, 'buildWorkspaceGraph').mockImplementation(async () => {
+    await closeLbug();
+    const generation = (
+      await fs.readFile(path.join(storagePath, 'overlay', 'CURRENT'), 'utf8')
+    ).trim();
+    const base = JSON.parse(
+      await fs.readFile(path.join(storagePath, 'overlay', generation, 'base.json'), 'utf8'),
+    );
+    expect(base).toMatchObject({
+      capability: 'workspace-graph',
+      coverage: 'complete',
+      parseErrorCount: 0,
+      parseErrorFiles: [],
+      inputs: {
+        'src/callee.ts': createHash('sha256').update(replacement).digest('hex'),
+      },
+      manifestDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+    expect(generation).toMatch(/^[A-Za-z0-9][A-Za-z0-9._-]*$/);
+    backend = new LocalBackend({ watchWorkspace: false });
+    await backend.init();
+    const handle = await backend.resolveRepo(path.basename(repo));
+    const context = (name: string) =>
+      backend!.withPreparedRepoRead(
+        handle,
+        { needsRelationships: true, readMode: 'workspace' },
+        () =>
+          backend!.callTool('context', {
+            repo: path.basename(repo),
+            name,
+            include_content: true,
+          }),
+      );
+    expect(await context('callee')).toMatchObject({ error: "Symbol 'callee' not found" });
+    expect(await context('replacementOnly')).toMatchObject({
+      status: 'found',
+      source: 'workspace-graph',
+      symbol: {
+        name: 'replacementOnly',
+        filePath: 'src/callee.ts',
+        content: expect.stringContaining("return 'large-edit-replacement-marker'"),
+      },
+      readContext: {
+        mode: 'workspace',
+        workingTreeIncluded: true,
+        source: 'workspace-graph',
+        generation,
+        inputDigest: base.manifestDigest,
+        semanticCoverage: 'complete',
+        parseErrorPathCount: 0,
+        parseErrorPathSample: [],
+        parseErrorPathSampleTruncated: false,
+      },
+    });
+  } finally {
+    try {
+      await backend?.disconnect();
+    } finally {
+      resetOverlaySnapshotCache();
+      vi.unstubAllEnvs();
+      await closeLbug();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  }
+}, 120_000);
+
+it.each(['.ontoindexignore', '.gitignore', 'assume-deletion'])(
+  'rebuilds a matching-HEAD base and removes stale symbols after %s',
+  async (change) => {
+    const root = await fs.realpath(
+      await fs.mkdtemp(path.join(os.tmpdir(), 'ontoindex-workspace-hidden-change-')),
+    );
+    const repo = path.join(root, 'repo');
+    const home = path.join(root, 'home');
+    const git = (...args: string[]) =>
+      execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' });
+    try {
+      vi.stubEnv('ONTOINDEX_HOME', home);
+      vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
+      vi.stubEnv('ONTOINDEX_NO_GITIGNORE', '');
+      await fs.mkdir(home);
+      await fs.writeFile(path.join(home, 'registry.json'), '[]\n');
+      await fs.mkdir(path.join(repo, 'src'), { recursive: true });
+      await fs.writeFile(path.join(repo, '.gitignore'), '.ontoindex/\n.claude/\n');
+      await fs.writeFile(path.join(repo, '.ontoindexignore'), '# baseline\n');
+      await fs.writeFile(
+        path.join(repo, 'src/deleted.ts'),
+        'export function staleSymbol() { return 1; }\n',
+      );
+      await fs.writeFile(path.join(repo, 'src/retained.ts'), 'export function retained() {}\n');
+      git('init', '-q');
+      git('add', '.');
+      git(
+        '-c',
+        'user.name=Fixture',
+        '-c',
+        'user.email=fixture@example.invalid',
+        'commit',
+        '-qm',
+        'baseline',
+      );
+      const dependencies = {
+        analyzeRuntime: {
+          analyzeRepo: vi.fn(({ repoPath, onProgress, options }) =>
+            runPipelineFromRepo(repoPath, onProgress, { ...options, skipWorkers: true }),
+          ),
+        },
+      };
+      await runFullAnalysis(
+        repo,
+        { skipNativeClose: true, skipAgentsMd: true, noStats: true, embeddings: false },
+        { onProgress: () => {} },
+        dependencies,
+      );
+      await closeLbug();
+      expect(git('status', '--porcelain')).toBe('');
+      const { storagePath, lbugPath } = repoManager.getStoragePaths(repo);
+      expect((await readGraph(lbugPath)).nodes).toContain('Function:src/deleted.ts:staleSymbol');
+      const overlayRepo = { id: repo, repoPath: repo, storagePath };
+      expect(await getOverlaySnapshot(overlayRepo)).toMatchObject({
+        baseMatches: true,
+        headChanged: false,
+      });
+      if (change === 'assume-deletion') {
+        git('update-index', '--assume-unchanged', 'src/deleted.ts');
+        await fs.unlink(path.join(repo, 'src/deleted.ts'));
+        expect(git('status', '--porcelain')).toBe('');
+        expect(await planDirtyOverlay(repo)).toMatchObject({
+          allDirtyPaths: ['src/deleted.ts'],
+          tombstones: ['src/deleted.ts'],
+          configPaths: [],
+        });
+      } else {
+        await fs.appendFile(path.join(repo, change), 'src/deleted.ts\n');
+        expect(await planDirtyOverlay(repo)).toMatchObject({
+          allDirtyPaths: [],
+          configPaths: [change],
+        });
+      }
+      resetOverlaySnapshotCache();
+      const dirty = await getOverlaySnapshot(overlayRepo);
+      expect(dirty.baseMatches).toBe(true);
+      expect(dirty.dirtyPaths.size + (dirty.configPaths?.size ?? 0)).toBeGreaterThan(0);
+      const build = vi
+        .spyOn(workspaceRuntime, 'buildWorkspaceGraph')
+        .mockImplementation(async () => {
+          await runFullAnalysis(
+            repo,
+            { workspaceGraph: true, skipNativeClose: true },
+            { onProgress: () => {} },
+            dependencies,
+          );
+        });
+      try {
+        const prepared = await prepareWorkspaceGraphCommand(repo);
+        expect(build).toHaveBeenCalledOnce();
+        expect(prepared).toMatchObject({ baseCurrent: false, reused: false });
+        expect(prepared.snapshot).toMatchObject({ usable: true, capability: 'workspace-graph' });
+        expect(await queryOverlay(overlayRepo, 'MATCH (n:Function) RETURN n.name AS name')).toEqual(
+          [{ name: 'retained' }],
+        );
+        expect((await readGraph(lbugPath)).nodes).toContain('Function:src/deleted.ts:staleSymbol');
+      } finally {
+        build.mockRestore();
+      }
+    } finally {
+      resetOverlaySnapshotCache();
+      vi.unstubAllEnvs();
+      await closeLbug();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  },
+  120_000,
+);
+
+it.each(['target-edit', 'directory-retarget'])(
+  'rebuilds the workspace graph from a committed config base after %s',
+  async (change) => {
+    const root = await fs.realpath(
+      await fs.mkdtemp(path.join(os.tmpdir(), 'ontoindex-workspace-config-target-')),
+    );
+    const repo = path.join(root, 'repo');
+    const home = path.join(root, 'home');
+    const git = (...args: string[]) =>
+      execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' });
+    const config = (target: string) =>
+      JSON.stringify({
+        compilerOptions: { baseUrl: '.', paths: { '@lib/*': [`src/${target}/*`] } },
+      });
+    try {
+      vi.stubEnv('ONTOINDEX_HOME', home);
+      vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
+      await fs.mkdir(home);
+      await fs.writeFile(path.join(home, 'registry.json'), '[]\n');
+      await fs.mkdir(path.join(repo, 'configs'), { recursive: true });
+      for (const target of ['a', 'b']) {
+        await fs.mkdir(path.join(repo, 'src', target), { recursive: true });
+        await fs.writeFile(
+          path.join(repo, 'src', target, 'util.ts'),
+          `export function util() { return '${target}'; }\n`,
+        );
+      }
+      await fs.writeFile(path.join(repo, '.gitignore'), '.ontoindex/\n');
+      await fs.writeFile(path.join(repo, '.gitignore'), '.ontoindex/\n.claude/\n');
+      await fs.writeFile(path.join(repo, 'configs/aliases.json'), config('a'));
+      await fs.mkdir(path.join(repo, 'configs-b'));
+      await fs.writeFile(path.join(repo, 'configs-b/aliases.json'), config('b'));
+      await fs.symlink('configs', path.join(repo, 'config-alias'));
+      await fs.symlink('config-alias/aliases.json', path.join(repo, 'tsconfig.json'));
+      await fs.writeFile(
+        path.join(repo, 'src/main.ts'),
+        "import { util } from '@lib/util';\nexport function main() { return util(); }\n",
+      );
+      git('init', '-q');
+      git('add', '.');
+      git(
+        '-c',
+        'user.name=Fixture',
+        '-c',
+        'user.email=fixture@example.invalid',
+        'commit',
+        '-qm',
+        'baseline',
+      );
+      const dependencies = {
+        analyzeRuntime: {
+          analyzeRepo: vi.fn(({ repoPath, onProgress, options }) =>
+            runPipelineFromRepo(repoPath, onProgress, { ...options, skipWorkers: true }),
+          ),
+        },
+      };
+      await runFullAnalysis(
+        repo,
+        { skipNativeClose: true, skipAgentsMd: true, noStats: true, embeddings: false },
+        { onProgress: () => {} },
+        dependencies,
+      );
+      await closeLbug();
+      const { storagePath } = repoManager.getStoragePaths(repo);
+      const baseline = await readGraph(repoManager.getStoragePaths(repo).lbugPath);
+      expect(baseline.edges).toContain(
+        JSON.stringify(['File:src/main.ts', 'File:src/a/util.ts', 'IMPORTS']),
+      );
+      expect(git('status', '--porcelain')).toBe('');
+      if (change === 'directory-retarget') {
+        await fs.unlink(path.join(repo, 'config-alias'));
+        await fs.symlink('configs-b', path.join(repo, 'config-alias'));
+        expect(git('status', '--porcelain').trim()).toBe('M config-alias');
+      } else {
+        await fs.writeFile(path.join(repo, 'configs/aliases.json'), config('b'));
+        expect(git('status', '--porcelain').trim()).toBe('M configs/aliases.json');
+      }
+      expect((await planDirtyOverlay(repo)).configPaths).toEqual(['tsconfig.json']);
       await runFullAnalysis(
         repo,
         { workspaceGraph: true, skipNativeClose: true },
         { onProgress: () => {} },
         dependencies,
       );
-    });
-    try {
-      await expect(prepareWorkspaceGraphCommand(repo)).rejects.toMatchObject({
-        name: 'WorkspaceInputCaptureError',
-        code: 'unsupported',
-      });
-      expect(build).toHaveBeenCalledOnce();
+      const overlayRepo = { id: 'config-target-test', repoPath: repo, storagePath };
+      expect(await getOverlaySnapshot(overlayRepo)).toMatchObject({ usable: true, reason: null });
+      expect(
+        await queryOverlay(
+          overlayRepo,
+          "MATCH (a:File)-[r:CodeRelation]->(b:File) WHERE a.filePath = 'src/main.ts' AND r.type = 'IMPORTS' RETURN b.filePath AS target",
+        ),
+      ).toEqual([{ target: 'src/b/util.ts' }]);
+      // Retain the committed base but remove the previous overlay before the unsafe edit.
+      resetOverlaySnapshotCache();
+      await fs.rm(path.join(storagePath, 'overlay'), { recursive: true, force: true });
+      const external = path.join(root, 'external.json');
+      await fs.writeFile(external, config('a'));
+      await fs.unlink(path.join(repo, 'config-alias'));
+      await fs.symlink('configs', path.join(repo, 'config-alias'));
+      await fs.unlink(path.join(repo, 'configs/aliases.json'));
+      await fs.symlink(external, path.join(repo, 'configs/aliases.json'));
+      expect(git('status', '--porcelain').trim()).toBe('T configs/aliases.json');
+      const build = vi
+        .spyOn(workspaceRuntime, 'buildWorkspaceGraph')
+        .mockImplementation(async () => {
+          await runFullAnalysis(
+            repo,
+            { workspaceGraph: true, skipNativeClose: true },
+            { onProgress: () => {} },
+            dependencies,
+          );
+        });
+      try {
+        await expect(prepareWorkspaceGraphCommand(repo)).rejects.toMatchObject({
+          name: 'WorkspaceInputCaptureError',
+          code: 'unsupported',
+        });
+        expect(build).toHaveBeenCalledOnce();
+      } finally {
+        build.mockRestore();
+      }
     } finally {
-      build.mockRestore();
+      resetOverlaySnapshotCache();
+      vi.unstubAllEnvs();
+      await closeLbug();
+      await fs.rm(root, { recursive: true, force: true });
     }
-  } finally {
-    resetOverlaySnapshotCache();
-    vi.unstubAllEnvs();
-    await closeLbug();
-    await fs.rm(root, { recursive: true, force: true });
-  }
-}, 120_000);
+  },
+  120_000,
+);
 
 it('validates resolver configuration symlinks and detects changed target bytes', async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ontoindex-workspace-config-link-'));
+  const root = await fs.realpath(
+    await fs.mkdtemp(path.join(os.tmpdir(), 'ontoindex-workspace-config-link-')),
+  );
   try {
     vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
     await fs.mkdir(path.join(root, 'configs'));
@@ -466,7 +725,9 @@ it('validates resolver configuration symlinks and detects changed target bytes',
 }, 120_000);
 
 it('builds full-text indexes into the published workspace generation', async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ontoindex-workspace-graph-fts-'));
+  const root = await fs.realpath(
+    await fs.mkdtemp(path.join(os.tmpdir(), 'ontoindex-workspace-graph-fts-')),
+  );
   try {
     await fs.mkdir(path.join(root, 'src'), { recursive: true });
     await fs.writeFile(
@@ -496,7 +757,9 @@ it('builds full-text indexes into the published workspace generation', async () 
 });
 
 it('marks the graph degraded when parse-error paths exceed the recorded list', async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ontoindex-workspace-graph-trunc-'));
+  const root = await fs.realpath(
+    await fs.mkdtemp(path.join(os.tmpdir(), 'ontoindex-workspace-graph-trunc-')),
+  );
   try {
     await fs.mkdir(path.join(root, 'src'), { recursive: true });
     await fs.writeFile(path.join(root, 'src/a.ts'), 'export function a() { return 1; }\n');

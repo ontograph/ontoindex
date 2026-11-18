@@ -10,6 +10,27 @@ const native = require('../native.cjs');
 async function main() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ontoindex-native-csv-'));
   const csvPath = path.join(dir, 'nodes.csv');
+  const abortedPath = path.join(dir, 'aborted.csv');
+  const aborted = createCsvRowWriter(abortedPath, 'id');
+  aborted.addRow('discard');
+  await aborted.abort();
+  await aborted.abort();
+  assert.deepEqual(aborted._rows, []);
+  assert.equal(aborted._chars, 0);
+  assert.throws(() => aborted.addRow('later'), /CSV writer aborted/);
+  await assert.rejects(aborted.finish(), /CSV writer aborted/);
+  assert.equal(fs.existsSync(abortedPath), false);
+
+  const afterFinishPath = path.join(dir, 'after-finish.csv');
+  const afterFinish = createCsvRowWriter(afterFinishPath, 'id');
+  afterFinish.addRow('written');
+  await afterFinish.finish();
+  afterFinish.addRow('second batch');
+  await afterFinish.finish();
+  afterFinish.addRow('discard');
+  await afterFinish.abort();
+  await assert.rejects(afterFinish.finish(), /CSV writer aborted/);
+  assert.equal(fs.readFileSync(afterFinishPath, 'utf8'), 'id\nwritten\nsecond batch\n');
   const writer = createCsvRowWriter(csvPath, 'id,name,content');
 
   writer.addRow('"1","alpha","plain"');
@@ -29,9 +50,9 @@ async function main() {
   const batchRows = Array.from({ length: 1201 }, (_, i) => `${i},row-${i}`);
   for (const [i, row] of batchRows.entries()) {
     assert.equal(batches.addRow(row), undefined);
-    assert.equal(batches._rows.length, (i + 1) % 500);
+    assert.equal(batches._rows.length, (i + 2) % 500);
     assert.ok(batches._rows.length < 500);
-    if (i === 499 || i === 999) {
+    if (i === 498 || i === 998) {
       assert.equal(
         fs.readFileSync(batchesPath, 'utf8'),
         `id,name\n${batchRows.slice(0, i + 1).join('\n')}\n`,
@@ -52,9 +73,9 @@ async function main() {
   const limitedPath = path.join(dir, 'limited.csv');
   const limited = createCsvRowWriter(limitedPath, 'value', 6);
   limited.addRow('ab');
+  assert.equal(fs.readFileSync(limitedPath, 'utf8'), 'value\n');
   limited.addRow('cd');
   assert.equal(limited._chars, 6);
-  assert.ok(!fs.existsSync(limitedPath));
   limited.addRow('e');
   assert.equal(fs.readFileSync(limitedPath, 'utf8'), 'value\nab\ncd\n');
   assert.deepEqual(limited._rows, ['e']);
@@ -73,12 +94,12 @@ async function main() {
   await failing.finish();
   failing.addRow('pending');
   const failure = new Error('native append failed');
-  const appendCsvLines = native.appendCsvLines;
+  const appendCsvBytes = native.appendCsvBytes;
   let attempts = 0;
-  native.appendCsvLines = (...args) => {
+  native.appendCsvBytes = (...args) => {
     attempts++;
     // Model a partial write before the error, so retrying would duplicate data.
-    appendCsvLines(...args);
+    appendCsvBytes(...args);
     if (attempts === 1) throw failure;
   };
   try {
@@ -93,15 +114,14 @@ async function main() {
     assert.equal(attempts, 1);
     assert.equal(fs.readFileSync(failingPath, 'utf8'), 'value\nwritten\npending\n');
   } finally {
-    native.appendCsvLines = appendCsvLines;
+    native.appendCsvBytes = appendCsvBytes;
   }
 
   const headerOnlyPath = path.join(dir, 'header-only.csv');
   const headerOnly = createCsvRowWriter(headerOnlyPath, 'value');
   const headerFailure = new Error('native header write failed');
-  const writeCsvLines = native.writeCsvLines;
   let headerAttempts = 0;
-  native.writeCsvLines = () => {
+  native.appendCsvBytes = () => {
     headerAttempts++;
     throw headerFailure;
   };
@@ -110,8 +130,45 @@ async function main() {
     await assert.rejects(headerOnly.finish(), (error) => error === headerFailure);
     assert.equal(headerAttempts, 1);
   } finally {
-    native.writeCsvLines = writeCsvLines;
+    native.appendCsvBytes = appendCsvBytes;
   }
+
+  for (const budget of [1, 4, 7, 16]) {
+    const fragmentPath = path.join(dir, `fragments-${budget}.csv`);
+    fs.writeFileSync(fragmentPath, 'stale bytes to truncate');
+    const header = '界🙂\ud800header';
+    const rows = ['🙂界\udc00🙂abcdef', '', 'z'];
+    const calls = [];
+    native.appendCsvBytes = (target, bytes, truncate) => {
+      assert.ok(Buffer.isBuffer(bytes));
+      assert.ok(bytes.length <= Math.max(4, budget));
+      calls.push({ bytes: Buffer.from(bytes), truncate });
+      return appendCsvBytes(target, bytes, truncate);
+    };
+    try {
+      const fragmented = createCsvRowWriter(fragmentPath, header, budget);
+      for (const row of rows) fragmented.addRow(row);
+      await fragmented.finish();
+      const expected = Buffer.from([header, ...rows].join('\n') + '\n');
+      assert.deepEqual(fs.readFileSync(fragmentPath), expected);
+      assert.deepEqual(Buffer.concat(calls.map((call) => call.bytes)), expected);
+      assert.equal(calls[0].truncate, true);
+      assert.ok(calls.slice(1).every((call) => call.truncate === false));
+      assert.equal(fragmented.rows, rows.length);
+    } finally {
+      native.appendCsvBytes = appendCsvBytes;
+    }
+  }
+
+  const unicodePath = path.join(dir, 'unicode.csv');
+  const unicode = createCsvRowWriter(unicodePath, '界', 9);
+  unicode.addRow('🙂');
+  assert.equal(unicode._chars, 9);
+  assert.ok(!fs.existsSync(unicodePath));
+  unicode.addRow('a');
+  assert.deepEqual(fs.readFileSync(unicodePath), Buffer.from('界\n🙂\n'));
+  await unicode.finish();
+  assert.deepEqual(fs.readFileSync(unicodePath), Buffer.from('界\n🙂\na\n'));
 
   const written = native.writeCsvRecords(
     recordsPath,

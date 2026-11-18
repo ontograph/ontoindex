@@ -169,6 +169,12 @@ describe('isBinaryContent', () => {
     expect(isBinaryContent(borderline)).toBe(false);
   });
 
+  it('uses a strict threshold and counts UTF-16 units before sanitation', () => {
+    expect(isBinaryContent('😀'.repeat(450) + '\0'.repeat(100))).toBe(false);
+    expect(isBinaryContent('😀'.repeat(449) + 'x' + '\0'.repeat(101))).toBe(true);
+    expect(isBinaryContent('x'.repeat(900) + '\r'.repeat(100))).toBe(false);
+  });
+
   it('only samples first 1000 characters', () => {
     // Binary content past 1000 chars should be ignored
     const text = 'a'.repeat(1000) + '\x00'.repeat(500);

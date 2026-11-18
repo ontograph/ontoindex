@@ -6,6 +6,7 @@ use std::io::{BufWriter, Write};
 
 mod file_lock;
 pub mod heritage;
+mod rooted_file;
 
 fn write_line(out: &mut impl Write, line: &str) -> std::io::Result<()> {
     out.write_all(line.as_bytes())?;
@@ -31,6 +32,17 @@ fn append_csv_lines_impl(csv_path: &str, rows: &[String]) -> std::io::Result<u32
     }
     out.flush()?;
     Ok(rows.len() as u32)
+}
+
+fn append_csv_bytes_impl(csv_path: &str, bytes: &[u8], truncate: bool) -> std::io::Result<u32> {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create(truncate)
+        .truncate(truncate)
+        .append(!truncate)
+        .open(csv_path)?;
+    file.write_all(bytes)?;
+    Ok(bytes.len() as u32)
 }
 
 fn escape_csv_field(value: &str) -> String {
@@ -67,6 +79,15 @@ pub fn write_csv_lines(csv_path: String, header: String, rows: Vec<String>) -> R
 pub fn append_csv_lines(csv_path: String, rows: Vec<String>) -> Result<u32> {
     append_csv_lines_impl(&csv_path, &rows)
         .map_err(|err| Error::from_reason(format!("failed to append native CSV {csv_path}: {err}")))
+}
+
+#[napi(js_name = "appendCsvBytes")]
+pub fn append_csv_bytes(csv_path: String, bytes: Buffer, truncate: bool) -> Result<u32> {
+    append_csv_bytes_impl(&csv_path, &bytes, truncate).map_err(|err| {
+        Error::from_reason(format!(
+            "failed to write native CSV bytes {csv_path}: {err}"
+        ))
+    })
 }
 
 #[napi(js_name = "writeCsvRecords")]
@@ -430,15 +451,129 @@ fn get_node_header(label: &str) -> Vec<&'static str> {
     match label {
         "File" => vec!["id", "name", "filePath", "content"],
         "Folder" => vec!["id", "name", "filePath"],
-        "Method" => vec!["id", "name", "filePath", "startLine", "endLine", "isExported", "content", "description", "parameterCount", "returnType"],
-        "Community" => vec!["id", "label", "heuristicLabel", "keywords", "description", "enrichedBy", "cohesion", "symbolCount"],
-        "Process" => vec!["id", "label", "heuristicLabel", "processType", "stepCount", "communities", "entryPointId", "terminalId"],
-        "SummaryNode" => vec!["id", "name", "filePath", "level", "summaryKind", "summarizedCommunityIds", "summarizedConceptIds", "summarizedNodeIds", "truncated", "depth", "description", "communityLabel", "heuristicLabel", "cohesion", "symbolCount", "memberCount", "includedMemberCount", "membersTruncated", "conceptCount", "includedConceptCount", "conceptsTruncated", "groundingCount", "includedGroundingCount", "groundingsTruncated", "sourceDocuments", "sourceFactKeys", "resolutionKeys", "authority", "evidenceClass", "freshness", "confidence", "omittedCommunityCount"],
-        "Section" => vec!["id", "name", "filePath", "startLine", "endLine", "level", "content", "description"],
-        "Route" => vec!["id", "name", "filePath", "responseKeys", "errorKeys", "middleware"],
+        "Method" => vec![
+            "id",
+            "name",
+            "filePath",
+            "startLine",
+            "endLine",
+            "isExported",
+            "content",
+            "description",
+            "parameterCount",
+            "returnType",
+            "declarationFilePath",
+            "declarationStartLine",
+            "declarationEndLine",
+            "definitionFilePath",
+            "definitionStartLine",
+            "definitionEndLine",
+        ],
+        "Concept" => vec![
+            "id",
+            "name",
+            "filePath",
+            "aliases",
+            "sourceDocuments",
+            "sourceFactKeys",
+            "resolutionKeys",
+            "authority",
+            "confidence",
+            "evidenceClass",
+            "freshness",
+        ],
+        "Community" => vec![
+            "id",
+            "label",
+            "heuristicLabel",
+            "keywords",
+            "description",
+            "enrichedBy",
+            "cohesion",
+            "symbolCount",
+        ],
+        "Process" => vec![
+            "id",
+            "label",
+            "heuristicLabel",
+            "processType",
+            "stepCount",
+            "communities",
+            "entryPointId",
+            "terminalId",
+        ],
+        "SummaryNode" => vec![
+            "id",
+            "name",
+            "filePath",
+            "level",
+            "summaryKind",
+            "summarizedCommunityIds",
+            "summarizedConceptIds",
+            "summarizedNodeIds",
+            "truncated",
+            "depth",
+            "description",
+            "communityLabel",
+            "heuristicLabel",
+            "cohesion",
+            "symbolCount",
+            "memberCount",
+            "includedMemberCount",
+            "membersTruncated",
+            "conceptCount",
+            "includedConceptCount",
+            "conceptsTruncated",
+            "groundingCount",
+            "includedGroundingCount",
+            "groundingsTruncated",
+            "sourceDocuments",
+            "sourceFactKeys",
+            "resolutionKeys",
+            "authority",
+            "evidenceClass",
+            "freshness",
+            "confidence",
+            "omittedCommunityCount",
+        ],
+        "Section" => vec![
+            "id",
+            "name",
+            "filePath",
+            "startLine",
+            "endLine",
+            "level",
+            "content",
+            "description",
+        ],
+        "Route" => vec![
+            "id",
+            "name",
+            "filePath",
+            "responseKeys",
+            "errorKeys",
+            "middleware",
+        ],
         "Tool" => vec!["id", "name", "filePath", "description"],
-        "Function" | "Class" | "Interface" | "CodeElement" | "Const" => vec!["id", "name", "filePath", "startLine", "endLine", "isExported", "content", "description"],
-        _ => vec!["id", "name", "filePath", "startLine", "endLine", "content", "description"],
+        "Function" | "Class" | "Interface" | "CodeElement" | "Const" => vec![
+            "id",
+            "name",
+            "filePath",
+            "startLine",
+            "endLine",
+            "isExported",
+            "content",
+            "description",
+        ],
+        _ => vec![
+            "id",
+            "name",
+            "filePath",
+            "startLine",
+            "endLine",
+            "content",
+            "description",
+        ],
     }
 }
 
@@ -453,15 +588,20 @@ pub fn write_graph_batch_native(
     relationships: Vec<NativeGraphRelationship>,
 ) -> Result<()> {
     let base_path = std::path::Path::new(&csv_dir);
-    
+
     // 1. Process Nodes
     for node in nodes {
         let file_name = format!("nodes_{}.csv", node.label);
         let path = base_path.join(&file_name);
         let file_exists = path.exists();
-        
-        let file = File::options().append(true).create(true).open(&path)
-            .map_err(|e| Error::from_reason(format!("Failed to open node CSV {}: {}", path.display(), e)))?;
+
+        let file = File::options()
+            .append(true)
+            .create(true)
+            .open(&path)
+            .map_err(|e| {
+                Error::from_reason(format!("Failed to open node CSV {}: {}", path.display(), e))
+            })?;
         let mut out = BufWriter::new(file);
 
         let header_fields = get_node_header(&node.label);
@@ -474,11 +614,45 @@ pub fn write_graph_batch_native(
             let val = if field == "id" {
                 node.id.as_str()
             } else {
-                node.properties.get(field).map(|s| s.as_str()).unwrap_or("")
+                let default = match (node.label.as_str(), field) {
+                    (
+                        "Method",
+                        "startLine"
+                        | "endLine"
+                        | "declarationStartLine"
+                        | "declarationEndLine"
+                        | "definitionStartLine"
+                        | "definitionEndLine",
+                    ) => "-1",
+                    ("Method", "parameterCount") => "0",
+                    ("Method", "isExported") => "false",
+                    (
+                        "Concept",
+                        "aliases" | "sourceDocuments" | "sourceFactKeys" | "resolutionKeys",
+                    ) => "[]",
+                    ("Concept", "authority") => "advisory",
+                    ("Concept", "confidence") => "low",
+                    ("Concept", "evidenceClass") => "docs_evidence",
+                    ("Concept", "freshness") => "unknown",
+                    _ => "",
+                };
+                node.properties
+                    .get(field)
+                    .map(|s| s.as_str())
+                    .filter(|s| {
+                        !s.is_empty()
+                            || (node.label == "Concept"
+                                && matches!(
+                                    field,
+                                    "authority" | "confidence" | "evidenceClass" | "freshness"
+                                ))
+                    })
+                    .unwrap_or(default)
             };
             row.push(escape_csv_field(val));
         }
         write_line(&mut out, &row.join(","))?;
+        out.flush()?;
     }
 
     // 2. Process Relationships (Direct Splitting)
@@ -488,8 +662,13 @@ pub fn write_graph_batch_native(
         let path = base_path.join(&file_name);
         let file_exists = path.exists();
 
-        let file = File::options().append(true).create(true).open(&path)
-            .map_err(|e| Error::from_reason(format!("Failed to open rel CSV {}: {}", path.display(), e)))?;
+        let file = File::options()
+            .append(true)
+            .create(true)
+            .open(&path)
+            .map_err(|e| {
+                Error::from_reason(format!("Failed to open rel CSV {}: {}", path.display(), e))
+            })?;
         let mut out = BufWriter::new(file);
 
         let header_fields = get_rel_header();
@@ -501,25 +680,47 @@ pub fn write_graph_batch_native(
         row.push(escape_csv_field(&rel.fromId));
         row.push(escape_csv_field(&rel.toId));
         row.push(escape_csv_field(&rel.relType));
-        row.push(escape_csv_field(rel.properties.get("confidence").map(|s| s.as_str()).unwrap_or("1.0")));
-        row.push(escape_csv_field(rel.properties.get("reason").map(|s| s.as_str()).unwrap_or("")));
-        row.push(escape_csv_field(rel.properties.get("step").map(|s| s.as_str()).unwrap_or("0")));
-        
+        row.push(escape_csv_field(
+            rel.properties
+                .get("confidence")
+                .map(|s| s.as_str())
+                .unwrap_or("1.0"),
+        ));
+        row.push(escape_csv_field(
+            rel.properties
+                .get("reason")
+                .map(|s| s.as_str())
+                .unwrap_or(""),
+        ));
+        row.push(escape_csv_field(
+            rel.properties
+                .get("step")
+                .map(|s| s.as_str())
+                .unwrap_or("0"),
+        ));
+
         write_line(&mut out, &row.join(","))?;
+        out.flush()?;
     }
 
     Ok(())
 }
 
 #[napi]
-pub fn extract_imports_native(file_path: String, content: String, language_id: String) -> Vec<NativeImport> {
+pub fn extract_imports_native(
+    file_path: String,
+    content: String,
+    language_id: String,
+) -> Vec<NativeImport> {
     let mut parser = tree_sitter::Parser::new();
     let language = match language_id.as_str() {
         "javascript" => tree_sitter_javascript::language(),
         "typescript" => tree_sitter_typescript::language_typescript(),
         _ => return vec![],
     };
-    parser.set_language(&language).expect("Error loading language");
+    parser
+        .set_language(&language)
+        .expect("Error loading language");
 
     let tree = parser.parse(&content, None).expect("Error parsing");
     let mut imports = Vec::new();
@@ -540,7 +741,11 @@ pub fn extract_imports_native(file_path: String, content: String, language_id: S
 
     for m in matches {
         for capture in m.captures {
-            let mut path = capture.node.utf8_text(content.as_bytes()).unwrap_or("").to_string();
+            let mut path = capture
+                .node
+                .utf8_text(content.as_bytes())
+                .unwrap_or("")
+                .to_string();
             // Strip quotes if they were captured
             if path.starts_with('"') || path.starts_with('\'') {
                 path = path[1..path.len() - 1].to_string();
@@ -561,6 +766,71 @@ mod tests {
     use super::*;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn appends_raw_csv_bytes_without_newlines() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("ontoindex-native-bytes-{suffix}.csv"));
+        let csv_path = path.to_str().unwrap();
+        assert!(append_csv_bytes_impl(csv_path, b"missing", false).is_err());
+        assert_eq!(
+            append_csv_bytes_impl(csv_path, b"old contents", true).unwrap(),
+            12
+        );
+        let bytes = "id,name\n1,é".as_bytes();
+        assert_eq!(
+            append_csv_bytes_impl(csv_path, bytes, true).unwrap(),
+            bytes.len() as u32
+        );
+        assert_eq!(
+            append_csv_bytes_impl(csv_path, b"\0\r\n", false).unwrap(),
+            3
+        );
+        let mut expected = bytes.to_vec();
+        expected.extend_from_slice(b"\0\r\n");
+        assert_eq!(fs::read(&path).unwrap(), expected);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn propagates_byte_sink_and_buffered_graph_write_failures() {
+        assert!(append_csv_bytes_impl("/dev/full", b"x", false).is_err());
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let csv_dir = std::env::temp_dir().join(format!("ontoindex-native-full-{suffix}"));
+        fs::create_dir(&csv_dir).unwrap();
+        std::os::unix::fs::symlink("/dev/full", csv_dir.join("nodes_File.csv")).unwrap();
+        std::os::unix::fs::symlink("/dev/full", csv_dir.join("rels_File_to_File.csv")).unwrap();
+        let nodes = vec![NativeGraphNode {
+            id: "File:x".to_string(),
+            label: "File".to_string(),
+            properties: HashMap::new(),
+        }];
+        assert!(
+            write_graph_batch_native(csv_dir.to_str().unwrap().to_string(), nodes, vec![]).is_err()
+        );
+        let relationships = vec![NativeGraphRelationship {
+            fromId: "File:x".to_string(),
+            toId: "File:y".to_string(),
+            relType: "IMPORTS".to_string(),
+            fromLabel: "File".to_string(),
+            toLabel: "File".to_string(),
+            properties: HashMap::new(),
+        }];
+        assert!(write_graph_batch_native(
+            csv_dir.to_str().unwrap().to_string(),
+            vec![],
+            relationships
+        )
+        .is_err());
+        fs::remove_dir_all(csv_dir).unwrap();
+    }
 
     #[test]
     fn writes_header_rows_and_trailing_newlines_byte_for_byte() {
@@ -745,7 +1015,13 @@ await fetch("/api/orders/123", { method: "POST" });
         let cases: &[(&str, &[&str])] = &[
             (
                 r#"import './side-effect'; import value from "./default"; import { named } from './named'; export { item } from "./reexport"; export * from './all';"#,
-                &["./side-effect", "./default", "./named", "./reexport", "./all"],
+                &[
+                    "./side-effect",
+                    "./default",
+                    "./named",
+                    "./reexport",
+                    "./all",
+                ],
             ),
             (
                 r#"import './same'; import { item } from './same'; export * from './same';"#,
@@ -767,11 +1043,13 @@ await fetch("/api/orders/123", { method: "POST" });
                 );
                 let actual: Vec<_> = imports
                     .iter()
-                    .map(|import| (
-                        import.file_path.as_str(),
-                        import.raw_import_path.as_str(),
-                        import.language.as_str(),
-                    ))
+                    .map(|import| {
+                        (
+                            import.file_path.as_str(),
+                            import.raw_import_path.as_str(),
+                            import.language.as_str(),
+                        )
+                    })
                     .collect();
                 let expected: Vec<_> = expected_paths
                     .iter()
@@ -784,38 +1062,201 @@ await fetch("/api/orders/123", { method: "POST" });
 
     #[test]
     fn writes_native_graph_batches_to_split_files() {
-        let suffix = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         let csv_dir = std::env::temp_dir().join(format!("ontoindex-native-batch-{suffix}"));
         fs::create_dir_all(&csv_dir).unwrap();
 
-        let nodes = vec![
-            NativeGraphNode {
-                id: "File:src/a.ts".to_string(),
-                label: "File".to_string(),
-                properties: HashMap::from([
-                    ("name".to_string(), "a.ts".to_string()),
-                    ("filePath".to_string(), "src/a.ts".to_string()),
-                    ("content".to_string(), "console.log('a')".to_string()),
-                ]),
-            },
-        ];
+        let nodes = vec![NativeGraphNode {
+            id: "File:src/a.ts".to_string(),
+            label: "File".to_string(),
+            properties: HashMap::from([
+                ("name".to_string(), "a.ts".to_string()),
+                ("filePath".to_string(), "src/a.ts".to_string()),
+                ("content".to_string(), "console.log('a')".to_string()),
+            ]),
+        }];
 
-        let relationships = vec![
-            NativeGraphRelationship {
-                fromId: "File:src/a.ts".to_string(),
-                toId: "File:src/b.ts".to_string(),
-                relType: "DEPENDS_ON".to_string(),
-                fromLabel: "File".to_string(),
-                toLabel: "File".to_string(),
-                properties: HashMap::new(),
-            },
-        ];
+        let relationships = vec![NativeGraphRelationship {
+            fromId: "File:src/a.ts".to_string(),
+            toId: "File:src/b.ts".to_string(),
+            relType: "DEPENDS_ON".to_string(),
+            fromLabel: "File".to_string(),
+            toLabel: "File".to_string(),
+            properties: HashMap::new(),
+        }];
 
-        write_graph_batch_native(csv_dir.to_str().unwrap().to_string(), nodes, relationships).unwrap();
+        write_graph_batch_native(csv_dir.to_str().unwrap().to_string(), nodes, relationships)
+            .unwrap();
 
         assert!(csv_dir.join("nodes_File.csv").exists());
         assert!(csv_dir.join("rels_File_to_File.csv").exists());
-        
+
+        let method_header = "id,name,filePath,startLine,endLine,isExported,content,description,parameterCount,returnType,declarationFilePath,declarationStartLine,declarationEndLine,definitionFilePath,definitionStartLine,definitionEndLine";
+        let concept_header = "id,name,filePath,aliases,sourceDocuments,sourceFactKeys,resolutionKeys,authority,confidence,evidenceClass,freshness";
+        for (id, label, values) in [
+            (
+                "Method:supplied",
+                "Method",
+                vec![
+                    ("startLine", "0"),
+                    ("endLine", "8"),
+                    ("isExported", "true"),
+                    ("parameterCount", "2"),
+                    ("returnType", "string"),
+                    ("declarationFilePath", "api.d.ts"),
+                    ("declarationStartLine", "0"),
+                    ("declarationEndLine", "4"),
+                    ("definitionFilePath", "impl.ts"),
+                    ("definitionStartLine", "5"),
+                    ("definitionEndLine", "8"),
+                ],
+            ),
+            (
+                "Concept:supplied",
+                "Concept",
+                vec![
+                    ("aliases", "['alias']"),
+                    ("sourceDocuments", "['guide.md']"),
+                    ("sourceFactKeys", "['fact:1']"),
+                    ("resolutionKeys", "['key:1']"),
+                    ("authority", "authoritative"),
+                    ("confidence", "high"),
+                    ("evidenceClass", "docs_evidence"),
+                    ("freshness", "current"),
+                ],
+            ),
+            (
+                "Method:default",
+                "Method",
+                vec![("parameterCount", "0"), ("startLine", "0")],
+            ),
+            ("Concept:default", "Concept", vec![("aliases", "")]),
+            (
+                "Concept:empty",
+                "Concept",
+                vec![
+                    ("authority", ""),
+                    ("confidence", ""),
+                    ("evidenceClass", ""),
+                    ("freshness", ""),
+                ],
+            ),
+        ] {
+            // Separate calls append rows without repeating headers.
+            write_graph_batch_native(
+                csv_dir.to_str().unwrap().to_string(),
+                vec![NativeGraphNode {
+                    id: id.to_string(),
+                    label: label.to_string(),
+                    properties: values
+                        .into_iter()
+                        .map(|(key, value)| (key.to_string(), value.to_string()))
+                        .collect(),
+                }],
+                vec![],
+            )
+            .unwrap();
+        }
+        let csv_row = |values: &[&str]| {
+            values
+                .iter()
+                .map(|value| escape_csv_field(value))
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        assert_eq!(
+            fs::read_to_string(csv_dir.join("nodes_Method.csv")).unwrap(),
+            format!(
+                "{}\n{}\n{}\n",
+                method_header,
+                csv_row(&[
+                    "Method:supplied",
+                    "",
+                    "",
+                    "0",
+                    "8",
+                    "true",
+                    "",
+                    "",
+                    "2",
+                    "string",
+                    "api.d.ts",
+                    "0",
+                    "4",
+                    "impl.ts",
+                    "5",
+                    "8"
+                ]),
+                csv_row(&[
+                    "Method:default",
+                    "",
+                    "",
+                    "0",
+                    "-1",
+                    "false",
+                    "",
+                    "",
+                    "0",
+                    "",
+                    "",
+                    "-1",
+                    "-1",
+                    "",
+                    "-1",
+                    "-1"
+                ]),
+            )
+        );
+        assert_eq!(
+            fs::read_to_string(csv_dir.join("nodes_Concept.csv")).unwrap(),
+            format!(
+                "{}\n{}\n{}\n{}\n",
+                concept_header,
+                csv_row(&[
+                    "Concept:supplied",
+                    "",
+                    "",
+                    "['alias']",
+                    "['guide.md']",
+                    "['fact:1']",
+                    "['key:1']",
+                    "authoritative",
+                    "high",
+                    "docs_evidence",
+                    "current"
+                ]),
+                csv_row(&[
+                    "Concept:default",
+                    "",
+                    "",
+                    "[]",
+                    "[]",
+                    "[]",
+                    "[]",
+                    "advisory",
+                    "low",
+                    "docs_evidence",
+                    "unknown"
+                ]),
+                csv_row(&[
+                    "Concept:empty",
+                    "",
+                    "",
+                    "[]",
+                    "[]",
+                    "[]",
+                    "[]",
+                    "",
+                    "",
+                    "",
+                    ""
+                ]),
+            )
+        );
+
         let _ = fs::remove_dir_all(csv_dir);
     }
 }

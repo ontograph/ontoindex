@@ -7,9 +7,8 @@
  *   1. resolveSymbol (executeParameterized — fuzzy lookup)
  *   Then dispatchDryRun / dispatchApply calls the atomic tool mock.
  *
- * For paths that call gnSafeEditCheck (preChecks !== false), the 8 internal
- * executeParameterized calls of gnSafeEditCheck are consumed first
- * (see safe-edit-check.test.ts for order).
+ * For paths that call gnSafeEditCheck (preChecks !== false), symbol resolution
+ * precedes bounded graph probes (see safe-edit-check.test.ts for query shapes).
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -129,23 +128,19 @@ function mockResolve(rows = [resolvedRow()]): void {
  *
  * gnSafeEditCheck sequence:
  *   1. resolveSymbol (fuzzy)
- *   Then Promise.all:
+ *   Then bounded graph probes:
  *   2. fetchUpstream
  *   3. fetchDownstream
  *   4. fetchProcessCount
  *   5. fetchClusterCount
  *   6. fetchCoChangeSiblings
- *   7. fetchRecentTouchDays
- *   8. fetchIsExported
+ *   7. fetchIsExported
  */
-function mockSafeEditCheckSequence(
-  verdict: 'SAFE' | 'CAUTION' | 'DANGEROUS' | 'BLOCKED' = 'SAFE',
-): void {
+function mockSafeEditCheckSequence(verdict: 'CAUTION' | 'DANGEROUS' | 'BLOCKED' = 'CAUTION'): void {
   // 1. gnSafeEditCheck resolveSymbol (fuzzy lookup)
   mockExecuteParameterized.mockResolvedValueOnce([resolvedRow()]);
 
-  const upstreamCount =
-    verdict === 'BLOCKED' ? 200 : verdict === 'DANGEROUS' ? 5 : verdict === 'CAUTION' ? 10 : 0;
+  const upstreamCount = verdict === 'BLOCKED' ? 200 : verdict === 'DANGEROUS' ? 5 : 0;
   mockRunImpactKernel.mockResolvedValueOnce({
     rawCounts: { direct: upstreamCount },
     impacted: Array.from({ length: Math.min(upstreamCount, 10) }, (_, i) => ({
@@ -160,11 +155,9 @@ function mockSafeEditCheckSequence(
   });
 
   const isExported = verdict === 'BLOCKED' || verdict === 'DANGEROUS';
-  const lastDate = verdict === 'CAUTION' ? '2026-04-01' : '2026-05-18';
   mockExecuteParameterized.mockImplementation(async (_repoId: string, query: string) => {
     if (query.includes('PARTICIPATES_IN')) return [{ processCount: 0 }];
     if (query.includes('MEMBER_OF')) return [{ clusterCount: 0 }];
-    if (query.includes('CO_CHANGED_WITH') && query.includes('lastDate')) return [{ lastDate }];
     if (query.includes('CO_CHANGED_WITH')) return [];
     if (query.includes('isExported')) return [{ isExported }];
     return [];
@@ -639,8 +632,8 @@ describe('gnSafeRefactor', () => {
 
   it('returns preview-only when dryRun defaults to true', async () => {
     mockResolve();
-    // gnSafeEditCheck sequence — SAFE
-    mockSafeEditCheckSequence('SAFE');
+    // gnSafeEditCheck sequence — CAUTION: recency is unavailable
+    mockSafeEditCheckSequence('CAUTION');
     // dispatchDryRun → renameSymbol (dry_run: true)
     mockRenameSymbol.mockResolvedValueOnce({
       status: 'success',
@@ -661,6 +654,11 @@ describe('gnSafeRefactor', () => {
 
     expect(report.applied).toBe(false);
     expect(report.preview.estimatedLinesChanged).toBe(3);
+    expect(report.preCheckReport).toMatchObject({
+      verdict: 'CAUTION',
+      coChangeNetwork: { recentTouchDays: -1 },
+    });
+    expect(report.preCheckReport!.reasoning).toContain('co-change recency unavailable');
     // detectChanges must NOT be called (no apply)
     expect(mockDetectChanges).not.toHaveBeenCalled();
     // renameSymbol called exactly once (dry-run only, no apply)
@@ -672,7 +670,7 @@ describe('gnSafeRefactor', () => {
   // -------------------------------------------------------------------------
   it('calls renameSymbol with dry_run:true for intent:rename', async () => {
     mockResolve();
-    mockSafeEditCheckSequence('SAFE');
+    mockSafeEditCheckSequence('CAUTION');
     mockRenameSymbol.mockResolvedValueOnce({
       status: 'success',
       old_name: SYMBOL_NAME,
@@ -767,7 +765,7 @@ describe('gnSafeRefactor', () => {
   // -------------------------------------------------------------------------
   it('adds warning and rollbackInstructions when detect_changes finds unexpected scope', async () => {
     mockResolve();
-    mockSafeEditCheckSequence('SAFE');
+    mockSafeEditCheckSequence('CAUTION');
     // dry-run rename
     mockRenameSymbol.mockResolvedValueOnce({
       status: 'success',
@@ -834,7 +832,7 @@ describe('gnSafeRefactor', () => {
   // -------------------------------------------------------------------------
   it('returns applied:true with no rollbackInstructions on clean apply', async () => {
     mockResolve();
-    mockSafeEditCheckSequence('SAFE');
+    mockSafeEditCheckSequence('CAUTION');
     // dry-run
     mockRenameSymbol.mockResolvedValueOnce({
       status: 'success',
@@ -871,6 +869,10 @@ describe('gnSafeRefactor', () => {
     );
 
     expect(report.applied).toBe(true);
+    expect(report.preCheckReport).toMatchObject({
+      verdict: 'CAUTION',
+      coChangeNetwork: { recentTouchDays: -1 },
+    });
     expect(report.rollbackInstructions).toBeUndefined();
     expect(report.postCheckSummary!.unexpected).toHaveLength(0);
     expect(report.version).toBe(1);

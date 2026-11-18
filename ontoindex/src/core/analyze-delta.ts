@@ -1,6 +1,11 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { constants, type Dirent, type Stats } from 'node:fs';
+import { type Dirent, type Stats } from 'node:fs';
+import {
+  loadOntoIndexNativeModule,
+  openRootedFile,
+  type NativeRootedDirectory,
+} from '../native/module.js';
 import { createHash } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { globStream } from 'glob';
@@ -374,7 +379,8 @@ function parseDirtyOverlayStatus(output: string): Array<{ status: string; paths:
 interface TrackedIndexEntry {
   path: string;
   mode: string;
-  hidden: boolean;
+  assumeUnchanged: boolean;
+  skipWorktree: boolean;
 }
 
 async function readIndexEntries(repoPath: string): Promise<TrackedIndexEntry[]> {
@@ -392,21 +398,48 @@ async function readIndexEntries(repoPath: string): Promise<TrackedIndexEntry[]> 
     entries.push({
       path: entry.slice(separator + 1),
       mode: entry.slice(2, 8),
-      hidden: /^[a-zS] /.test(entry),
+      assumeUnchanged: /^[a-z] /.test(entry),
+      skipWorktree: entry[0]?.toUpperCase() === 'S',
     });
   }
   return entries;
 }
 
-// Git status deliberately omits these entries; conservatively treat present files as modified.
+// Git hides both flags, but only skip-worktree permits an absent sparse file.
 async function hiddenIndexPaths(
   repoPath: string,
   entries?: readonly TrackedIndexEntry[],
-): Promise<string[]> {
-  const paths: string[] = [];
+): Promise<Array<{ path: string; present: boolean }>> {
+  const paths: Array<{ path: string; present: boolean }> = [];
   for (const entry of entries ?? (await readIndexEntries(repoPath))) {
-    if (!entry.hidden) continue;
+    if (!entry.assumeUnchanged && !entry.skipWorktree) continue;
     const filePath = entry.path;
+    try {
+      await fs.lstat(path.join(repoPath, filePath));
+      paths.push({ path: filePath, present: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      if (!entry.skipWorktree) paths.push({ path: filePath, present: false });
+    }
+  }
+  return paths;
+}
+
+function isConsumedIgnoreControl(filePath: string): boolean {
+  return (
+    filePath === '.ontoindexignore' ||
+    (filePath === '.gitignore' && !process.env.ONTOINDEX_NO_GITIGNORE)
+  );
+}
+
+async function untrackedIgnoreControls(
+  repoPath: string,
+  entries: readonly TrackedIndexEntry[],
+): Promise<string[]> {
+  const tracked = new Set(entries.map((entry) => entry.path));
+  const paths: string[] = [];
+  for (const filePath of ['.ontoindexignore', '.gitignore']) {
+    if (!isConsumedIgnoreControl(filePath) || tracked.has(filePath)) continue;
     try {
       await fs.lstat(path.join(repoPath, filePath));
       paths.push(filePath);
@@ -431,20 +464,24 @@ export async function workingTreeMatchesHead(
     for (const filePath of paths) {
       if (
         filePath &&
-        (filePath === '.gitignore' ||
+        (isConsumedIgnoreControl(filePath) ||
           (!shouldIgnorePath(filePath) && !ignoreRules?.ignores(filePath)))
       ) {
         changedPaths.add(filePath);
       }
     }
   }
-  for (const filePath of await hiddenIndexPaths(repoPath)) {
+  const entries = await readIndexEntries(repoPath);
+  for (const { path: filePath } of await hiddenIndexPaths(repoPath, entries)) {
     if (
-      filePath === '.gitignore' ||
+      isConsumedIgnoreControl(filePath) ||
       (!shouldIgnorePath(filePath) && !ignoreRules?.ignores(filePath))
     ) {
       changedPaths.add(filePath);
     }
+  }
+  for (const filePath of await untrackedIgnoreControls(repoPath, entries)) {
+    changedPaths.add(filePath);
   }
   return {
     clean: changedPaths.size === 0,
@@ -458,61 +495,72 @@ async function dirtyConfigurationSymlinks(
   dirtyPaths: ReadonlySet<string>,
   entries: readonly TrackedIndexEntry[],
 ): Promise<string[]> {
-  const targets = new Set(
-    [...dirtyPaths].filter(
-      (filePath) => !CAPTURE_CONFIGURATION.test(path.posix.basename(filePath)),
-    ),
-  );
+  const targets = dirtyPaths;
   if (targets.size === 0) return [];
   let root: string | undefined;
   const matches: string[] = [];
   for (const entry of entries) {
     if (entry.mode !== '120000') continue;
     const linkPath = entry.path;
+    // Hidden entries absent from both status and the presence scan are sparse omissions.
+    if (entry.skipWorktree && !targets.has(linkPath)) continue;
     const name = path.posix.basename(linkPath);
     if (!CAPTURE_CONFIGURATION.test(name) || ['.gitignore', '.ontoindexignore'].includes(name))
       continue;
     root ??= await fs.realpath(repoPath);
-    const visited = new Set<string>();
     const dependencies = new Set<string>();
-    const addDependencies = (filePath: string): void => {
-      for (
-        let current = filePath;
-        current && current !== '.';
-        current = path.posix.dirname(current)
-      ) {
-        dependencies.add(current);
-      }
-    };
-    let current = path.join(root, linkPath);
+    const pending = linkPath.split('/');
+    const resolved: string[] = [];
+    let hops = 0;
+    let unresolved = false;
     try {
-      for (let hops = 0; hops <= 40; hops += 1) {
-        const relative = path.relative(root, current);
-        if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative))
+      while (pending.length > 0) {
+        const component = pending.shift()!;
+        if (!component || component === '.') continue;
+        if (component === '..') {
+          if (resolved.length > 0) {
+            resolved.pop();
+            continue;
+          }
+          unresolved = true;
           break;
-        const filePath = relative.split(path.sep).join('/');
-        if (visited.has(filePath)) break;
-        visited.add(filePath);
-        addDependencies(filePath);
-        if (hops === 40 || !(await fs.lstat(current)).isSymbolicLink()) break;
-        current = path.resolve(path.dirname(current), await fs.readlink(current));
+        }
+        const filePath = [...resolved, component].join('/');
+        dependencies.add(filePath);
+        const current = path.join(root, filePath);
+        const stat = await fs.lstat(current);
+        if (stat.isSymbolicLink()) {
+          if (++hops > 40) {
+            unresolved = true;
+            break;
+          }
+          let target = await fs.readlink(current);
+          if (path.isAbsolute(target)) {
+            const rootPrefix = root.endsWith(path.sep) ? root : `${root}${path.sep}`;
+            if (target !== root && !target.startsWith(rootPrefix)) {
+              unresolved = true;
+              break;
+            }
+            target = target.slice(root.length);
+            resolved.length = 0;
+          }
+          // Expand before consuming '..': its parent is the resolved target directory.
+          pending.unshift(...target.split(path.sep));
+        } else {
+          if (pending.length > 0 && !stat.isDirectory()) {
+            unresolved = true;
+            break;
+          }
+          resolved.push(component);
+        }
       }
     } catch {
-      // A missing or unreadable hop ends the chain; links already visited still count.
+      unresolved = true;
     }
-    // The final target may also be reached through a symlinked directory.
-    const resolved = await fs.realpath(path.join(root, linkPath)).catch(() => null);
-    if (resolved) {
-      const relative = path.relative(root, resolved);
-      if (
-        relative &&
-        relative !== '..' &&
-        !relative.startsWith(`..${path.sep}`) &&
-        !path.isAbsolute(relative)
-      )
-        addDependencies(relative.split(path.sep).join('/'));
-    }
-    if ([...dependencies].some((filePath) => filePath !== linkPath && targets.has(filePath)))
+    if (
+      unresolved ||
+      [...dependencies].some((filePath) => filePath !== linkPath && targets.has(filePath))
+    )
       matches.push(linkPath);
   }
   return matches;
@@ -565,9 +613,13 @@ export async function planDirtyOverlay(repoPath: string): Promise<DirtyOverlayPl
   }
 
   const entries = await readIndexEntries(repoPath);
-  const hiddenPaths = await hiddenIndexPaths(repoPath, entries);
-  for (const filePath of hiddenPaths) {
-    if (isSourceFilePath(filePath) && !isIgnored(filePath)) includePaths.add(filePath);
+  const hidden = await hiddenIndexPaths(repoPath, entries);
+  const hiddenPaths = hidden.map((entry) => entry.path);
+  for (const { path: filePath, present } of hidden) {
+    if (isSourceFilePath(filePath) && !isIgnored(filePath)) {
+      if (present) includePaths.add(filePath);
+      else tombstones.add(filePath);
+    }
   }
 
   const dirtyPaths = new Set([...skipped, ...includePaths, ...tombstones, ...hiddenPaths]);
@@ -578,9 +630,16 @@ export async function planDirtyOverlay(repoPath: string): Promise<DirtyOverlayPl
   const allDirtyPaths = [...new Set([...includePaths, ...tombstones])].sort();
   const tooMany = false; // Retained output field for compatibility; there is no count cap.
   const plannedIncludePaths = [...includePaths].sort();
-  const configPaths = [...skipped]
-    .filter((filePath) => CAPTURE_CONFIGURATION.test(path.posix.basename(filePath)))
-    .filter((filePath) => !isIgnored(filePath))
+  const configPaths = [
+    ...new Set([...skipped, ...hiddenPaths, ...(await untrackedIgnoreControls(repoPath, entries))]),
+  ]
+    .filter((filePath) => {
+      const name = path.posix.basename(filePath);
+      if (name === '.gitignore' || name === '.ontoindexignore') {
+        return isConsumedIgnoreControl(filePath);
+      }
+      return CAPTURE_CONFIGURATION.test(name) && !isIgnored(filePath);
+    })
     .sort();
   return {
     includePaths: plannedIncludePaths,
@@ -696,6 +755,94 @@ function assertCaptureInputIdentity(relativePath: string, expected: Stats, actua
       'changed-input',
       `Workspace input identity changed during read: ${relativePath}; retry after writes settle`,
     );
+  }
+}
+
+async function openCaptureRoot(root: string): Promise<NativeRootedDirectory> {
+  try {
+    const native = await loadOntoIndexNativeModule();
+    if (!native.openRootedDirectory) throw new Error('unavailable');
+    return native.openRootedDirectory(root);
+  } catch {
+    throw new WorkspaceInputCaptureError(
+      'unsupported',
+      'Secure workspace input access is unavailable; install the native addon with rooted file access support',
+    );
+  }
+}
+
+async function readCaptureInput(
+  rootPath: string,
+  rootHandle: NativeRootedDirectory,
+  relativePath: string,
+  configuration: boolean,
+  check: () => void,
+  maxBytes?: number,
+): Promise<{ content: Buffer; executable: boolean }> {
+  check();
+  const filename = await captureReadPath(rootPath, relativePath, configuration);
+  if (filename === null)
+    throw new WorkspaceInputCaptureError(
+      'changed-input',
+      `Configuration disappeared: ${relativePath}`,
+    );
+  const beforeOpen = await fs.lstat(filename);
+  if (!beforeOpen.isFile())
+    throw new WorkspaceInputCaptureError(
+      'unsupported',
+      `Workspace input is not a regular file: ${relativePath}`,
+    );
+  if (!(beforeOpen.mode & 0o444))
+    throw Object.assign(new Error(`Workspace input is not readable: ${relativePath}`), {
+      code: 'EACCES',
+    });
+  let handle: Awaited<ReturnType<typeof openRootedFile>>;
+  try {
+    handle = await openRootedFile(rootHandle, path.relative(rootPath, filename));
+  } catch {
+    throw new WorkspaceInputCaptureError(
+      'changed-input',
+      `Secure workspace input open refused: ${relativePath}; retry after writes settle`,
+    );
+  }
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile())
+      throw new WorkspaceInputCaptureError(
+        'unsupported',
+        `Workspace input is not a readable regular file: ${relativePath}`,
+      );
+    if (!(stat.mode & 0o444))
+      throw Object.assign(new Error(`Workspace input is not readable: ${relativePath}`), {
+        code: 'EACCES',
+      });
+    assertCaptureInputIdentity(relativePath, beforeOpen, stat);
+    const content = Buffer.alloc(
+      maxBytes === undefined ? stat.size + 1 : Math.min(stat.size, maxBytes),
+    );
+    let length = 0;
+    while (length < content.length) {
+      check();
+      const result = await handle.read(content, length, content.length - length, null);
+      if (result.bytesRead === 0) break;
+      length += result.bytesRead;
+    }
+    if (length !== (maxBytes === undefined ? stat.size : Math.min(stat.size, maxBytes)))
+      throw new WorkspaceInputCaptureError(
+        'changed-input',
+        `Workspace input changed during read: ${relativePath}`,
+      );
+    if ((await captureReadPath(rootPath, relativePath, configuration)) !== filename)
+      throw new WorkspaceInputCaptureError(
+        'changed-input',
+        `Configuration changed: ${relativePath}`,
+      );
+    assertCaptureInputIdentity(relativePath, stat, await fs.lstat(filename));
+    const value = content.subarray(0, length);
+    if (configuration) checkResolverConfiguration(relativePath, value);
+    return { content: value, executable: Boolean(stat.mode & 0o111) };
+  } finally {
+    await handle.close();
   }
 }
 
@@ -874,6 +1021,7 @@ async function workspaceConfigurationPaths(
   root: string,
   includePaths: readonly string[] | undefined,
   check: () => void,
+  readFile?: (relativePath: string, maxBytes?: number) => Promise<Buffer>,
 ): Promise<string[]> {
   for (const filename of ['.gitignore', '.ontoindexignore']) {
     try {
@@ -962,7 +1110,7 @@ async function workspaceConfigurationPaths(
     }
     return [...new Set([...paths, ...catalogPaths])].sort();
   }
-  const ignore = await createIgnoreFilter(root);
+  const ignore = await createIgnoreFilter(root, { readFile });
   const paths: string[] = [];
   // The canonical walker owns eligibility; this pass only rejects unsafe inputs
   // and adds configuration files that its built-in filename policy excludes.
@@ -1023,79 +1171,50 @@ export async function workspaceConfigurationIdentity(
   };
   check();
   const root = await fs.realpath(repoPath);
-  const configs = await workspaceConfigurationPaths(root, options.includePaths, check);
-  const configPaths = new Set(configs);
-  const inputPaths = [...new Set([...configs, ...(options.inputPaths ?? [])])].sort();
-  const entries: CapturedSourceEntry[] = [];
-  for (const relativePath of inputPaths) {
-    check();
-    const filename = await captureReadPath(root, relativePath, configPaths.has(relativePath));
-    if (filename === null)
-      throw new WorkspaceInputCaptureError(
-        'changed-input',
-        `Configuration disappeared: ${relativePath}`,
+  const rootHandle = await openCaptureRoot(root);
+  try {
+    const readFile = async (relativePath: string, maxBytes?: number) =>
+      (await readCaptureInput(root, rootHandle, relativePath, false, check, maxBytes)).content;
+    const configs = await workspaceConfigurationPaths(root, options.includePaths, check, readFile);
+    const configPaths = new Set(configs);
+    const inputPaths = [...new Set([...configs, ...(options.inputPaths ?? [])])].sort();
+    const entries: CapturedSourceEntry[] = [];
+    for (const relativePath of inputPaths) {
+      check();
+      const { content: value, executable } = await readCaptureInput(
+        root,
+        rootHandle,
+        relativePath,
+        configPaths.has(relativePath),
+        check,
       );
-    const beforeOpen = await fs.lstat(filename);
-    const handle = await fs.open(
-      filename,
-      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
-    );
-    try {
-      const stat = await handle.stat();
-      if (!stat.isFile() || !(stat.mode & 0o444))
-        throw new WorkspaceInputCaptureError(
-          'unsupported',
-          `Workspace input is not a readable regular file: ${relativePath}`,
-        );
-      assertCaptureInputIdentity(relativePath, beforeOpen, stat);
-      const content = Buffer.alloc(stat.size + 1);
-      let length = 0;
-      while (length < content.length) {
-        check();
-        const result = await handle.read(content, length, content.length - length, null);
-        if (result.bytesRead === 0) break;
-        length += result.bytesRead;
-      }
-      if (length !== stat.size)
-        throw new WorkspaceInputCaptureError(
-          'changed-input',
-          `Workspace input changed during read: ${relativePath}`,
-        );
-      if ((await captureReadPath(root, relativePath, configPaths.has(relativePath))) !== filename)
-        throw new WorkspaceInputCaptureError(
-          'changed-input',
-          `Configuration changed: ${relativePath}`,
-        );
-      assertCaptureInputIdentity(relativePath, stat, await fs.lstat(filename));
-      const value = content.subarray(0, length);
-      if (configPaths.has(relativePath)) checkResolverConfiguration(relativePath, value);
       entries.push({
         path: relativePath,
-        byteLength: length,
+        byteLength: value.length,
         digest: createHash('sha256').update(value).digest('hex'),
-        executable: Boolean(stat.mode & 0o111),
+        executable,
       });
-    } finally {
-      await handle.close();
     }
+    const configurationDigest = workspaceConfigurationDigest(
+      entries.filter((entry) => configPaths.has(entry.path)),
+      await workspaceIgnorePolicyDigest(root, readFile),
+    );
+    const parserIdentity = await workspaceParserIdentity();
+    check();
+    return {
+      configurationDigest,
+      parserIdentity,
+      ...(options.inputPaths === undefined
+        ? {}
+        : {
+            inputDigest: createHash('sha256')
+              .update(JSON.stringify([parserIdentity, configurationDigest, entries]))
+              .digest('hex'),
+          }),
+    };
+  } finally {
+    rootHandle.close();
   }
-  const configurationDigest = workspaceConfigurationDigest(
-    entries.filter((entry) => configPaths.has(entry.path)),
-    await workspaceIgnorePolicyDigest(root),
-  );
-  const parserIdentity = await workspaceParserIdentity();
-  check();
-  return {
-    configurationDigest,
-    parserIdentity,
-    ...(options.inputPaths === undefined
-      ? {}
-      : {
-          inputDigest: createHash('sha256')
-            .update(JSON.stringify([parserIdentity, configurationDigest, entries]))
-            .digest('hex'),
-        }),
-  };
 }
 
 /** Materialize and verify working-file bytes; never use stat timestamps as identity. */
@@ -1208,82 +1327,51 @@ export async function captureWorkspaceInputs(
         copy: boolean,
         executableEntries?: Map<string, CapturedSourceEntry>,
       ) => {
-        const configs = await workspaceConfigurationPaths(root, options.includePaths, check);
-        return computeSourceManifest(root, {
-          ...(options.includePaths ? { includePaths: options.includePaths } : {}),
-          capture: {
-            parserIdentity,
-            configurationPaths: configs,
+        const rootHandle = await openCaptureRoot(root);
+        try {
+          const readFile = async (relativePath: string, maxBytes?: number) =>
+            (await readCaptureInput(root, rootHandle, relativePath, false, check, maxBytes))
+              .content;
+          const configs = await workspaceConfigurationPaths(
+            root,
+            options.includePaths,
             check,
-            read: async (relativePath) => {
-              check();
-              await options.hooks?.beforeRead?.(relativePath, attempt);
-              const filename = await captureReadPath(
-                root,
-                relativePath,
-                configs.includes(relativePath),
-              );
-              if (filename === null)
-                throw new WorkspaceInputCaptureError(
-                  'changed-input',
-                  `Configuration disappeared: ${relativePath}`,
+            readFile,
+          );
+          return await computeSourceManifest(root, {
+            ...(options.includePaths ? { includePaths: options.includePaths } : {}),
+            capture: {
+              parserIdentity,
+              configurationPaths: configs,
+              check,
+              readFile,
+              read: async (relativePath) => {
+                check();
+                await options.hooks?.beforeRead?.(relativePath, attempt);
+                const result = await readCaptureInput(
+                  root,
+                  rootHandle,
+                  relativePath,
+                  configs.includes(relativePath),
+                  check,
                 );
-              const beforeOpen = await fs.lstat(filename);
-              const handle = await fs.open(
-                filename,
-                constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
-              );
-              try {
-                const stat = await handle.stat();
-                if (!stat.isFile() || !(stat.mode & 0o444)) {
-                  throw new WorkspaceInputCaptureError(
-                    'unsupported',
-                    `Workspace input is not a readable regular file: ${relativePath}`,
-                  );
-                }
-                assertCaptureInputIdentity(relativePath, beforeOpen, stat);
-                const content = Buffer.alloc(stat.size + 1);
-                let length = 0;
-                while (length < content.length) {
-                  check();
-                  const result = await handle.read(content, length, content.length - length, null);
-                  if (result.bytesRead === 0) break;
-                  length += result.bytesRead;
-                }
-                if (length !== stat.size)
-                  throw new WorkspaceInputCaptureError(
-                    'changed-input',
-                    `Workspace input changed during read: ${relativePath}`,
-                  );
-                if (
-                  (await captureReadPath(root, relativePath, configs.includes(relativePath))) !==
-                  filename
-                )
-                  throw new WorkspaceInputCaptureError(
-                    'changed-input',
-                    `Configuration changed: ${relativePath}`,
-                  );
-                assertCaptureInputIdentity(relativePath, stat, await fs.lstat(filename));
-                const value = content.subarray(0, length);
-                if (configs.includes(relativePath)) checkResolverConfiguration(relativePath, value);
                 return {
-                  content: value,
-                  executable:
-                    executableEntries?.get(relativePath)?.executable ?? Boolean(stat.mode & 0o111),
+                  content: result.content,
+                  executable: executableEntries?.get(relativePath)?.executable ?? result.executable,
                 };
-              } finally {
-                await handle.close();
-              }
+              },
+              onEntry: copy
+                ? async (entry, content) => {
+                    const target = captureInputPath(captureRoot, entry.path);
+                    await fs.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
+                    await fs.writeFile(target, content, { mode: 0o600, flag: 'wx' });
+                  }
+                : undefined,
             },
-            onEntry: copy
-              ? async (entry, content) => {
-                  const target = captureInputPath(captureRoot, entry.path);
-                  await fs.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
-                  await fs.writeFile(target, content, { mode: 0o600, flag: 'wx' });
-                }
-              : undefined,
-          },
-        });
+          });
+        } finally {
+          rootHandle.close();
+        }
       };
       await assertIgnoreFilesRegular();
       const manifest = await readManifest(canonicalRepoPath, true);
@@ -1321,7 +1409,25 @@ export async function captureWorkspaceInputs(
         : '';
       check();
       const captured = new Set(capturedPaths);
-      const ignore = await loadIgnoreRules(captureRoot);
+      const tombstoneRoot = await openCaptureRoot(captureRoot);
+      let ignore: Awaited<ReturnType<typeof loadIgnoreRules>>;
+      try {
+        ignore = await loadIgnoreRules(captureRoot, {
+          readFile: async (relativePath, maxBytes) =>
+            (
+              await readCaptureInput(
+                captureRoot,
+                tombstoneRoot,
+                relativePath,
+                false,
+                check,
+                maxBytes,
+              )
+            ).content,
+        });
+      } finally {
+        tombstoneRoot.close();
+      }
       const tombstones = tracked
         .split('\0')
         .filter(

@@ -24,7 +24,6 @@ import {
 import { getGroupDir } from './storage.js';
 import { closeBridgeDb, openBridgeDbReadOnly, queryBridge, readBridgeMeta } from './bridge-db.js';
 import { BRIDGE_SCHEMA_VERSION } from './bridge-schema.js';
-import { closeLbug } from '../lbug/pool-adapter.js';
 import {
   addQueryBudgetDegradedReason,
   addQueryBudgetTruncatedReason,
@@ -288,31 +287,33 @@ async function safeLocalImpact(
   impactParams: Parameters<GroupToolPort['impact']>[1],
   timeoutMs: number,
 ): Promise<{ value: unknown; timedOut: boolean }> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
   const controller = new AbortController();
-  const impactP = port.impact(repo, impactParams, { signal: controller.signal }).catch((err) => ({
-    error: err instanceof Error ? err.message : String(err),
-  }));
-  const timeoutP = new Promise<'timeout'>((resolve) => {
-    const delayMs = timeoutMs >= 0 && timeoutMs <= MAX_LOCAL_IMPACT_TIMEOUT_MS ? timeoutMs : 0;
-    timer = setTimeout(() => {
-      controller.abort(new Error(`Local impact timed out after ${timeoutMs}ms`));
-      void closeLbug(repo.id).catch(() => {});
-      resolve('timeout');
-    }, delayMs);
-  });
-  const won = await Promise.race([
-    impactP.then((v) => ({ tag: 'impact' as const, v })),
-    timeoutP.then(() => ({ tag: 'timeout' as const })),
-  ]);
-  if (timer !== undefined) clearTimeout(timer);
-  if (won.tag === 'timeout') {
+  const deadline = Date.now() + timeoutMs;
+  const timer = setTimeout(() => {
+    controller.abort(new Error(`Local impact timed out after ${timeoutMs}ms`));
+  }, timeoutMs);
+  try {
+    const value = await port
+      .impact(repo, impactParams, { signal: controller.signal })
+      .catch((err) => ({
+        error: err instanceof Error ? err.message : String(err),
+      }));
+    const timedOut = controller.signal.aborted || Date.now() >= deadline;
     return {
-      value: { error: 'Local impact timed out', partial: true },
-      timedOut: true,
+      value: timedOut
+        ? {
+            ...(value && typeof value === 'object' ? value : {}),
+            partial: true,
+            truncated: true,
+            traversalComplete: false,
+            risk: 'UNKNOWN',
+          }
+        : value,
+      timedOut,
     };
+  } finally {
+    clearTimeout(timer);
   }
-  return { value: won.v, timedOut: false };
 }
 
 export function collectImpactSymbolUids(
@@ -354,12 +355,20 @@ function extractProcessNames(impact: unknown): string[] {
 }
 
 function mergeRisk(localRisk: string, cross: CrossRepoImpact[]): string {
+  if (localRisk === 'UNKNOWN' || cross.some((c) => c.risk === 'UNKNOWN' || 'error' in c)) {
+    return 'UNKNOWN';
+  }
+  const risks = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'];
+  const memberRisk = cross.reduce((risk, member) => {
+    const candidate = member.risk ?? risk;
+    return risks.indexOf(candidate) > risks.indexOf(risk) ? candidate : risk;
+  }, localRisk);
   const highConf = cross.some((c) => c.contract.confidence >= 0.85);
-  if (localRisk === 'CRITICAL') return 'CRITICAL';
+  if (memberRisk === 'CRITICAL') return 'CRITICAL';
   if (cross.length >= 3) return 'CRITICAL';
-  if (highConf) return 'HIGH';
-  if (cross.length > 0 && (localRisk === 'LOW' || localRisk === 'UNKNOWN')) return 'MEDIUM';
-  return localRisk;
+  if (highConf || memberRisk === 'HIGH') return 'HIGH';
+  if (cross.length > 0 && memberRisk === 'LOW') return 'MEDIUM';
+  return memberRisk;
 }
 
 async function ensureBridgeReady(
@@ -458,9 +467,7 @@ export async function runGroupImpact(
     minConfidence,
   };
 
-  // Single shared deadline for Phase 1 (local walk) + Phase 2 (bridge fan-out).
-  // Phase 1 still gets the full budget; Phase 2 only uses whatever wall-clock
-  // time is left, so total work cannot exceed `timeoutMs`.
+  // Cancellation is cooperative: retain ownership until admitted work settles.
   const deadline = Date.now() + Math.max(0, timeoutMs);
 
   const { value: local, timedOut: localTimedOut } = await safeLocalImpact(
@@ -471,8 +478,45 @@ export async function runGroupImpact(
   );
 
   if (localTimedOut) {
+    const localSum = (local as { summary?: Record<string, number> })?.summary || {};
     budget = finishGroupImpactBudget(truncateGroupImpactBudget(budget, 'timeout'), startedAtMs);
     return {
+      local,
+      group: name,
+      cross: [],
+      outOfScope: [],
+      truncated: true,
+      truncatedRepos: [],
+      summary: {
+        direct: localSum.direct ?? 0,
+        processes_affected: localSum.processes_affected ?? 0,
+        modules_affected: localSum.modules_affected ?? 0,
+        cross_repo_hits: 0,
+      },
+      risk: 'UNKNOWN',
+      timeoutMs,
+      truncationReason: 'timeout',
+      crossDepthWarning,
+      budget,
+    };
+  }
+
+  const localObj =
+    local !== null && typeof local === 'object' ? (local as Record<string, unknown>) : null;
+  const localError = localObj !== null && 'error' in localObj;
+  const localUnknown = !localObj || localError || localObj.risk === 'UNKNOWN';
+  const localPartial =
+    localUnknown ||
+    Boolean(localObj?.partial) ||
+    Boolean(localObj?.truncated) ||
+    (localObj?.budget as { truncated?: boolean } | undefined)?.truncated === true ||
+    localObj?.traversalComplete === false;
+  if (!localObj || localError) {
+    budget = finishGroupImpactBudget(
+      truncateGroupImpactBudget(degradeGroupImpactBudget(budget, 'local-impact-error'), 'partial'),
+      startedAtMs,
+    );
+    const empty: GroupImpactResult = {
       local,
       group: name,
       cross: [],
@@ -487,33 +531,7 @@ export async function runGroupImpact(
       },
       risk: 'UNKNOWN',
       timeoutMs,
-      truncationReason: 'timeout',
-      crossDepthWarning,
-      budget,
-    };
-  }
-
-  const localObj = local as Record<string, unknown> | null;
-  if (localObj?.error && typeof localObj.error === 'string') {
-    budget = finishGroupImpactBudget(
-      degradeGroupImpactBudget(budget, 'local-impact-error'),
-      startedAtMs,
-    );
-    const empty: GroupImpactResult = {
-      local,
-      group: name,
-      cross: [],
-      outOfScope: [],
-      truncated: false,
-      truncatedRepos: [],
-      summary: {
-        direct: 0,
-        processes_affected: 0,
-        modules_affected: 0,
-        cross_repo_hits: 0,
-      },
-      risk: 'UNKNOWN',
-      timeoutMs,
+      truncationReason: 'partial',
       crossDepthWarning,
       budget,
     };
@@ -523,6 +541,7 @@ export async function runGroupImpact(
   if (servicePrefix) {
     const tf = (localObj?.target as { filePath?: string } | undefined)?.filePath;
     if (!fileMatchesServicePrefix(tf, servicePrefix)) {
+      if (localPartial) budget = truncateGroupImpactBudget(budget, 'partial');
       budget = finishGroupImpactBudget(
         updateGroupImpactBudget(budget, { emitted: 0 }),
         startedAtMs,
@@ -532,7 +551,7 @@ export async function runGroupImpact(
         group: name,
         cross: [],
         outOfScope: [],
-        truncated: false,
+        truncated: localPartial,
         truncatedRepos: [],
         summary: {
           direct: 0,
@@ -540,8 +559,9 @@ export async function runGroupImpact(
           modules_affected: 0,
           cross_repo_hits: 0,
         },
-        risk: 'LOW',
+        risk: localUnknown ? 'UNKNOWN' : 'LOW',
         timeoutMs,
+        truncationReason: localPartial ? 'partial' : undefined,
         crossDepthWarning,
         budget,
       };
@@ -552,7 +572,7 @@ export async function runGroupImpact(
   if (uids.length === 0) {
     const s = (local as { summary?: Record<string, number> })?.summary || {};
     budget = updateGroupImpactBudget(budget, { emitted: 0 });
-    if ((local as { partial?: boolean }).partial) {
+    if (localPartial) {
       budget = truncateGroupImpactBudget(budget, 'partial');
     }
     budget = finishGroupImpactBudget(budget, startedAtMs);
@@ -561,7 +581,7 @@ export async function runGroupImpact(
       group: name,
       cross: [],
       outOfScope: [],
-      truncated: Boolean((local as { partial?: boolean }).partial),
+      truncated: localPartial,
       truncatedRepos: [],
       summary: {
         direct: s.direct ?? 0,
@@ -569,9 +589,9 @@ export async function runGroupImpact(
         modules_affected: s.modules_affected ?? 0,
         cross_repo_hits: 0,
       },
-      risk: String((local as { risk?: string }).risk ?? 'LOW'),
+      risk: localUnknown ? 'UNKNOWN' : String(localObj.risk ?? 'LOW'),
       timeoutMs,
-      truncationReason: (local as { partial?: boolean }).partial ? 'partial' : undefined,
+      truncationReason: localPartial ? 'partial' : undefined,
       crossDepthWarning,
       budget,
     };
@@ -585,13 +605,35 @@ export async function runGroupImpact(
   const outOfScope: OutOfScopeLink[] = [];
   const truncatedRepos: string[] = [];
   let bridgeRowsTruncated = false;
+  let memberUnknown = localUnknown;
+  let fanoutTimedOut = false;
+  const controller = new AbortController();
+  const timer = setTimeout(
+    () => {
+      controller.abort(new Error('Group impact deadline exceeded'));
+    },
+    Math.max(0, deadline - Date.now()),
+  );
+  const deadlineExpired = () => controller.signal.aborted || Date.now() >= deadline;
+  const truncateTimeout = (repo?: string) => {
+    fanoutTimedOut = true;
+    memberUnknown = true;
+    if (repo) truncatedRepos.push(repo);
+    budget = truncateGroupImpactBudget(budget, 'timeout');
+  };
 
   try {
     const cypher = direction === 'upstream' ? CY_NEIGHBORS_UPSTREAM : CY_NEIGHBORS_DOWNSTREAM;
-    const rows = await queryBridge<Record<string, unknown>>(handle, cypher, {
-      localRepo: repoPath,
-      uids,
-    });
+    let rows: Record<string, unknown>[] = [];
+    if (deadlineExpired()) {
+      truncateTimeout();
+    } else {
+      rows = await queryBridge<Record<string, unknown>>(handle, cypher, {
+        localRepo: repoPath,
+        uids,
+      });
+      if (deadlineExpired()) truncateTimeout();
+    }
     bridgeRowsTruncated = rows.length >= MAX_CROSS_BRIDGE_NEIGHBORS;
     if (bridgeRowsTruncated) {
       budget = truncateGroupImpactBudget(budget, 'bridge-row-cap');
@@ -625,9 +667,8 @@ export async function runGroupImpact(
       if (seen.has(key)) continue;
       seen.add(key);
 
-      if (Date.now() > deadline) {
-        truncatedRepos.push(n.neighborRepo);
-        budget = truncateGroupImpactBudget(budget, 'timeout');
+      if (deadlineExpired()) {
+        truncateTimeout(n.neighborRepo);
         continue;
       }
 
@@ -638,24 +679,52 @@ export async function runGroupImpact(
       try {
         neighborHandle = await deps.port.resolveRepo(regName);
       } catch {
+        if (deadlineExpired()) {
+          truncateTimeout(n.neighborRepo);
+          continue;
+        }
+        memberUnknown = true;
         truncatedRepos.push(n.neighborRepo);
         budget = truncateGroupImpactBudget(budget, 'bridge-fanout-partial');
         continue;
       }
 
-      const fan = await deps.port.impactByUid(neighborHandle.id, n.neighborUid, direction, {
-        maxDepth,
-        relationTypes: relationTypes ?? [],
-        minConfidence,
-        includeTests,
-      });
+      if (deadlineExpired()) {
+        truncateTimeout(n.neighborRepo);
+        continue;
+      }
+
+      const fan = await deps.port
+        .impactByUid(neighborHandle.id, n.neighborUid, direction, {
+          maxDepth,
+          relationTypes: relationTypes ?? [],
+          minConfidence,
+          includeTests,
+          signal: controller.signal,
+        })
+        .catch((error) => ({ error: error instanceof Error ? error.message : String(error) }));
+      const timedOut = deadlineExpired();
+      if (timedOut) truncateTimeout(n.neighborRepo);
       if (fan == null) {
+        memberUnknown = true;
         truncatedRepos.push(n.neighborRepo);
         budget = truncateGroupImpactBudget(budget, 'bridge-fanout-partial');
         continue;
       }
 
       const metadata = fan as Partial<CrossRepoImpact>;
+      const fanUnknown = metadata.risk === 'UNKNOWN' || (typeof fan === 'object' && 'error' in fan);
+      memberUnknown ||= fanUnknown;
+      if (
+        fanUnknown ||
+        metadata.partial ||
+        metadata.truncated ||
+        (metadata.budget as { truncated?: boolean } | undefined)?.truncated === true ||
+        metadata.traversalComplete === false
+      ) {
+        truncatedRepos.push(n.neighborRepo);
+        budget = truncateGroupImpactBudget(budget, 'bridge-fanout-partial');
+      }
       cross.push({
         repo: regName,
         repo_path: n.neighborRepo,
@@ -667,6 +736,15 @@ export async function runGroupImpact(
         },
         by_depth: ((fan as { byDepth?: unknown }).byDepth ?? {}) as Record<string, unknown[]>,
         affected_processes: extractProcessNames(fan),
+        ...(metadata.risk !== undefined ? { risk: metadata.risk } : {}),
+        ...(metadata.error !== undefined ? { error: metadata.error } : {}),
+        ...(metadata.partial !== undefined ? { partial: metadata.partial } : {}),
+        ...(metadata.truncated !== undefined ? { truncated: metadata.truncated } : {}),
+        ...(metadata.traversalComplete !== undefined
+          ? { traversalComplete: metadata.traversalComplete }
+          : {}),
+        ...(metadata.warnings !== undefined ? { warnings: metadata.warnings } : {}),
+        ...(metadata.budget !== undefined ? { budget: metadata.budget } : {}),
         ...(metadata.source !== undefined ? { source: metadata.source } : {}),
         ...(metadata.graphImpactAvailable !== undefined
           ? { graphImpactAvailable: metadata.graphImpactAvailable }
@@ -681,16 +759,20 @@ export async function runGroupImpact(
         ...(metadata.capabilitiesMissing !== undefined
           ? { capabilitiesMissing: metadata.capabilitiesMissing }
           : {}),
+        ...(timedOut
+          ? { risk: 'UNKNOWN', partial: true, truncated: true, traversalComplete: false }
+          : {}),
       });
     }
   } finally {
+    clearTimeout(timer);
     await closeBridgeDb(handle);
   }
 
   const localSum = (local as { summary?: Record<string, number> })?.summary || {};
   const localRisk = String((local as { risk?: string }).risk ?? 'LOW');
-  const localPartial = Boolean((local as { partial?: boolean }).partial);
-  const truncated = truncatedRepos.length > 0 || localPartial || bridgeRowsTruncated;
+  const truncated =
+    fanoutTimedOut || truncatedRepos.length > 0 || localPartial || bridgeRowsTruncated;
   if (localPartial) {
     budget = truncateGroupImpactBudget(budget, 'partial');
   }
@@ -712,9 +794,9 @@ export async function runGroupImpact(
       modules_affected: localSum.modules_affected ?? 0,
       cross_repo_hits: cross.length,
     },
-    risk: mergeRisk(localRisk, cross),
+    risk: memberUnknown ? 'UNKNOWN' : mergeRisk(localRisk, cross),
     timeoutMs,
-    truncationReason: truncated ? 'partial' : undefined,
+    truncationReason: fanoutTimedOut ? 'timeout' : truncated ? 'partial' : undefined,
     crossDepthWarning,
     budget,
   };

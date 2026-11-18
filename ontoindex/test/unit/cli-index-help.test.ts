@@ -410,19 +410,24 @@ describe('CLI help surface', () => {
     },
   );
 
-  it('requires an explicit repository for workspace read mode', () => {
-    const result = spawnSync(
-      process.execPath,
-      ['--import', 'tsx', cliEntry, 'query', 'symbol', '--read-mode', 'workspace'],
-      { cwd: repoRoot, encoding: 'utf8' },
-    );
+  it.each(['', '1'])(
+    'requires an explicit repository for workspace read mode with ONTOINDEX_DEBUG=%j',
+    (debug) => {
+      const result = spawnSync(
+        process.execPath,
+        ['--import', 'tsx', cliEntry, 'query', 'symbol', '--read-mode', 'workspace'],
+        { cwd: repoRoot, encoding: 'utf8', env: { ...process.env, ONTOINDEX_DEBUG: debug } },
+      );
 
-    expect(result.status).toBe(1);
-    expect(result.stderr).toContain('requires an explicit single repository');
-    expect(result.stderr).not.toContain('No indexed repositories found');
-    expect(result.stderr).not.toContain('UnhandledPromiseRejection');
-    expect(result.stderr).not.toMatch(/^\s+at /m);
-  });
+      expect(result.status).toBe(1);
+      const diagnostic =
+        'Read mode must be committed or workspace and requires an explicit single repository (--repo <name>).';
+      expect(result.stderr.split('\n')[0]).toBe(`${debug ? 'Error: ' : ''}${diagnostic}`);
+      expect(result.stderr).not.toContain('No indexed repositories found');
+      expect(result.stderr).not.toContain('UnhandledPromiseRejection');
+      expect(/^\s+at /m.test(result.stderr)).toBe(Boolean(debug));
+    },
+  );
 
   it('detect-changes help exposes compare scope and base-ref flags', () => {
     const result = runHelp('detect-changes');

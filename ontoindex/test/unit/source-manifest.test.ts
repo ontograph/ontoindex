@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -8,6 +8,7 @@ import {
   computeSourceManifest,
   manifestsMatch,
   sourceInputsMatch,
+  workspaceIgnorePolicyDigest,
 } from '../../src/core/indexing/source-manifest.js';
 
 const roots: string[] = [];
@@ -24,6 +25,58 @@ afterEach(async () => {
 });
 
 describe('source manifest', () => {
+  it('uses capture ignore bytes for both filtering and the canonical digest', async () => {
+    const repo = await makeRepo();
+    await fs.writeFile(path.join(repo, 'src', 'main.ts'), 'disk bytes');
+    // Pathname opens would reject these directories; secure bytes are authoritative.
+    await fs.mkdir(path.join(repo, '.gitignore'));
+    await fs.mkdir(path.join(repo, '.ontoindexignore'));
+    const readFile = vi.fn(async (filename: string) => {
+      if (filename === '.gitignore') return Buffer.from('ignored.ts\n');
+      if (filename === '.ontoindexignore') return Buffer.alloc(0);
+      throw new Error(`Unexpected ancillary read: ${filename}`);
+    });
+    const manifest = await computeSourceManifest(repo, {
+      capture: {
+        parserIdentity: 'secure-reader-test',
+        configurationPaths: [],
+        check: () => {},
+        readFile,
+        read: async () => ({ content: Buffer.from('captured bytes'), executable: false }),
+      },
+    });
+    expect(manifest.sourceEntryCount).toBe(1);
+    expect(readFile.mock.calls).toEqual([
+      ['.gitignore'],
+      ['.ontoindexignore'],
+      ['.gitignore'],
+      ['.ontoindexignore'],
+    ]);
+    const policy = await workspaceIgnorePolicyDigest(repo, readFile);
+    expect(manifest.ignorePolicyDigest).toBe(policy);
+    await fs.rm(path.join(repo, '.gitignore'), { recursive: true });
+    await fs.rm(path.join(repo, '.ontoindexignore'), { recursive: true });
+    await fs.writeFile(path.join(repo, '.gitignore'), 'ignored.ts\n');
+    await fs.writeFile(path.join(repo, '.ontoindexignore'), '');
+    expect(await workspaceIgnorePolicyDigest(repo)).toBe(policy);
+  });
+
+  it('only treats ENOENT as an absent secure ignore policy', async () => {
+    const repo = await makeRepo();
+    const absent = async () => {
+      throw Object.assign(new Error('absent'), { code: 'ENOENT' });
+    };
+    expect(await workspaceIgnorePolicyDigest(repo, absent)).toBe(
+      await workspaceIgnorePolicyDigest(repo),
+    );
+    const error = Object.assign(new Error('unsafe policy'), { code: 'ELOOP' });
+    await expect(
+      workspaceIgnorePolicyDigest(repo, async () => {
+        throw error;
+      }),
+    ).rejects.toBe(error);
+  });
+
   it('uses locale-independent code-unit ordering', async () => {
     const repo = await makeRepo();
     await fs.writeFile(path.join(repo, 'src', 'z.ts'), 'z\n');

@@ -5,6 +5,8 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { createRequire } from 'node:module';
 import { isNativeCsvEnabled, selectCsvRowWriterFactory } from '../../src/native/csv-writer.js';
+import { writeGraphBatch, NATIVE_GRAPH_BATCH_BYTES } from '../../src/native/graph-writer.js';
+import type { GraphNode } from 'ontoindex-shared';
 import {
   BufferedCsvRowWriter,
   type CsvRowWriterFactory,
@@ -15,6 +17,7 @@ const fallbackFactory: CsvRowWriterFactory = () => ({
   rows: 0,
   addRow: () => undefined,
   finish: async () => undefined,
+  abort: async () => undefined,
 });
 
 const nativeFactory: CsvRowWriterFactory = () => ({
@@ -22,9 +25,34 @@ const nativeFactory: CsvRowWriterFactory = () => ({
   rows: 0,
   addRow: () => undefined,
   finish: async () => undefined,
+  abort: async () => undefined,
 });
 
 describe('native CSV writer selection', () => {
+  it.skipIf(
+    !fsSync.existsSync(
+      path.resolve(__dirname, '../../../ontoindex-native/native/ontoindex_native.node'),
+    ),
+  )('discards pending native rows without appending after abort', async () => {
+    const require = createRequire(import.meta.url);
+    const nativeModule = require('../../../ontoindex-native/index.cjs') as {
+      createCsvRowWriter: CsvRowWriterFactory;
+    };
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-native-abort-'));
+    try {
+      const csvPath = path.join(dir, 'aborted.csv');
+      const writer = nativeModule.createCsvRowWriter(csvPath, 'id');
+      await writer.addRow('pending');
+      await writer.abort();
+      await writer.abort();
+      expect(() => writer.addRow('later')).toThrow('CSV writer aborted');
+      await expect(writer.finish()).rejects.toThrow('CSV writer aborted');
+      expect(fsSync.existsSync(csvPath)).toBe(false);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('treats the native CSV feature flag as opt-in', () => {
     expect(isNativeCsvEnabled({})).toBe(false);
     expect(isNativeCsvEnabled({ ONTOINDEX_NATIVE_CSV: '0' })).toBe(false);
@@ -82,7 +110,8 @@ describe('native CSV writer selection', () => {
     .each([
       { label: 'multiple row batches', count: 1201, maxBufferedCharacters: undefined },
       { label: 'empty table', count: 0, maxBufferedCharacters: undefined },
-      { label: 'character-limited and oversized rows', count: 25, maxBufferedCharacters: 64 },
+      { label: 'byte-limited and oversized rows', count: 25, maxBufferedCharacters: 64 },
+      { label: 'tiny byte budget and Unicode', count: 25, maxBufferedCharacters: 4 },
     ])(
     'writes byte-for-byte identical CSV for $label',
     async ({ count, maxBufferedCharacters }) => {
@@ -101,7 +130,7 @@ describe('native CSV writer selection', () => {
           '"1","alpha","plain"',
           '"2","quote","say ""hello"""',
           '"3","multiline","line1\nline2"',
-          '"4","unicode","é🙂"',
+          '"4","unicode","é🙂界\ud800"',
           `"5","oversized","${'x'.repeat(128)}"`,
         ];
         const rows = Array.from({ length: count }, (_, i) => samples[i % samples.length]);
@@ -136,4 +165,69 @@ describe('native CSV writer selection', () => {
       }
     },
   );
+});
+
+describe('native graph CSV batch admission', () => {
+  const node = (id: number, properties: Record<string, unknown> = {}): GraphNode =>
+    ({
+      id: `File:${id}`,
+      label: 'File',
+      properties: { name: 'x', filePath: 'x', ...properties },
+    }) as GraphNode;
+
+  it('splits 1001 records and preserves escaped and array properties', async () => {
+    const writeGraphBatchNative = vi.fn();
+    const nodes = Array.from({ length: 1001 }, (_, i) => node(i));
+    nodes[0] = node(0, { name: 'quote"\\界🙂', tags: ["a'b", 'c\\d', '界🙂', null] });
+    const result = await writeGraphBatch('unused', nodes, [], {
+      env: { ONTOINDEX_NATIVE_GRAPH_WRITER: '1' },
+      nativeModule: { writeGraphBatchNative },
+    });
+    expect(writeGraphBatchNative.mock.calls.map((call) => call[1].length)).toEqual([1000, 1]);
+    expect(writeGraphBatchNative.mock.calls[0][1][0].properties).toEqual({
+      name: 'quote"\\界🙂',
+      filePath: 'x',
+      tags: "['a''b','c\\\\d','界🙂']",
+    });
+    expect(result.nodeCounts.get('File')).toBe(1001);
+  });
+
+  it('flushes for the byte limit and isolates an oversized singleton', async () => {
+    const writeGraphBatchNative = vi.fn();
+    const large = '界"\\'.repeat(Math.ceil(NATIVE_GRAPH_BATCH_BYTES / 36));
+    const huge = '🙂'.repeat(Math.ceil(NATIVE_GRAPH_BATCH_BYTES / 8));
+    await writeGraphBatch(
+      'unused',
+      [
+        node(1, { content: large }),
+        node(2, { content: large }),
+        node(3, { content: huge }),
+        node(4),
+      ],
+      [],
+      {
+        env: { ONTOINDEX_NATIVE_GRAPH_WRITER: '1' },
+        nativeModule: { writeGraphBatchNative },
+      },
+    );
+    expect(
+      writeGraphBatchNative.mock.calls.map((call) =>
+        call[1].map((record: { id: string }) => record.id),
+      ),
+    ).toEqual([['File:1'], ['File:2'], ['File:3'], ['File:4']]);
+  });
+
+  it('propagates native failures without retrying a partial batch', async () => {
+    const failure = new Error('native graph write failed');
+    const writeGraphBatchNative = vi.fn(() => {
+      throw failure;
+    });
+    await expect(
+      writeGraphBatch('unused', [node(1)], [], {
+        env: { ONTOINDEX_NATIVE_GRAPH_WRITER: '1' },
+        nativeModule: { writeGraphBatchNative },
+      }),
+    ).rejects.toBe(failure);
+    expect(writeGraphBatchNative).toHaveBeenCalledOnce();
+  });
 });

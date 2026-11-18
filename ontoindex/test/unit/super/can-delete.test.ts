@@ -104,21 +104,8 @@ function callerRow(
 }
 
 /** A co-change row. */
-function coChangeRow(
-  filePath = 'src/shared.ts',
-  confidence = 0.8,
-  lastDate = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString(), // 2 days ago
-): any {
-  return { filePath, confidence, lastDate };
-}
-
-/** A co-change row with an old date (not recently touched). */
-function oldCoChangeRow(filePath = 'src/legacy.ts'): any {
-  return {
-    filePath,
-    confidence: 0.3,
-    lastDate: new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString(), // 60 days ago
-  };
+function coChangeRow(filePath = 'src/shared.ts', confidence = 0.8): any {
+  return { filePath, confidence };
 }
 
 // ---------------------------------------------------------------------------
@@ -396,7 +383,7 @@ describe('gnCanDelete', () => {
     mockExecuteParameterized
       .mockResolvedValueOnce([resolvedRow()]) // resolve
       .mockResolvedValueOnce([callerRow()]) // callers — 1 caller
-      .mockResolvedValueOnce([]); // co-change
+      .mockResolvedValueOnce([coChangeRow()]); // co-change
     mockFindTestFiles.mockResolvedValueOnce({ coveringTests: [], likelihoodOfCoverage: 'NONE' });
 
     const report = await gnCanDelete(REPO_ID, { symbol: 'orphanHelper' });
@@ -409,6 +396,15 @@ describe('gnCanDelete', () => {
       detail: 'called by handle',
     });
     expect(report.reasoning).toContain('caller');
+    expect(report.coChangeNetwork).toEqual({ siblings: ['src/shared.ts'], recentTouchDays: -1 });
+    expect(report.warnings).toContain(
+      'Co-change recency unavailable: index does not store co-change dates.',
+    );
+    expect(report.blockers).toContainEqual({
+      type: 'incomplete-evidence',
+      detail: 'Co-change recency unavailable: index does not store co-change dates.',
+    });
+    expect(report.blockers.some((blocker) => blocker.type === 'co-change-recent')).toBe(false);
   });
 
   // ---- Test 3: DO-NOT-DELETE when tests exist ------------------------------
@@ -435,22 +431,36 @@ describe('gnCanDelete', () => {
     expect(report.reasoning).toContain('test file');
   });
 
-  // ---- Test 4: CAUTION when recently touched but no callers/tests ----------
+  // ---- Test 4: preserve siblings while co-change recency is unknown --------
 
-  it('returns CAUTION when symbol was recently touched but has no callers or tests', async () => {
+  it('preserves co-change siblings and reports unknown recency without inventing recent activity', async () => {
     mockExecuteParameterized
       .mockResolvedValueOnce([resolvedRow()]) // resolve
       .mockResolvedValueOnce([]) // callers — none
-      .mockResolvedValueOnce([coChangeRow()]); // co-change — 2 days ago
+      .mockResolvedValueOnce([coChangeRow(), coChangeRow('src/legacy.ts', 0.3)]);
     mockFindTestFiles.mockResolvedValueOnce({ coveringTests: [], likelihoodOfCoverage: 'NONE' });
 
     const report = await gnCanDelete(REPO_ID, { symbol: 'orphanHelper' });
 
     expect(report.verdict).toBe('CAUTION');
-    expect(report.coChangeNetwork.recentTouchDays).toBeGreaterThanOrEqual(0);
-    expect(report.coChangeNetwork.recentTouchDays).toBeLessThan(7);
-    expect(report.blockers).toContainEqual(expect.objectContaining({ type: 'co-change-recent' }));
-    expect(report.reasoning).toContain('recently touched');
+    expect(report.coChangeNetwork).toEqual({
+      siblings: ['src/shared.ts', 'src/legacy.ts'],
+      recentTouchDays: -1,
+    });
+    expect(report.blockers).toContainEqual({
+      type: 'incomplete-evidence',
+      detail: 'Co-change recency unavailable: index does not store co-change dates.',
+    });
+    expect(report.warnings).toContain(
+      'Co-change recency unavailable: index does not store co-change dates.',
+    );
+    expect(report.blockers.some((blocker) => blocker.type === 'co-change-recent')).toBe(false);
+    expect(report.reasoning).not.toContain('recently touched');
+    const coChangeQuery = mockExecuteParameterized.mock.calls[2][1] as string;
+    expect(coChangeQuery).toContain(
+      'RETURN other.filePath AS filePath, r.confidence AS confidence',
+    );
+    expect(coChangeQuery).not.toContain('lastDate');
   });
 
   // ---- Test 5: cross-repo kill-switch returns [] + warning -----------------
@@ -489,19 +499,22 @@ describe('gnCanDelete', () => {
     });
   });
 
-  // ---- Bonus test 7: old co-change remains non-positive without full proof --
+  // ---- Bonus test 7: query failure leaves co-change recency unknown --------
 
-  it('returns CAUTION when co-change activity is old but build-manifest proof is unavailable', async () => {
+  it('returns CAUTION with unknown recency when the co-change query fails', async () => {
     mockExecuteParameterized
       .mockResolvedValueOnce([resolvedRow()]) // resolve
       .mockResolvedValueOnce([]) // callers
-      .mockResolvedValueOnce([oldCoChangeRow()]); // co-change — 60 days ago
+      .mockRejectedValueOnce(new Error('co-change query unavailable'));
     mockFindTestFiles.mockResolvedValueOnce({ coveringTests: [], likelihoodOfCoverage: 'NONE' });
 
     const report = await gnCanDelete(REPO_ID, { symbol: 'orphanHelper' });
 
     expect(report.verdict).toBe('CAUTION');
-    expect(report.coChangeNetwork.recentTouchDays).toBeGreaterThanOrEqual(7);
+    expect(report.coChangeNetwork).toEqual({ siblings: [], recentTouchDays: -1 });
+    expect(report.warnings).toContain(
+      'Co-change recency unavailable: index does not store co-change dates.',
+    );
     expect(report.blockers.filter((b) => b.type === 'co-change-recent')).toHaveLength(0);
   });
 

@@ -4,7 +4,7 @@ import fsPromises from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { planDirtyOverlay } from '../../src/core/analyze-delta.js';
+import { planDirtyOverlay, workingTreeMatchesHead } from '../../src/core/analyze-delta.js';
 
 function runGit(repoPath: string, args: string[]): string {
   const result = spawnSync('git', args, { cwd: repoPath, encoding: 'utf8' });
@@ -42,6 +42,244 @@ function withGitRepo(test: (repoPath: string) => Promise<void>): () => Promise<v
 }
 
 describe('dirty overlay planner', () => {
+  it.each(['.ontoindexignore', '.gitignore'])(
+    'classifies consumed root %s controls independently of source ignores',
+    (control) =>
+      withGitRepo(async (repoDir) => {
+        writeFile(repoDir, control, `${control}\n`);
+        writeFile(repoDir, `nested/${control}`, 'baseline\n');
+        runGit(repoDir, ['add', '-f', control, `nested/${control}`]);
+        commitFiles(repoDir);
+        writeFile(repoDir, control, `${control}\nsource.ts\n`);
+        writeFile(repoDir, `nested/${control}`, 'changed\n');
+        expect((await planDirtyOverlay(repoDir)).configPaths).toEqual([control]);
+        expect((await workingTreeMatchesHead(repoDir)).changedPaths).toContain(control);
+        fs.unlinkSync(path.join(repoDir, control));
+        expect((await planDirtyOverlay(repoDir)).configPaths).toEqual([control]);
+        expect((await workingTreeMatchesHead(repoDir)).changedPaths).toContain(control);
+        runGit(repoDir, ['add', '-u']);
+        runGit(repoDir, ['commit', '--quiet', '-m', 'remove control']);
+        writeFile(repoDir, control, 'new.ts\n');
+        expect((await planDirtyOverlay(repoDir)).configPaths).toEqual([control]);
+        expect((await workingTreeMatchesHead(repoDir)).changedPaths).toContain(control);
+        fs.unlinkSync(path.join(repoDir, control));
+        writeFile(repoDir, '.git/info/exclude', `${control}\n`);
+        writeFile(repoDir, control, `${control}\nnew.ts\n`);
+        expect(runGit(repoDir, ['status', '--porcelain'])).toBe('');
+        expect((await planDirtyOverlay(repoDir)).configPaths).toEqual([control]);
+        expect((await workingTreeMatchesHead(repoDir)).changedPaths).toContain(control);
+      })(),
+  );
+
+  it.each([undefined, '', '1', 'enabled'])(
+    'matches ignore-loader consumption with NO_GITIGNORE=%s',
+    (value) =>
+      withGitRepo(async (repoDir) => {
+        try {
+          vi.stubEnv('ONTOINDEX_NO_GITIGNORE', value);
+          writeFile(repoDir, '.gitignore', '.gitignore\n');
+          writeFile(repoDir, '.ontoindexignore', '.ontoindexignore\n');
+          runGit(repoDir, ['add', '-f', '.gitignore', '.ontoindexignore']);
+          commitFiles(repoDir);
+          writeFile(repoDir, '.gitignore', '.gitignore\na.ts\n');
+          writeFile(repoDir, '.ontoindexignore', '.ontoindexignore\nb.ts\n');
+          expect((await planDirtyOverlay(repoDir)).configPaths).toEqual(
+            value ? ['.ontoindexignore'] : ['.gitignore', '.ontoindexignore'],
+          );
+        } finally {
+          vi.unstubAllEnvs();
+        }
+      })(),
+  );
+
+  it.each(['assume', 'skip', 'both'])(
+    'distinguishes missing sources and configurations with %s index flags',
+    (flags) =>
+      withGitRepo(async (repoDir) => {
+        writeFile(repoDir, '.ontoindexignore', 'ignored.ts\n');
+        for (const file of ['source.ts', 'ignored.ts', 'tsconfig.json', 'configs/data.json']) {
+          writeFile(repoDir, file, '{}\n');
+        }
+        fs.symlinkSync('configs/data.json', path.join(repoDir, 'jsconfig.json'));
+        fs.symlinkSync('configs/data.json', path.join(repoDir, 'tsconfig.target.json'));
+        commitFiles(repoDir);
+        const missing = [
+          'source.ts',
+          'ignored.ts',
+          'tsconfig.json',
+          'jsconfig.json',
+          'configs/data.json',
+        ];
+        if (flags !== 'skip') runGit(repoDir, ['update-index', '--assume-unchanged', ...missing]);
+        if (flags !== 'assume') runGit(repoDir, ['update-index', '--skip-worktree', ...missing]);
+        for (const file of missing) fs.unlinkSync(path.join(repoDir, file));
+        const plan = await planDirtyOverlay(repoDir);
+        expect(plan.includePaths).toEqual([]);
+        expect(plan.allDirtyPaths).toEqual(flags === 'assume' ? ['source.ts'] : []);
+        expect(plan.tombstones).toEqual(flags === 'assume' ? ['source.ts'] : []);
+        expect(plan.configPaths).toEqual(
+          flags === 'assume' ? ['jsconfig.json', 'tsconfig.json', 'tsconfig.target.json'] : [],
+        );
+      })(),
+  );
+
+  it(
+    'keeps a broken hidden source symlink present and propagates lstat errors',
+    withGitRepo(async (repoDir) => {
+      fs.symlinkSync('missing.ts', path.join(repoDir, 'source.ts'));
+      commitFiles(repoDir);
+      runGit(repoDir, ['update-index', '--assume-unchanged', 'source.ts']);
+      expect((await planDirtyOverlay(repoDir)).includePaths).toEqual(['source.ts']);
+      const lstat = fsPromises.lstat.bind(fsPromises);
+      const denied = Object.assign(new Error('denied'), { code: 'EACCES' });
+      const spy = vi.spyOn(fsPromises, 'lstat').mockImplementation((...args) => {
+        if (args[0] === path.join(repoDir, 'source.ts')) return Promise.reject(denied);
+        return lstat(...args);
+      });
+      try {
+        await expect(planDirtyOverlay(repoDir)).rejects.toBe(denied);
+      } finally {
+        spy.mockRestore();
+      }
+    }),
+  );
+
+  it.each(['relative', 'absolute', 'dotdot'])(
+    'tracks intermediate directory dependencies through %s targets',
+    (kind) =>
+      withGitRepo(async (repoDir) => {
+        writeFile(repoDir, 'configs/a/deep/placeholder', '');
+        writeFile(repoDir, 'configs/a/value.json', '{}\n');
+        writeFile(repoDir, 'configs/b/deep/placeholder', '');
+        writeFile(repoDir, 'configs/b/value.json', '{"strict":true}\n');
+        fs.symlinkSync('configs/a/deep', path.join(repoDir, 'alias'));
+        const target = kind === 'dotdot' ? 'alias/../value.json' : 'alias/../../a/value.json';
+        fs.symlinkSync(
+          kind === 'absolute' ? `${repoDir}/${target}` : target,
+          path.join(repoDir, 'tsconfig.json'),
+        );
+        commitFiles(repoDir);
+        fs.unlinkSync(path.join(repoDir, 'alias'));
+        fs.symlinkSync('configs/b/deep', path.join(repoDir, 'alias'));
+
+        expect((await planDirtyOverlay(repoDir)).configPaths).toEqual(['tsconfig.json']);
+      })(),
+  );
+
+  it.each(['broken', 'loop', 'external', 'hop-limit'])(
+    'conservatively invalidates an unresolved %s config chain',
+    (kind) =>
+      withGitRepo(async (repoDir) => {
+        writeFile(repoDir, 'data.json', '{}\n');
+        if (kind === 'hop-limit') {
+          for (let index = 0; index < 41; index += 1) {
+            fs.symlinkSync(
+              index === 40 ? 'data.json' : `link-${index + 1}`,
+              path.join(repoDir, `link-${index}`),
+            );
+          }
+        }
+        const target =
+          kind === 'loop'
+            ? 'tsconfig.json'
+            : kind === 'external'
+              ? '../outside.json'
+              : kind === 'hop-limit'
+                ? 'link-0'
+                : 'missing.json';
+        fs.symlinkSync(target, path.join(repoDir, 'tsconfig.json'));
+        commitFiles(repoDir);
+        writeFile(repoDir, 'unrelated.json', '{"changed":true}\n');
+
+        expect((await planDirtyOverlay(repoDir)).configPaths).toEqual(['tsconfig.json']);
+      })(),
+  );
+
+  it(
+    'resolves dot-dot after expanding the directory link rather than lexically',
+    withGitRepo(async (repoDir) => {
+      writeFile(repoDir, 'configs/deep/placeholder', '');
+      writeFile(repoDir, 'configs/value.json', '{}\n');
+      writeFile(repoDir, 'value.json', '{}\n');
+      fs.symlinkSync('configs/deep', path.join(repoDir, 'alias'));
+      fs.symlinkSync('alias/../value.json', path.join(repoDir, 'tsconfig.json'));
+      commitFiles(repoDir);
+      writeFile(repoDir, 'value.json', '{"unrelated":true}\n');
+      expect((await planDirtyOverlay(repoDir)).configPaths).toEqual([]);
+      writeFile(repoDir, 'configs/value.json', '{"strict":true}\n');
+      expect((await planDirtyOverlay(repoDir)).configPaths).toEqual(['tsconfig.json']);
+    }),
+  );
+
+  it.each(['--assume-unchanged', '--skip-worktree'])(
+    'classifies hidden plain configurations under %s independently of sources',
+    (flag) =>
+      withGitRepo(async (repoDir) => {
+        writeFile(repoDir, '.ontoindexignore', 'vendor/**\n');
+        for (const file of ['tsconfig.json', 'package.json', 'vendor/tsconfig.json']) {
+          writeFile(repoDir, file, '{}\n');
+        }
+        commitFiles(repoDir);
+        const files = ['tsconfig.json', 'package.json', 'vendor/tsconfig.json'];
+        runGit(repoDir, ['update-index', flag, ...files]);
+        for (const file of files) writeFile(repoDir, file, '{"changed":true}\n');
+        expect(runGit(repoDir, ['status', '--porcelain'])).toBe('');
+        const plan = await planDirtyOverlay(repoDir);
+        expect(plan.configPaths).toEqual(['package.json', 'tsconfig.json']);
+        expect(plan.includePaths).toEqual([]);
+        expect(plan.allDirtyPaths).toEqual([]);
+      })(),
+  );
+
+  it(
+    'does not invalidate a sparse-absent configuration symlink for an unrelated edit',
+    withGitRepo(async (repoDir) => {
+      writeFile(repoDir, 'configs/aliases.json', '{}\n');
+      writeFile(repoDir, 'data.json', '{}\n');
+      fs.symlinkSync('configs/aliases.json', path.join(repoDir, 'tsconfig.json'));
+      commitFiles(repoDir);
+      runGit(repoDir, ['update-index', '--skip-worktree', 'tsconfig.json']);
+      fs.unlinkSync(path.join(repoDir, 'tsconfig.json'));
+      writeFile(repoDir, 'data.json', '{"changed":true}\n');
+
+      expect(runGit(repoDir, ['status', '--porcelain'])).toBe('M data.json');
+      expect((await planDirtyOverlay(repoDir)).configPaths).toEqual([]);
+    }),
+  );
+
+  it(
+    'still invalidates a present skip-worktree configuration symlink with a broken target',
+    withGitRepo(async (repoDir) => {
+      writeFile(repoDir, 'data.json', '{}\n');
+      fs.symlinkSync('missing.json', path.join(repoDir, 'tsconfig.json'));
+      commitFiles(repoDir);
+      runGit(repoDir, ['update-index', '--skip-worktree', 'tsconfig.json']);
+      writeFile(repoDir, 'data.json', '{"changed":true}\n');
+
+      expect((await planDirtyOverlay(repoDir)).configPaths).toEqual(['tsconfig.json']);
+    }),
+  );
+
+  it.each(['.ontoindexignore', '.gitignore'])(
+    'tracks a consumed configuration target ignored by %s',
+    (ignoreFile) =>
+      withGitRepo(async (repoDir) => {
+        writeFile(repoDir, 'configs/aliases.json', '{"compilerOptions":{}}\n');
+        writeFile(repoDir, 'configs/tsconfig.json', '{}\n');
+        fs.symlinkSync('configs/aliases.json', path.join(repoDir, 'tsconfig.json'));
+        commitFiles(repoDir);
+        writeFile(repoDir, ignoreFile, 'configs/**\n');
+        commitFiles(repoDir);
+        writeFile(repoDir, 'configs/aliases.json', '{"compilerOptions":{"strict":true}}\n');
+        writeFile(repoDir, 'configs/tsconfig.json', '{"ignored":true}\n');
+
+        const plan = await planDirtyOverlay(repoDir);
+        expect(plan.configPaths).toEqual(['tsconfig.json']);
+        expect(plan.includePaths).toEqual([]);
+        expect(plan.allDirtyPaths).toEqual([]);
+      })(),
+  );
+
   it(
     'marks a tracked configuration symlink when a directory link is retargeted',
     withGitRepo(async (repoDir) => {

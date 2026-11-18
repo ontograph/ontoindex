@@ -4,16 +4,39 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [3.2.3] - 2026-11-18
+
+- Incomplete direct-impact lookups retain known hits and report unknown module membership until classification is complete.
+- Native graph serialization shares canonical string normalization and preserves explicit empty Concept provenance values, matching the TypeScript writer.
+
+## [3.2.2] - 2026-11-17
+
+- PageRank progress no longer writes an unsolicited message to stdout during automatic refresh, preserving JSON output from CLI tools.
+- Failed CSV generation aborts every acquired writer, waits for stream closure and preserves the original error.
+- Cancelled impact traversal retains accumulated nodes with partial UNKNOWN evidence, stops admitting queries and waits for already admitted work. Resource errors retain priority.
+- Changes to consumed root ignore controls invalidate workspace planning independently of source ignore rules, including newly present Git-ignored controls.
+- Missing assume-unchanged sources become tombstones and missing configurations invalidate planning. Absent skip-worktree files retain sparse-checkout semantics.
+- Native graph CSV writing aligns Method declaration/definition columns and Concept fields, arrays and defaults with the TypeScript writer. This preserves the existing canonical string-list decoding behavior.
+
+## [3.2.1] - 2026-11-17
+
+- Resolver planning records symlinks on every configuration path component and classifies edited plain configurations marked assume-unchanged or skip-worktree as configuration changes.
+- On Linux, capture, configuration identity, and overlay input validation canonicalize the repository root and use the existing native `openat2` owner to open regular files beneath a pinned directory descriptor. Ignore-policy and shebang byte reads share that reader; shebang probes retain their 256-byte ceiling. Unsupported native access refuses validation. Approved configuration symlinks resolve to targets inside the repository; ordinary source and ignore symlinks remain refused. Root identity starts at acquisition. Metadata enumeration and capture writes retain separate checks.
+- CSV symbol content uses one 64 KiB-buffer boundary scan per source, then bounded positional reads, preserving symbols beyond the former scan limit. Requested-boundary metadata is capped at 1,000,000 entries. For stable files, ordinary whole-file cache eviction targets 64 Mi UTF-16 characters and files larger than 4 MiB are not retained. Growth between the legacy cache's size check and whole-file read can exceed allocation and retention estimates. Explicit File content limit `0` still reads the entire file. Identity and metadata checks detect changes without providing an atomic snapshot.
+- CSV row batches count exact UTF-8 bytes including headers and newlines; oversized writes use bounded fragments with backpressure and sticky failures. Native graph batches admit at most 1,000 records or a conservative 64 MiB byte estimate, with a single oversized record isolated. Caller-owned strings, scalar conversion and that largest record remain outside a universal heap bound.
+- Group impact preserves member nodes and completeness evidence. Unknown or failed members make aggregate risk UNKNOWN; a cap-only partial result retains concrete risk as a lower bound. UID impact adapters preserve classified resource failures, including preparation/native causes within eight error nodes. Deadlines cancel local and member work cooperatively; cleanup waits for settlement and never closes a shared database. Bridge preparation expiry prevents query admission; settled queries report timeout incompleteness even with empty or entirely filtered results. Native queries can exceed the deadline. Parent cancellation and deadline cancellation both reach workspace preparation and traversal.
+- Safety checks retain co-change siblings and report `recentTouchDays: -1` with an explicit warning because the index stores no co-change dates. Unknown recency yields CAUTION after stronger dependency verdicts; safety checks no longer query the absent `lastDate` property.
+
 ## [3.1.9] - 2026-11-16
 
-- When a dirty path is any link in the chain behind a tracked resolver-configuration symlink such as `tsconfig.json`, the planner marks the configuration as changed. This covers a target replaced by a symlink outside the repository, a symlink loop, a retargeted intermediate link, a retargeted directory link on the path to the target, and a target marked assume-unchanged or skip-worktree. In 3.1.8 these cases printed "Committed base is current" and kept the old aliases. The planner reads the git index once per plan, where it used to read it twice.
+- Resolver planning detects a configuration target replaced by an outside symlink or loop, a retargeted intermediate file link, a direct directory link retarget, and a symlink target marked assume-unchanged or skip-worktree. Chained directory links and edited plain hidden configurations retain gaps in this version. The planner reads the git index once per plan.
 - Workspace capture retries once when an input reports `ELOOP`, `ENXIO`, `EISDIR`, `ENOTDIR` or `ENAMETOOLONG`, and refuses it only if the error persists. Then `ontoindex analyze --workspace-graph` exits 3 and `ontoindex watch` waits for the inputs to change. A read error caused by a brief type swap during capture no longer stops watch. An input that capture itself rejects, such as a FIFO or a looping configuration symlink, is still refused without a retry. Git timeouts, lock conflicts and permission errors still exit 1 and are retried.
-- Overlay validation rejects a dirty or recorded path whose parent directory resolves outside its expected location, such as a directory replaced by a symlink. Before, only the final path component was checked.
+- Overlay validation checks the parent realpath of dirty and recorded inputs, rejecting persistent ancestor symlinks. These pathname checks do not prevent an ancestor swap-and-restore race.
 - `impact` reports `risk: UNKNOWN` with `partial: true` and a warning when class or interface seed expansion, or a process or module query, fails. Before, these failures were dropped and a single target could report `LOW` with fewer processes and modules. A database resource error in any of these queries, or in the `audit safe_edit_check` upstream and downstream probes, is reported as an error.
 - `audit safe_edit_check` reports `symbol lookup failed: <message>` when the symbol lookup query fails, instead of "symbol not found in index".
 - Query results keep values of `0`, `""` and `false`. Before, symbol search, `impact`, `inspect context`, and process and cluster resources replaced them with a positional value or dropped them, so a symbol on line 0 lost its `startLine` and a process step 0 lost its number.
-- The CSV file-content cache keeps at most 64 Mi UTF-16 characters of ordinary files, plus one file larger than 4 MiB. When a File content limit is set, OntoIndex reads only as much of a much larger file as the stored prefix needs.
-- With `ONTOINDEX_DEBUG` set, a failed CLI command prints its stack trace.
+- The CSV file-content cache keeps at most 64 Mi UTF-16 characters of ordinary files, plus one file larger than 4 MiB without a size bound. A set File content limit uses a partial read for much larger files. Symbol snippets still read whole files; writers count UTF-16 units.
+- With `ONTOINDEX_DEBUG` set, rejected asynchronous actions reaching the top-level `parseAsync` catch print their stack trace. Commands that handle their own errors retain their own output behavior.
 - `impact` looks up the entry points of affected processes in one separate query by id per batch. Before, a per-row entry-point lookup scanned every node table and failed with "buffer pool is full" at the default 64 MiB committed read buffer, even on small indexes. In 3.1.8 the failure was dropped, so committed-mode `impact` returned no affected processes.
 - `ontoindex analyze --dry-run` no longer prints a "Skipped" count of oversized files. Large files have been indexed since the scan size cap was removed, so the count was always 0. The `diagnose` file-scope preview keeps `skippedCount: 0` and `topSkippedDirectories: []`.
 - Removed the unused scan size-cap code path. `ONTOINDEX_SCAN_MAX_FILE_KB` has had no effect since 3.1.2.
@@ -31,7 +54,7 @@ All notable changes to OntoIndex will be documented in this file.
 - Correction to 3.1.7: resolver-configuration symlinks with targets inside the repository are followed by design. The 3.1.7 entry about workspace graph inputs applies to inputs that become symlinks after they were recorded.
 - Correction to 3.1.7: the File content limit applies to stored File content and full-text search. Symbol snippets still include text past the limit.
 - Correction to 3.1.6 and 3.1.7: the CLI telemetry start record is written before argument validation, but Commander rejects a missing required argument before the action runs, so that case is not recorded.
-- Note on version history: this changelog has no entries for the releases between 2.5.5 and 3.1.3.
+- Version history: commit `d535fe888a88694c524636bed8a7c409594184cb` changed the package version directly from 2.5.9 to 3.1.1 while adding request-local stopping of optional search enrichment after resource or timeout failures and bounding test-fixture cleanup. The reason for choosing 3.1.1 is not recorded in that commit or its linked review; the version number alone establishes no migration requirement.
 
 ## [3.1.7] - 2026-11-15
 

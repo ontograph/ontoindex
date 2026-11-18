@@ -1,12 +1,42 @@
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import { fstat, read, close, type Stats } from 'node:fs';
 import type { CsvRowWriterFactory } from '../core/lbug/csv-row-writer.js';
 
 export interface NativeFileLock {
   release(): void;
 }
 
+export interface NativeRootedDirectory {
+  /** Transfers ownership of one regular-file descriptor to the caller. */
+  openRegularFile(relativePath: string): number;
+  close(): void;
+}
+
+/** Adopt the descriptor transferred by the rooted opener without reopening its pathname. */
+export async function openRootedFile(root: NativeRootedDirectory, relativePath: string) {
+  const fd = root.openRegularFile(relativePath);
+  let closing: Promise<void> | undefined;
+  return {
+    stat: () =>
+      new Promise<Stats>((resolve, reject) => {
+        fstat(fd, (error, stat) => (error ? reject(error) : resolve(stat)));
+      }),
+    read: (buffer: Buffer, offset: number, length: number, position: number | null) =>
+      new Promise<{ bytesRead: number; buffer: Buffer }>((resolve, reject) => {
+        read(fd, buffer, offset, length, position, (error, bytesRead) =>
+          error ? reject(error) : resolve({ bytesRead, buffer }),
+        );
+      }),
+    close: () =>
+      (closing ??= new Promise<void>((resolve, reject) => {
+        close(fd, (error) => (error ? reject(error) : resolve()));
+      })),
+  };
+}
+
 export interface OntoIndexNativeModule {
+  openRootedDirectory?: (root: string) => NativeRootedDirectory;
   tryAcquireFileLock?: (lockPath: string) => NativeFileLock | null;
   createCsvRowWriter?: CsvRowWriterFactory;
   createNativeCsvRowWriter?: CsvRowWriterFactory;

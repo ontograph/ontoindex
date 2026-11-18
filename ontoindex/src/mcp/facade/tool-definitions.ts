@@ -551,7 +551,8 @@ export const ONTOINDEX_FACADE_TOOLS: ToolDefinition[] = [
         },
         timeoutMs: {
           type: 'number',
-          description: 'Impact timeout in milliseconds.',
+          description:
+            'Impact timeout in milliseconds. In group mode, budgets local work and fan-out admission; active work is cooperatively cancelled and awaited, so settlement can exceed the budget.',
           minimum: 1,
           maximum: 3600000,
         },

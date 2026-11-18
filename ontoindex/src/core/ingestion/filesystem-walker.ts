@@ -28,6 +28,7 @@ export interface ScannedFile {
 }
 
 export interface WalkRepositoryOptions {
+  readFile?: (relativePath: string, maxBytes?: number) => Promise<Buffer>;
   onUnreadableFile?: (file: ScannedFile, error: unknown) => void;
   includePaths?: string[];
   /** Exact root-level regular files allowed past built-in file ignores. User ignores still apply. */
@@ -132,11 +133,19 @@ function isNestedGitPath(relativePath: string, roots: ReadonlySet<string>): bool
 /**
  * Bounded first-line detection for extensionless scripts. Reads at most
  * SHEBANG_PROBE_BYTES from the file head — never the whole file — and maps a
- * supported shebang (Python, Ruby, Node/JS, PHP) to its language. Returns null
- * for any read error, missing shebang, or unsupported interpreter (shell/bash
- * stay unsupported).
+ * supported shebang (Python, Ruby, Node/JS, PHP) to its language. Supplied-reader
+ * errors propagate; ordinary read errors, missing shebangs, and unsupported
+ * interpreters (including shell/bash) return null.
  */
-async function detectShebangLanguage(fullPath: string): Promise<SupportedLanguages | null> {
+async function detectShebangLanguage(
+  fullPath: string,
+  relativePath: string,
+  readFile?: WalkRepositoryOptions['readFile'],
+): Promise<SupportedLanguages | null> {
+  if (readFile) {
+    const buffer = await readFile(relativePath, SHEBANG_PROBE_BYTES);
+    return getLanguageFromShebang(buffer.subarray(0, SHEBANG_PROBE_BYTES).toString('utf8'));
+  }
   let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
   try {
     handle = await fs.open(fullPath, 'r');
@@ -220,7 +229,10 @@ export const walkRepositoryPaths = async (
   onProgress?: (current: number, total: number, filePath: string) => void,
   options?: WalkRepositoryOptions,
 ): Promise<ScannedFile[]> => {
-  const ignoreFilter = await createIgnoreFilter(repoPath, { includeFiles: options?.includeFiles });
+  const ignoreFilter = await createIgnoreFilter(repoPath, {
+    includeFiles: options?.includeFiles,
+    readFile: options?.readFile,
+  });
   const includePaths = await normalizeRepositoryIncludePaths(repoPath, options?.includePaths);
   // Directory scopes (and '.') can contain descendant repositories, so only an
   // all-file scope may use the ancestor-chain shortcut.
@@ -266,7 +278,7 @@ export const walkRepositoryPaths = async (
         // Extension/basename detection always wins, so only probe when the path
         // yields no language of its own.
         const shebangLanguage = hasNoPathLanguage(skippedPath)
-          ? await detectShebangLanguage(fullPath)
+          ? await detectShebangLanguage(fullPath, skippedPath, options?.readFile)
           : undefined;
         return shebangLanguage
           ? { path: skippedPath, size: stat.size, shebangLanguage }

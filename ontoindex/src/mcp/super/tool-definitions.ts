@@ -213,7 +213,7 @@ export const ONTOINDEX_SUPER_TOOLS: ToolDefinition[] = [
   {
     name: 'gn_safe_edit_check',
     description:
-      'Pre-edit risk synthesis: resolves a symbol, computes blast radius (callers, callees, processes, clusters), test coverage likelihood, and co-change recency, then emits a SAFE / CAUTION / DANGEROUS / BLOCKED verdict with a recommended tool and suggested next steps.\n\nRun this before modifying any symbol to avoid surprise regressions.',
+      'Pre-edit risk synthesis: resolves a symbol, computes blast radius (callers, callees, processes, clusters), test coverage likelihood, and co-change siblings, then emits a SAFE / CAUTION / DANGEROUS / BLOCKED verdict with a recommended tool and suggested next steps. Co-change recency is unavailable when the index stores no co-change dates.\n\nRun this before modifying any symbol to avoid surprise regressions.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -257,7 +257,7 @@ export const ONTOINDEX_SUPER_TOOLS: ToolDefinition[] = [
   {
     name: 'gn_can_delete',
     description:
-      'Dead-code safety check: resolves a symbol, then checks callers, test-file imports, cross-repo references, and co-change recency to synthesise a DELETE-SAFE / CAUTION / DO-NOT-DELETE verdict.\n\nRun before removing a symbol to confirm it has no live dependencies.',
+      'Dead-code safety check: resolves a symbol, then checks callers, test-file imports, cross-repo references, and co-change siblings to synthesise a DELETE-SAFE / CAUTION / DO-NOT-DELETE verdict. Co-change recency is unavailable when the index stores no co-change dates.\n\nRun before removing a symbol to confirm it has no live dependencies.',
     inputSchema: {
       type: 'object',
       properties: {

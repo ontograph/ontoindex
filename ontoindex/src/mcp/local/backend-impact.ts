@@ -67,7 +67,7 @@ interface AffectedProcess {
 interface AffectedModule {
   name: string;
   hits: number;
-  impact: 'direct' | 'indirect';
+  impact: 'direct' | 'indirect' | 'unknown';
 }
 
 type ImpactDirection = ImpactParams['direction'];
@@ -654,10 +654,15 @@ export async function runImpactBFS(
     signal?: AbortSignal;
   },
 ): Promise<ImpactSuccessResult> {
-  const query =
+  const executeQuery =
     opts.query ??
     ((cypher: string, params: Record<string, unknown>) =>
       executeParameterized(repo.id, cypher, params));
+  const query = async (cypher: string, params: Record<string, unknown>): Promise<unknown[]> => {
+    throwIfAborted(opts.signal);
+    const rows = await executeQuery(cypher, params);
+    return rows;
+  };
   const symId = String(rowValueNullish(sym, 'id', 0) || '');
   const kernel = await runImpactKernel(
     repo,
@@ -684,7 +689,6 @@ export async function runImpactBFS(
   let partial = kernel.partial;
   let enrichmentFailed = false;
   const enrichmentFailure = (context: string, error: unknown): void => {
-    throwIfAborted(opts.signal);
     if (classifyLbugOpenError(error) === 'resource') throw error;
     logQueryError(context, error);
     partial = true;
@@ -719,7 +723,7 @@ export async function runImpactBFS(
     let chunksProcessed = 0;
     for (
       let i = 0;
-      i < impacted.length && chunksProcessed < MAX_CHUNKS;
+      i < impacted.length && chunksProcessed < MAX_CHUNKS && !opts.signal?.aborted;
       i += CHUNK_SIZE, chunksProcessed++
     ) {
       const chunk = impacted.slice(i, i + CHUNK_SIZE);
@@ -744,7 +748,7 @@ export async function runImpactBFS(
           ),
         ];
         const entryPoints = new Map<unknown, QueryRow>();
-        if (entryPointIds.length > 0) {
+        if (entryPointIds.length > 0 && !opts.signal?.aborted) {
           const epRows = (await query(
             `MATCH (ep) WHERE ep.id IN $entryPointIds
              RETURN ep.id AS id, ep.name AS name, label(ep) AS type, ep.filePath AS filePath`,
@@ -802,7 +806,7 @@ export async function runImpactBFS(
       }
     }
 
-    if (processesMissingMinStep.size > 0) {
+    if (processesMissingMinStep.size > 0 && !opts.signal?.aborted) {
       try {
         const pIds = Array.from(processesMissingMinStep);
         const allImpactedIds = impacted.map((it) => String(it.id ?? ''));
@@ -848,6 +852,7 @@ export async function runImpactBFS(
 
     const moduleHitsMap = new Map<string, number>();
     const directModuleSet = new Set<string>();
+    let classifiedDirectIds = 0;
 
     const runModuleChunk = async (idsChunk: string[]) => {
       if (!idsChunk || idsChunk.length === 0) return;
@@ -876,7 +881,7 @@ export async function runImpactBFS(
       }
     };
 
-    for (let i = 0; i < allIdsArr.length; i += CHUNK_SIZE) {
+    for (let i = 0; i < allIdsArr.length && !opts.signal?.aborted; i += CHUNK_SIZE) {
       const chunkIds = allIdsArr.slice(i, i + CHUNK_SIZE);
       await runModuleChunk(chunkIds);
     }
@@ -896,12 +901,13 @@ export async function runImpactBFS(
           const name = rowValueNullish(r, 'name', 0) ?? null;
           if (name) directModuleSet.add(String(name));
         }
+        classifiedDirectIds += idsChunk.length;
       } catch (e) {
         enrichmentFailure('impact:direct-module-chunk', e);
       }
     };
 
-    for (let i = 0; i < d1IdsArr.length; i += CHUNK_SIZE) {
+    for (let i = 0; i < d1IdsArr.length && !opts.signal?.aborted; i += CHUNK_SIZE) {
       const chunkIds = d1IdsArr.slice(i, i + CHUNK_SIZE);
       await runDirectModuleChunk(chunkIds);
     }
@@ -920,9 +926,19 @@ export async function runImpactBFS(
       return {
         name,
         hits,
-        impact: directModuleNameSet.has(name) ? 'direct' : 'indirect',
+        impact: directModuleNameSet.has(name)
+          ? 'direct'
+          : !kernel.partial && classifiedDirectIds === directCount
+            ? 'indirect'
+            : 'unknown',
       };
     });
+  }
+
+  if (opts.signal?.aborted) {
+    partial = true;
+    enrichmentFailed = true;
+    warnings.push('Impact analysis aborted: enrichment cancelled');
   }
 
   const processCount = affectedProcesses.length;
@@ -949,6 +965,7 @@ export async function runImpactBFS(
     impactedCount: impacted.length,
     risk,
     ...(partial && { partial: true }),
+    ...((kernel.traversalFailed || enrichmentFailed) && { traversalComplete: false as const }),
     ...(warnings.length > 0 && { warnings }),
     summary: {
       direct: directCount,
@@ -962,6 +979,9 @@ export async function runImpactBFS(
       ...kernel.rawCounts,
       riskReasons: [
         ...kernel.rawCounts.riskReasons,
+        ...(partial && !kernel.rawCounts.riskReasons.includes('traversal_partial')
+          ? ['traversal_partial']
+          : []),
         ...(processCount >= 5
           ? [`process_count>=5:${processCount}`]
           : processCount >= 3
@@ -986,9 +1006,11 @@ export async function impactByUid(
     relationTypes: string[];
     minConfidence: number;
     includeTests: boolean;
+    signal?: AbortSignal;
   },
 ): Promise<ImpactSuccessResult | null> {
   let rows: ImpactSymbolRow[];
+  throwIfAborted(opts.signal);
   try {
     rows = (await executeParameterized(
       repo.id,
@@ -997,7 +1019,10 @@ export async function impactByUid(
        LIMIT 1`,
       { uid },
     )) as ImpactSymbolRow[];
-  } catch {
+    throwIfAborted(opts.signal);
+  } catch (error) {
+    if (classifyLbugOpenError(error) === 'resource') throw error;
+    throwIfAborted(opts.signal);
     return null;
   }
   if (!rows?.length) return null;
@@ -1015,8 +1040,11 @@ export async function impactByUid(
       relationTypes,
       includeTests: opts.includeTests,
       minConfidence: opts.minConfidence,
+      signal: opts.signal,
     });
-  } catch {
+  } catch (error) {
+    if (classifyLbugOpenError(error) === 'resource') throw error;
+    throwIfAborted(opts.signal);
     return null;
   }
 }

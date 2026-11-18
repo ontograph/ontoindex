@@ -52,6 +52,7 @@ export interface ComputeSourceManifestOptions {
     configurationPaths: readonly string[];
     check: () => void;
     read: (relativePath: string) => Promise<{ content: Buffer; executable: boolean }>;
+    readFile?: (relativePath: string, maxBytes?: number) => Promise<Buffer>;
     onEntry?: (entry: CapturedSourceEntry, content: Buffer) => Promise<void>;
   };
 }
@@ -71,7 +72,10 @@ function hashParts(parts: readonly string[]): string {
   return hash.digest('hex');
 }
 
-async function readIgnorePolicy(repoPath: string): Promise<string[]> {
+async function readIgnorePolicy(
+  repoPath: string,
+  readFile?: (relativePath: string, maxBytes?: number) => Promise<Buffer>,
+): Promise<string[]> {
   const parts = [
     IGNORE_POLICY_VERSION,
     `noGitignore=${process.env.ONTOINDEX_NO_GITIGNORE === '1'}`,
@@ -80,6 +84,10 @@ async function readIgnorePolicy(repoPath: string): Promise<string[]> {
   for (const filename of ['.gitignore', '.ontoindexignore']) {
     const filePath = path.join(repoPath, filename);
     try {
+      if (readFile) {
+        parts.push(`${filename}\0${(await readFile(filename)).toString('utf8')}`);
+        continue;
+      }
       const handle = await fs.open(
         filePath,
         constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
@@ -101,8 +109,11 @@ async function readIgnorePolicy(repoPath: string): Promise<string[]> {
   return parts;
 }
 
-export async function workspaceIgnorePolicyDigest(repoPath: string): Promise<string> {
-  return hashParts(await readIgnorePolicy(repoPath));
+export async function workspaceIgnorePolicyDigest(
+  repoPath: string,
+  readFile?: (relativePath: string, maxBytes?: number) => Promise<Buffer>,
+): Promise<string> {
+  return hashParts(await readIgnorePolicy(repoPath, readFile));
 }
 
 export function workspaceConfigurationDigest(
@@ -119,13 +130,19 @@ export async function computeSourceManifest(
   const includePaths = await normalizeRepositoryIncludePaths(repoPath, options.includePaths);
   const pipelineProfile = options.pipelineProfile ?? 'full';
   const scanDegradedPaths: string[] = [];
+  const scanErrors: unknown[] = [];
   const capture = options.capture;
   const entries = await walkRepositoryPaths(repoPath, capture ? () => capture.check() : undefined, {
     includePaths,
-    onUnreadableFile: (file) => scanDegradedPaths.push(file.path),
+    readFile: capture?.readFile,
+    onUnreadableFile: (file, error) => {
+      scanDegradedPaths.push(file.path);
+      if (capture) scanErrors.push(error);
+    },
   });
   capture?.check();
   if (capture && scanDegradedPaths.length > 0) {
+    if (scanErrors[0] !== undefined) throw scanErrors[0];
     throw new Error(
       `Workspace capture cannot read eligible inputs: ${scanDegradedPaths.join(', ')}`,
     );
@@ -183,7 +200,7 @@ export async function computeSourceManifest(
     }
   }
 
-  const ignorePolicyDigest = await workspaceIgnorePolicyDigest(repoPath);
+  const ignorePolicyDigest = await workspaceIgnorePolicyDigest(repoPath, capture?.readFile);
   const scopeDigest = hashParts([
     SOURCE_MANIFEST_CONTRACT,
     pipelineProfile,

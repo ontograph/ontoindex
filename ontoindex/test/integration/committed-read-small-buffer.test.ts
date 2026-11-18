@@ -11,10 +11,10 @@ import { createMCPServer } from '../../src/mcp/server.js';
 
 describe('navigation with a small native read buffer', () => {
   const repoName = 'committed-small-buffer';
-  // Stored File content (4 x 32 MiB, uncapped below) exceeds the default 64 MiB committed buffer,
+  // Stored File content (4 x 20 MiB = 80 MiB, uncapped below) exceeds the default 64 MiB committed buffer,
   // so an unlabeled content read cannot fit. Below about 56 MiB, aggregate queries fail on any graph.
   const bufferMiB = 64;
-  const payloadBytes = 32 * 1024 * 1024;
+  const payloadBytes = 20 * 1024 * 1024;
   let root: string;
   let backend: LocalBackend;
   let client: Client;

@@ -241,8 +241,12 @@ async function expandClassSeeds(
 
   try {
     throwIfAborted(signal);
-    const [ctorRows, fileRows] = await Promise.all([
-      query(
+    const guardedQuery: typeof query = async (cypher, params) => {
+      throwIfAborted(signal);
+      return query(cypher, params);
+    };
+    const results = await Promise.allSettled([
+      guardedQuery(
         `
         MATCH (n)-[hm:CodeRelation]->(c:Constructor)
         WHERE n.id = $symId AND hm.type = 'HAS_METHOD'
@@ -251,7 +255,7 @@ async function expandClassSeeds(
       `,
         { symId },
       ),
-      query(
+      guardedQuery(
         `
         MATCH (f:File)-[rel:CodeRelation]->(n)
         WHERE n.id = $symId AND rel.type = 'DEFINES'
@@ -261,14 +265,21 @@ async function expandClassSeeds(
         { symId },
       ),
     ]);
+    const failures = results.filter((result) => result.status === 'rejected');
+    for (const failure of failures) {
+      if (classifyLbugOpenError(failure.reason) === 'resource') throw failure.reason;
+    }
+    if (failures.length > 0) throw failures[0].reason;
     throwIfAborted(signal);
-    for (const row of [...(ctorRows as ImpactSymbolRow[]), ...(fileRows as ImpactSymbolRow[])]) {
+    for (const row of results.flatMap((result) =>
+      result.status === 'fulfilled' ? (result.value as ImpactSymbolRow[]) : [],
+    )) {
       const id = rowStringOr(row, 'id', 0);
       if (id && !seedIds.includes(id)) seedIds.push(id);
     }
   } catch (err) {
-    if (isImpactAbortError(err)) throw err;
     if (classifyLbugOpenError(err) === 'resource') throw err;
+    if (isImpactAbortError(err)) throw err;
     warnings.push(
       `class seed expansion failed: ${err instanceof Error ? err.message : String(err)}`,
     );
@@ -314,7 +325,13 @@ export async function runImpactKernel(
   const confidenceFilter = minConfidence > 0 ? ` AND r.confidence >= ${minConfidence}` : '';
 
   for (let depth = 1; depth <= maxDepth && frontier.length > 0; depth++) {
-    throwIfAborted(opts.signal);
+    if (opts.signal?.aborted) {
+      if (impacted.length === 0) throwIfAborted(opts.signal);
+      traversalComplete = false;
+      traversalFailed = true;
+      warnings.push('Impact analysis aborted: traversal cancelled');
+      break;
+    }
     const nextFrontier: string[] = [];
     if (frontier.length > MAX_IMPACT_FRONTIER_IDS) {
       traversalComplete = false;
@@ -337,8 +354,8 @@ export async function runImpactKernel(
         frontierIds: frontier,
       })) as ImpactRelatedRow[];
     } catch (err) {
-      if (isImpactAbortError(err)) throw err;
       if (classifyLbugOpenError(err) === 'resource') throw err;
+      if (isImpactAbortError(err) && impacted.length === 0) throw err;
       traversalComplete = false;
       traversalFailed = true;
       warnings.push(`depth traversal failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -402,8 +419,8 @@ export async function runImpactKernel(
         }
       }
     } catch (err) {
-      if (isImpactAbortError(err)) throw err;
       if (classifyLbugOpenError(err) === 'resource') throw err;
+      if (isImpactAbortError(err) && impacted.length === 0) throw err;
       traversalComplete = false;
       traversalFailed = true;
       warnings.push(`depth traversal failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -411,6 +428,15 @@ export async function runImpactKernel(
     }
 
     frontier = nextFrontier;
+  }
+
+  if (opts.signal?.aborted) {
+    if (impacted.length === 0) throwIfAborted(opts.signal);
+    traversalComplete = false;
+    traversalFailed = true;
+    if (!warnings.some((warning) => warning.includes('Impact analysis aborted'))) {
+      warnings.push('Impact analysis aborted: traversal cancelled');
+    }
   }
 
   if (encounteredDirtyPaths.size > 0) {
