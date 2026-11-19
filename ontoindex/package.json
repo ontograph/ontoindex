@@ -71,7 +71,7 @@
     "ignore": "^7.0.12",
     "js-yaml": "^5.5.0",
     "lru-cache": "^11.5.1",
-    "mdast-util-from-markdown": "^2.0.3",
+    "mdast-util-from-markdown": "^2.1.0",
     "mdast-util-frontmatter": "^2.0.1",
     "mdast-util-gfm": "^3.1.0",
     "micromark-extension-frontmatter": "^2.0.0",
