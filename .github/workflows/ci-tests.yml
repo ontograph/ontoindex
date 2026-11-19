@@ -18,6 +18,12 @@ jobs:
         with:
           build: 'true'
 
+      - name: Verify TypeScript grammar generation
+        run: |
+          node vendor/tree-sitter-typescript/scripts/regenerate.cjs
+          git diff --exit-code -- vendor/tree-sitter-typescript/typescript/src vendor/tree-sitter-typescript/tsx/src
+        working-directory: ontoindex
+
       - name: Run unit tests with coverage
         run: >-
           npx vitest run test/unit
