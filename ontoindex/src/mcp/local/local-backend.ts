@@ -37,7 +37,7 @@ import {
   withPinnedGeneration,
 } from '../../core/lbug/pool-adapter.js';
 export { isWriteQuery } from '../../core/lbug/pool-adapter.js';
-import { LbugOpenError } from '../../core/lbug/open-error.js';
+import { classifyLbugOpenError, LbugOpenError } from '../../core/lbug/open-error.js';
 // Embedding imports are lazy (dynamic import) to avoid loading onnxruntime-node
 // at MCP server startup — crashes on unsupported Node ABI versions (#89)
 // git utilities available if needed
@@ -1622,23 +1622,38 @@ export class LocalBackend implements BackendPort {
   getGroupService(): GroupService {
     this.assertAvailable();
     if (!this.groupToolSvc) {
+      const operationSignal = (signal?: AbortSignal): AbortSignal | undefined => {
+        const inherited = this.operationContext.getStore()?.signal;
+        return inherited && signal ? AbortSignal.any([inherited, signal]) : (inherited ?? signal);
+      };
       const port: GroupToolPort = {
         resolveRepo: (p) => this.resolveRepo(p),
         // With the workspace flag on, group fan-out must use the same gate and pinned generation
         // as the public tools; flag off keeps the direct handlers.
-        impact: (r, p, options) =>
-          this.withOperation(() =>
-            isAutomaticWorkspaceEnabled()
-              ? this.dispatchRepoTool('impact', { ...p, repo: r.id, signal: options?.signal })
-              : this.impact(r as RepoHandle, { ...p, signal: options?.signal }),
-          ),
+        impact: (r, p, options) => {
+          const signal = operationSignal(options?.signal);
+          return this.withOperation(
+            () => {
+              this.throwIfInitAborted(signal);
+              return isAutomaticWorkspaceEnabled()
+                ? this.dispatchRepoTool('impact', { ...p, repo: r.id, signal })
+                : this.impact(r as RepoHandle, { ...p, signal });
+            },
+            { signal },
+          );
+        },
         query: (r, p) =>
           this.withOperation(() =>
             isAutomaticWorkspaceEnabled()
               ? this.dispatchRepoTool('query', { ...p, repo: r.id })
               : this.query(r as RepoHandle, p),
           ),
-        impactByUid: (id, uid, d, o) => this.withOperation(() => this.impactByUid(id, uid, d, o)),
+        impactByUid: (id, uid, d, o) => {
+          const signal = operationSignal(o.signal);
+          return this.withOperation(() => this.impactByUid(id, uid, d, { ...o, signal }), {
+            signal,
+          });
+        },
         context: (r, p) =>
           this.withOperation(() =>
             isAutomaticWorkspaceEnabled()
@@ -3320,6 +3335,7 @@ export class LocalBackend implements BackendPort {
   /**
    * UID-based impact for cross-repo fan-out. Same result shape as `impact`.
    * Returns null if the repo is unknown, the UID is missing, or analysis fails.
+   * Classified resource failures throw their original error for cross-repo fan-out.
    */
   async impactByUid(
     repoId: string,
@@ -3330,12 +3346,34 @@ export class LocalBackend implements BackendPort {
       relationTypes: string[];
       minConfidence: number;
       includeTests: boolean;
+      signal?: AbortSignal;
     },
   ): Promise<ImpactByUidResult | null> {
+    const rethrowResourceFailure = (error: unknown): void => {
+      let cause = error;
+      let resource: unknown;
+      // Preparation and native-open wrappers retain causes. Bound work and cycles.
+      for (let depth = 0; depth < 8; depth++) {
+        if (classifyLbugOpenError(cause) === 'resource') resource = cause;
+        if (typeof cause !== 'object' || cause === null || !('cause' in cause)) break;
+        try {
+          cause = cause.cause;
+        } catch {
+          break;
+        }
+      }
+      if (resource !== undefined) throw resource;
+    };
     try {
+      this.throwIfInitAborted(opts.signal);
       await this.init();
+      this.throwIfInitAborted(opts.signal);
       await this.ensureInitialized(repoId);
-    } catch {
+      this.throwIfInitAborted(opts.signal);
+    } catch (error) {
+      rethrowResourceFailure(error);
+      this.throwIfInitAborted(opts.signal);
+      if (error instanceof Error && error.name === 'AbortError') throw error;
       return null;
     }
 
@@ -3353,10 +3391,40 @@ export class LocalBackend implements BackendPort {
           relationTypes: opts.relationTypes,
           minConfidence: opts.minConfidence,
           includeTests: opts.includeTests,
+          ...(opts.signal ? { signal: opts.signal } : {}),
         })) as Record<string, unknown> | null;
-        if (!routed || 'error' in routed || routed.status === 'ambiguous') return null;
+        if (!routed || 'error' in routed || routed.status === 'ambiguous') {
+          this.throwIfInitAborted(opts.signal);
+          return null;
+        }
+        if (opts.signal?.aborted) {
+          const rawCounts = routed.rawCounts as { riskReasons?: string[] } | undefined;
+          return {
+            ...routed,
+            risk: 'UNKNOWN',
+            partial: true,
+            traversalComplete: false,
+            warnings: [
+              ...(Array.isArray(routed.warnings) ? routed.warnings : []),
+              'Impact analysis aborted: routed analysis cancelled',
+            ],
+            ...(rawCounts
+              ? {
+                  rawCounts: {
+                    ...rawCounts,
+                    riskReasons: [
+                      ...new Set([...(rawCounts.riskReasons ?? []), 'traversal_partial']),
+                    ],
+                  },
+                }
+              : {}),
+          } as unknown as ImpactByUidResult;
+        }
         return routed as unknown as ImpactByUidResult;
-      } catch {
+      } catch (error) {
+        rethrowResourceFailure(error);
+        this.throwIfInitAborted(opts.signal);
+        if (error instanceof Error && error.name === 'AbortError') throw error;
         return null;
       }
     }

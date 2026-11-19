@@ -71,7 +71,7 @@ npm config get msvs_version
 
 ### Install the Latest GitHub Release
 
-Linux and macOS:
+Linux:
 
 ```bash
 wget -qO- https://raw.githubusercontent.com/ontograph/ontoindex/master/scripts/install-ontoindex-latest.sh | bash
@@ -101,7 +101,8 @@ From a local checkout:
 
 | Platform           | Command                                                                           |
 | ------------------ | --------------------------------------------------------------------------------- |
-| Linux/macOS        | `./scripts/install-ontoindex-latest.sh`                                           |
+| Linux              | `./scripts/install-ontoindex-latest.sh`                                           |
+| Apple Silicon macOS | Build from source as described below.                                             |
 | Windows PowerShell | `powershell -ExecutionPolicy Bypass -File .\scripts\install-ontoindex-latest.ps1` |
 
 The installers fetch the latest GitHub release, locate the `ontoindex-*.tgz` asset, and install it with `npm install -g`. If `ONTOINDEX_LOCAL_ASSET` points to a tarball, or an `ontoindex-*.tgz` file already exists in the current directory or beside the script, the Linux/macOS installer uses that local tarball first instead of going back to GitHub. If a global install is not writable, the installers fall back to a user npm prefix.
@@ -111,6 +112,18 @@ sources and vendored parser sources, then lets npm resolve runtime dependencies 
 ONNX Runtime, and image/vector helpers for the current platform. A non-fatal npm deprecation warning
 from a transitive package can appear while upstream packages catch up. For air-gapped hosts, use an
 internal npm registry mirror or a prepared npm cache.
+
+The standard release tarball currently contains only the Linux native addon. Apple Silicon macOS
+requires a source build or a locally built macOS tarball until releases include a Darwin addon.
+Install the stable Rust toolchain and Xcode Command Line Tools, then build from a checkout:
+
+```bash
+(cd ontoindex-shared && npm ci && npm run build)
+(cd ontoindex && npm ci)
+```
+
+The `ontoindex` install runs `prepare`, which compiles the native addon and bundles the pinned
+LadybugDB extensions for Apple Silicon.
 
 On Linux x64, the installer also prefetches LadybugDB `fts` and `vector` extension binaries from
 the OntoIndex GitHub extension-cache release. On Windows x64, the PowerShell installer prefetches

@@ -14,8 +14,11 @@ export async function acquireNativeFileLock(
       `Invalid native lock retry delay for ${lockPath}: expected a nonnegative finite number`,
     );
   }
-  if (process.platform !== 'linux') {
-    throw new Error(`Native file locking requires Linux: ${lockPath}`);
+  if (
+    process.platform !== 'linux' &&
+    !(process.platform === 'darwin' && process.arch === 'arm64')
+  ) {
+    throw new Error(`Native file locking requires Linux or Apple Silicon macOS: ${lockPath}`);
   }
 
   try {

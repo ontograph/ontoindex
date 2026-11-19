@@ -1,6 +1,7 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs/promises';
 import type { Stats } from 'node:fs';
+import * as nativeModule from '../../src/native/module.js';
 import { execFileSync } from 'node:child_process';
 import net from 'node:net';
 import os from 'node:os';
@@ -10,6 +11,18 @@ import {
   workspaceConfigurationIdentity,
   type WorkspaceInputCapture,
 } from '../../src/core/analyze-delta.js';
+
+const rootPaths = new WeakMap<nativeModule.NativeRootedDirectory, string>();
+async function trackRootPaths() {
+  const native = await nativeModule.loadOntoIndexNativeModule();
+  const acquire = native.openRootedDirectory!.bind(native);
+  vi.spyOn(native, 'openRootedDirectory').mockImplementation((root) => {
+    const handle = acquire(root);
+    rootPaths.set(handle, root);
+    return handle;
+  });
+}
+beforeEach(trackRootPaths);
 
 const roots: string[] = [];
 const captures: WorkspaceInputCapture[] = [];
@@ -41,16 +54,19 @@ describe('capture ancestor swap between path check and open', () => {
     await fs.mkdir(path.join(outside, 'src'));
     await fs.writeFile(path.join(outside, 'src/main.ts'), 'export const OUTSIDE_SECRET = 2;\n');
 
-    const realOpen = fs.open.bind(fs);
+    const realOpen = nativeModule.openRootedFile;
     let swapped = false;
-    vi.spyOn(fs, 'open').mockImplementation(async (file, ...rest) => {
-      if (!swapped && String(file).endsWith(`${path.basename(root)}/src/main.ts`)) {
-        swapped = true;
-        await fs.rename(path.join(root, 'src'), path.join(root, 'src-real'));
-        await fs.symlink(path.join(outside, 'src'), path.join(root, 'src'));
-      }
-      return realOpen(file as never, ...(rest as []));
-    });
+    vi.spyOn(nativeModule, 'openRootedFile').mockImplementation(
+      async (rootHandle, relativePath) => {
+        const file = path.join(rootPaths.get(rootHandle)!, relativePath);
+        if (!swapped && String(file).endsWith(`${path.basename(root)}/src/main.ts`)) {
+          swapped = true;
+          await fs.rename(path.join(root, 'src'), path.join(root, 'src-real'));
+          await fs.symlink(path.join(outside, 'src'), path.join(root, 'src'));
+        }
+        return realOpen(rootHandle, relativePath);
+      },
+    );
 
     let result: WorkspaceInputCapture | undefined;
     let error: unknown;
@@ -99,9 +115,10 @@ async function pendingCaptures(root: string): Promise<string[]> {
 function observeInput(target: string, editStat?: (stat: Stats, openNumber: number) => Stats) {
   const reads: { mock: { calls: unknown[][] } }[] = [];
   const closes: { mock: { calls: unknown[][] } }[] = [];
-  const realOpen = fs.open.bind(fs);
-  vi.spyOn(fs, 'open').mockImplementation(async (file, ...args) => {
-    const handle = await realOpen(file, ...args);
+  const realOpen = nativeModule.openRootedFile;
+  vi.spyOn(nativeModule, 'openRootedFile').mockImplementation(async (rootHandle, relativePath) => {
+    const file = path.join(rootPaths.get(rootHandle)!, relativePath);
+    const handle = await realOpen(rootHandle, relativePath);
     if (String(file) !== target) return handle;
     reads.push(vi.spyOn(handle, 'read'));
     closes.push(vi.spyOn(handle, 'close'));
@@ -256,6 +273,66 @@ const ancestorSwapReaders = [
   { reader: 'configuration', relativePath: 'src/tsconfig.json', opens: 1 },
 ] as const;
 
+describe.each(ancestorSwapReaders)(
+  '$reader pre-lstat ancestor swap',
+  ({ reader, relativePath }) => {
+    it('refuses an equal-content outside inode before reading any of its bytes', async () => {
+      const { root, outside, borrowed, borrowedBytes, original } = await ancestorSwapFixture(true);
+      const target = path.join(root, relativePath);
+      const realLstat = fs.lstat.bind(fs);
+      const realOpen = nativeModule.openRootedFile;
+      const outsideStat = await fs.stat(path.join(outside, relativePath));
+      let swapped = false;
+      let outsideReads = 0;
+      let rootedAttempts = 0;
+      // Swap after the ancestor checks, before the first leaf lstat. Both the
+      // pre-open stat and a pathname opener would now agree on the outside inode.
+      vi.spyOn(fs, 'lstat').mockImplementation(async (file, ...args) => {
+        const stack = new Error().stack ?? '';
+        if (
+          !swapped &&
+          String(file) === target &&
+          stack.includes('readCaptureInput') &&
+          !stack.includes('captureReadPath') &&
+          !stack.includes('checkCapturePath')
+        ) {
+          swapped = true;
+          await fs.rename(path.join(root, 'src'), path.join(root, 'src-held'));
+          await fs.symlink(path.join(outside, 'src'), path.join(root, 'src'));
+        }
+        return realLstat(file, ...args);
+      });
+      vi.spyOn(nativeModule, 'openRootedFile').mockImplementation(async (handle, rel) => {
+        if (rootPaths.get(handle) === root && rel === relativePath) rootedAttempts++;
+        const file = await realOpen(handle, rel);
+        const stat = await file.stat();
+        const read = file.read.bind(file);
+        vi.spyOn(file, 'read').mockImplementation(async (...args) => {
+          if (stat.dev === outsideStat.dev && stat.ino === outsideStat.ino) outsideReads++;
+          return read(...args);
+        });
+        return file;
+      });
+      try {
+        await expect(readInputs(root, reader)).rejects.toBeInstanceOf(Error);
+        expect(swapped).toBe(true);
+        expect(rootedAttempts).toBeGreaterThan(0);
+        expect(outsideReads).toBe(0);
+        expect(await pendingCaptures(root)).toEqual([path.basename(borrowed.captureRoot)]);
+        expect(
+          await Promise.all(
+            Object.keys(original).map((rel) => fs.readFile(path.join(borrowed.captureRoot, rel))),
+          ),
+        ).toEqual(borrowedBytes);
+      } finally {
+        vi.restoreAllMocks();
+        await fs.unlink(path.join(root, 'src'));
+        await fs.rename(path.join(root, 'src-held'), path.join(root, 'src'));
+      }
+    });
+  },
+);
+
 async function ancestorSwapFixture(equalContent: boolean) {
   const root = await makeRepo();
   const outside = await fs.realpath(await tempDir('ontoindex-swap-owned-'));
@@ -294,14 +371,15 @@ function swapAncestorAtOpen(
   relativePath: string,
   persistent: boolean,
 ) {
-  const realOpen = fs.open.bind(fs);
+  const realOpen = nativeModule.openRootedFile;
   const reads: { mock: { calls: unknown[][] } }[] = [];
   const closes: { mock: { calls: unknown[][] } }[] = [];
   let swaps = 0;
-  vi.spyOn(fs, 'open').mockImplementation(async (file, ...args) => {
-    if (String(file) !== path.join(root, relativePath)) return realOpen(file, ...args);
+  vi.spyOn(nativeModule, 'openRootedFile').mockImplementation(async (rootHandle, openedPath) => {
+    const file = path.join(rootPaths.get(rootHandle)!, openedPath);
+    if (String(file) !== path.join(root, relativePath)) return realOpen(rootHandle, openedPath);
     if (!persistent && swaps > 0) {
-      const handle = await realOpen(file, ...args);
+      const handle = await realOpen(rootHandle, openedPath);
       reads.push(vi.spyOn(handle, 'read'));
       closes.push(vi.spyOn(handle, 'close'));
       return handle;
@@ -310,12 +388,12 @@ function swapAncestorAtOpen(
     const ancestor = path.join(root, 'src');
     const saved = path.join(root, 'src-swap-reserved');
     let linked = false;
-    let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
+    let handle: Awaited<ReturnType<typeof nativeModule.openRootedFile>> | undefined;
     await fs.rename(ancestor, saved);
     try {
       await fs.symlink(path.join(outside, 'src'), ancestor);
       linked = true;
-      handle = await realOpen(file, ...args);
+      handle = await realOpen(rootHandle, openedPath);
       reads.push(vi.spyOn(handle, 'read'));
       closes.push(vi.spyOn(handle, 'close'));
     } finally {
@@ -345,12 +423,8 @@ describe.each(ancestorSwapReaders)(
           try {
             await expect(readInputs(root, reader)).rejects.toMatchObject({ code: 'changed-input' });
             expect(observations.swaps()).toBe(opens);
-            expect(observations.reads.map((read) => read.mock.calls.length)).toEqual(
-              Array(opens).fill(0),
-            );
-            expect(observations.closes.map((close) => close.mock.calls.length)).toEqual(
-              Array(opens).fill(1),
-            );
+            expect(observations.reads.map((read) => read.mock.calls.length)).toEqual([]);
+            expect(observations.closes.map((close) => close.mock.calls.length)).toEqual([]);
             expect(await pendingCaptures(root)).toEqual([path.basename(borrowed.captureRoot)]);
             expect((await fs.lstat(path.join(root, 'src'))).isDirectory()).toBe(true);
             await expect(fs.lstat(path.join(root, 'src-swap-reserved'))).rejects.toMatchObject({
@@ -365,6 +439,7 @@ describe.each(ancestorSwapReaders)(
             ).toEqual(borrowedBytes);
           } finally {
             vi.restoreAllMocks();
+            await trackRootPaths();
           }
         }
       },
@@ -381,10 +456,9 @@ it.each([true, false])(
     const capture = (await readInputs(root, 'capture')) as WorkspaceInputCapture;
 
     expect(observations.swaps()).toBe(1);
-    expect(observations.reads).toHaveLength(3);
-    expect(observations.reads[0].mock.calls).toEqual([]);
-    expect(observations.reads.slice(1).every((read) => read.mock.calls.length > 0)).toBe(true);
-    expect(observations.closes.map((close) => close.mock.calls.length)).toEqual([1, 1, 1]);
+    expect(observations.reads).toHaveLength(2);
+    expect(observations.reads.every((read) => read.mock.calls.length > 0)).toBe(true);
+    expect(observations.closes.map((close) => close.mock.calls.length)).toEqual([1, 1]);
     expect((await pendingCaptures(root)).sort()).toEqual(
       [path.basename(borrowed.captureRoot), path.basename(capture.captureRoot)].sort(),
     );
@@ -402,13 +476,13 @@ it('accepts an independent configuration read after a transient real ancestor sw
   await expect(readInputs(root, 'configuration')).rejects.toMatchObject({ code: 'changed-input' });
 
   expect(observations.swaps()).toBe(1);
-  expect(observations.reads.map((read) => read.mock.calls.length)).toEqual([0]);
-  expect(observations.closes.map((close) => close.mock.calls.length)).toEqual([1]);
+  expect(observations.reads).toEqual([]);
+  expect(observations.closes).toEqual([]);
   expect(await readInputs(root, 'configuration')).toEqual(baseline);
   expect(observations.swaps()).toBe(1);
-  expect(observations.reads).toHaveLength(2);
-  expect(observations.reads[1].mock.calls.length).toBeGreaterThan(0);
-  expect(observations.closes.map((close) => close.mock.calls.length)).toEqual([1, 1]);
+  expect(observations.reads).toHaveLength(1);
+  expect(observations.reads[0].mock.calls.length).toBeGreaterThan(0);
+  expect(observations.closes.map((close) => close.mock.calls.length)).toEqual([1]);
   expect(await pendingCaptures(root)).toEqual([path.basename(borrowed.captureRoot)]);
   for (const [relativePath, content] of Object.entries(original)) {
     expect(await fs.readFile(path.join(root, relativePath), 'utf8')).toBe(content);
@@ -428,11 +502,12 @@ it('rejects real equal-content pathname replacement after reading on both captur
   captures.push(borrowed);
   const borrowedInput = path.join(borrowed.captureRoot, 'src/main.ts');
   const borrowedBytes = await fs.readFile(borrowedInput);
-  const realOpen = fs.open.bind(fs);
+  const realOpen = nativeModule.openRootedFile;
   const closes: { mock: { calls: unknown[][] } }[] = [];
   let replacements = 0;
-  vi.spyOn(fs, 'open').mockImplementation(async (file, ...args) => {
-    const handle = await realOpen(file, ...args);
+  vi.spyOn(nativeModule, 'openRootedFile').mockImplementation(async (rootHandle, relativePath) => {
+    const file = path.join(rootPaths.get(rootHandle)!, relativePath);
+    const handle = await realOpen(rootHandle, relativePath);
     if (String(file) !== target) return handle;
     closes.push(vi.spyOn(handle, 'close'));
     const realRead = handle.read.bind(handle);
@@ -509,7 +584,7 @@ describe.each(readers)('$reader static nonregular input', ({ reader, relativePat
           code: 'unsupported',
         });
 
-        const expectedHandles = reader === 'capture' && kind === 'fifo' ? 1 : 0;
+        const expectedHandles = 0;
         expect(observations.reads).toHaveLength(expectedHandles);
         expect(observations.reads.map((read) => read.mock.calls.length)).toEqual(
           Array(expectedHandles).fill(0),
@@ -519,7 +594,7 @@ describe.each(readers)('$reader static nonregular input', ({ reader, relativePat
         );
         expect(
           attempts.mock.calls.filter(([prefix]) => String(prefix).includes('/capture-')),
-        ).toHaveLength(reader === 'capture' ? (kind === 'socket' ? 2 : 1) : 0);
+        ).toHaveLength(reader === 'capture' ? 1 : 0);
         expect(
           writes.mock.calls.filter(
             ([file]) =>

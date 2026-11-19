@@ -16,7 +16,7 @@ impl NativeFileLock {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn acquire_file_lock(path: &std::path::Path) -> std::io::Result<Option<File>> {
     use std::fs::{self, OpenOptions, TryLockError};
     use std::io::{Error, ErrorKind};
@@ -26,7 +26,10 @@ fn acquire_file_lock(path: &std::path::Path) -> std::io::Result<Option<File>> {
     // Reject symlinks before opening, then verify the opened file's identity.
     match fs::symlink_metadata(path) {
         Ok(metadata) if !metadata.is_file() => {
-            return Err(Error::new(ErrorKind::InvalidInput, "lock path is not a regular file"));
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                "lock path is not a regular file",
+            ));
         }
         Ok(_) => {}
         Err(error) if error.kind() == ErrorKind::NotFound => {}
@@ -46,7 +49,10 @@ fn acquire_file_lock(path: &std::path::Path) -> std::io::Result<Option<File>> {
         || opened.dev() != named.dev()
         || opened.ino() != named.ino()
     {
-        return Err(Error::new(ErrorKind::InvalidInput, "lock file identity changed"));
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            "lock file identity changed",
+        ));
     }
     match file.try_lock() {
         Ok(()) => Ok(Some(file)),
@@ -55,11 +61,11 @@ fn acquire_file_lock(path: &std::path::Path) -> std::io::Result<Option<File>> {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn acquire_file_lock(_path: &std::path::Path) -> std::io::Result<Option<File>> {
     Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
-        "native file locks require Linux",
+        "native file locks require Linux or macOS",
     ))
 }
 
@@ -70,7 +76,7 @@ pub fn try_acquire_file_lock(path: String) -> Result<Option<NativeFileLock>> {
         .map_err(|error| Error::from_reason(format!("failed to acquire file lock {path}: {error}")))
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod tests {
     use super::{acquire_file_lock, NativeFileLock};
     use std::fs;
@@ -81,9 +87,14 @@ mod tests {
         let directory = std::env::temp_dir().join(format!("ontoindex-lock-{}", std::process::id()));
         fs::create_dir(&directory).unwrap();
         let path = directory.join("lock");
-        let mut held = NativeFileLock { file: acquire_file_lock(&path).unwrap() };
+        let mut held = NativeFileLock {
+            file: acquire_file_lock(&path).unwrap(),
+        };
         assert!(held.file.is_some());
-        assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
         fs::write(&path, b"retained metadata").unwrap();
         let inode = fs::metadata(&path).unwrap().ino();
         assert!(acquire_file_lock(&path).unwrap().is_none());
@@ -93,7 +104,9 @@ mod tests {
         assert_eq!(fs::read(&path).unwrap(), b"retained metadata");
         assert_eq!(fs::metadata(&path).unwrap().ino(), inode);
         drop(reacquired);
-        let dropped = NativeFileLock { file: acquire_file_lock(&path).unwrap() };
+        let dropped = NativeFileLock {
+            file: acquire_file_lock(&path).unwrap(),
+        };
         drop(dropped);
         assert!(acquire_file_lock(&path).unwrap().is_some());
         fs::remove_dir_all(directory).unwrap();
@@ -101,7 +114,8 @@ mod tests {
 
     #[test]
     fn symlinks_and_missing_parents_are_errors() {
-        let directory = std::env::temp_dir().join(format!("ontoindex-lock-errors-{}", std::process::id()));
+        let directory =
+            std::env::temp_dir().join(format!("ontoindex-lock-errors-{}", std::process::id()));
         fs::create_dir(&directory).unwrap();
         let target = directory.join("target");
         fs::write(&target, b"unchanged").unwrap();

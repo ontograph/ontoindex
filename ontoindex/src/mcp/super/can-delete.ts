@@ -4,7 +4,7 @@ import { resolveRegistryEntry } from '../shared/target-context.js';
  *
  * Composes primitives to produce a structured CanDeleteReport for a given
  * symbol (by canonical nodeId or fuzzy name).  Resolves the symbol, then
- * checks callers, test-file imports, and co-change recency to synthesise
+ * checks callers, test-file imports, and co-change siblings to synthesise
  * a DELETE-SAFE / CAUTION / DO-NOT-DELETE verdict.
  *
  * Pure facade — no caching, no DB writes, no side effects.
@@ -61,6 +61,7 @@ export interface CanDeleteReport {
   callers: Array<{ nodeId: string; name: string; filePath: string }>;
   tests: string[];
   crossRepoReferences?: Array<{ repoName: string; nodeId: string; filePath: string }>;
+  // recentTouchDays is -1 (unknown): the index does not store co-change dates.
   coChangeNetwork: { siblings: string[]; recentTouchDays: number };
   evidence: {
     graph: 'complete' | 'unavailable';
@@ -202,30 +203,19 @@ async function fetchCoChangeNetwork(repoId: string, filePath: string): Promise<C
     const rows: QueryRow[] = await executeParameterized(
       repoId,
       `MATCH (f:File {filePath: $path})-[r:CodeRelation {type: 'CO_CHANGED_WITH'}]-(other:File)
-       RETURN other.filePath AS filePath, r.confidence AS confidence, r.lastDate AS lastDate
+       RETURN other.filePath AS filePath, r.confidence AS confidence
        ORDER BY r.confidence DESC
        LIMIT 10`,
       { path: filePath },
     );
 
     const siblings: string[] = [];
-    let mostRecentMs = -1;
-
     for (const row of rows) {
       const fp = rowString(row, 'filePath', 0);
       if (fp) siblings.push(fp);
-
-      const lastDate = rowString(row, 'lastDate', 2);
-      if (lastDate) {
-        const ms = Date.parse(lastDate);
-        if (!Number.isNaN(ms) && ms > mostRecentMs) mostRecentMs = ms;
-      }
     }
 
-    const recentTouchDays =
-      mostRecentMs > 0 ? Math.floor((Date.now() - mostRecentMs) / (1000 * 60 * 60 * 24)) : -1;
-
-    return { siblings, recentTouchDays };
+    return { siblings, recentTouchDays: -1 };
   } catch {
     return { siblings: [], recentTouchDays: -1 };
   }
@@ -449,6 +439,9 @@ export async function gnCanDelete(
   const incompleteEvidence = [
     !callerResult.available ? 'graph caller/reference query unavailable' : '',
     !testsAvailable ? 'test-import query unavailable' : '',
+    recentTouchDays < 0
+      ? 'Co-change recency unavailable: index does not store co-change dates.'
+      : '',
     sourceEvidence.status !== 'complete' ? `production source search ${sourceEvidence.status}` : '',
     freshness !== 'fresh' ? `index freshness ${freshness}` : '',
     coverage !== 'complete' ? `parser coverage ${coverage}` : '',

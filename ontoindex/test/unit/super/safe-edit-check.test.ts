@@ -120,7 +120,6 @@ function setupMocks({
   processCount = 0,
   clusterCount = 0,
   coChangeSiblings = [] as string[],
-  lastDate = '2026-04-01',
   isExported = false,
   testCoverage = {
     coveringTests: ['test/unit/auth.test.ts'],
@@ -139,7 +138,6 @@ function setupMocks({
   processCount?: number;
   clusterCount?: number;
   coChangeSiblings?: string[];
-  lastDate?: string;
   isExported?: boolean;
   testCoverage?: {
     coveringTests: string[];
@@ -165,7 +163,6 @@ function setupMocks({
     if (query.includes('CO_CHANGED_WITH') && query.includes('other.filePath AS otherPath')) {
       return coChangeSiblings.map((p) => ({ otherPath: p, conf: 0.8 }));
     }
-    if (query.includes('r.lastDate AS lastDate')) return [{ lastDate }];
     if (query.includes('RETURN s.isExported AS isExported')) return [{ isExported }];
     return [];
   });
@@ -253,6 +250,118 @@ describe('gnSafeEditCheck', () => {
       reason: 'target context unavailable',
     });
     expect(compact).not.toHaveProperty('blastRadius');
+    expect(compact.basedOnReads).toBeDefined();
+  });
+
+  it.each([true, false])(
+    'preserves requested docs evidence and metadata in compact output (legacy=%s)',
+    async (legacyResponse) => {
+      setupMocks();
+      const docsEvidence = {
+        enabled: true,
+        sidecar: { status: 'stale', staleReasons: ['index changed'], degradedReasons: {} },
+        freshness: { statusCounts: { stale: 1 }, stale: true, reasons: ['index changed'] },
+        docEvidence: [
+          {
+            kind: 'requirement',
+            docPath: 'docs/auth.md',
+            lineSpan: { start: 3, end: 5 },
+            requirementId: 'AUTH-1',
+            confidence: 0.9,
+            status: 'stale',
+            reasons: ['index changed'],
+            ambiguous: false,
+            stale: true,
+          },
+        ],
+        relatedDocs: [
+          {
+            docPath: 'docs/auth.md',
+            evidenceCount: 1,
+            confidence: 0.9,
+            reasons: ['index changed'],
+            freshness: 'stale',
+          },
+        ],
+        limits: { maxEvidence: 12, maxRelatedDocs: 5, totalEvidence: 13, truncated: true },
+      };
+      mockCollectDocsEvidence.mockResolvedValue(docsEvidence);
+      const result = await gnSafeEditCheck(REPO_ID, {
+        symbol: NODE_ID,
+        minimal: true,
+        docsEvidence: true,
+        legacyResponse,
+      });
+      const compact = 'results' in result ? result.results : result;
+      expect(compact.docEvidence).toEqual(docsEvidence);
+      expect(compact.basedOnReads).toBeDefined();
+      expect(compact).not.toHaveProperty('relatedDocs');
+      expect(mockCollectDocsEvidence).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([true, false])(
+    'omits disabled docs evidence without collecting it (legacy=%s)',
+    async (legacyResponse) => {
+      setupMocks();
+      const result = await gnSafeEditCheck(REPO_ID, {
+        symbol: NODE_ID,
+        minimal: true,
+        docsEvidence: false,
+        legacyResponse,
+      });
+      const compact = 'results' in result ? result.results : result;
+      expect(compact).not.toHaveProperty('docEvidence');
+      expect(compact).not.toHaveProperty('relatedDocs');
+      expect(mockCollectDocsEvidence).not.toHaveBeenCalled();
+    },
+  );
+
+  it('uses the same envelope freshness for unresolved stale targets in full and compact output', async () => {
+    setupMocks({ resolveRows: [] });
+    mockResolveTargetContext.mockResolvedValue({
+      version: 1,
+      status: 'ok',
+      repoKey: REPO_ID,
+      repoPath: '/repo',
+      snapshotMode: 'committed-head',
+      targetRef: 'HEAD',
+      targetHead: 'head2',
+      currentHead: 'head2',
+      indexedHead: 'head1',
+      graphAuthority: { state: 'review', reason: 'index stale' },
+      dirtyWorktree: false,
+      warnings: [],
+      embeddings: { status: 'available', count: 5 },
+      lsp: { status: 'unavailable', reason: 'no-lsp-server-on-path' },
+      sidecar: { status: 'unknown', reason: 'not-probed' },
+      policy: { status: 'unknown', reason: 'not-probed' },
+    });
+    const full = await gnSafeEditCheck(REPO_ID, {
+      symbol: 'missing',
+      legacyResponse: false,
+    });
+    const compact = await gnSafeEditCheck(REPO_ID, {
+      symbol: 'missing',
+      minimal: true,
+      legacyResponse: false,
+    });
+    expect(compact.freshness).toEqual(full.freshness);
+    expect(compact.freshness).toMatchObject({
+      status: 'stale',
+      isStale: true,
+      actionable: false,
+      targetHead: 'head2',
+      currentHead: 'head2',
+      indexedHead: 'head1',
+      indexedCommit: 'head1',
+      headCommit: 'head2',
+      repoLabel: REPO_ID,
+      repoPath: '/repo',
+      snapshotMode: 'committed-head',
+    });
+    expect(compact.results.dependentScope).not.toHaveProperty('seedUids');
+    expect(compact.results.dependentScope).not.toHaveProperty('classSeedExpansion');
   });
 
   it.each([true, false])(
@@ -327,17 +436,30 @@ describe('gnSafeEditCheck', () => {
     });
   });
 
-  it.each([NODE_ID, 'parseToken'])('rethrows buffer-pool failures resolving %s', async (symbol) => {
-    const error = new Error(
-      'Buffer manager exception: buffer pool is full and no memory could be freed',
-    );
-    mockExecuteParameterized.mockRejectedValue(error);
-    await expect(gnSafeEditCheck(REPO_ID, { symbol })).rejects.toBe(error);
-  });
+  it.each([
+    [NODE_ID, false],
+    [NODE_ID, true],
+    ['parseToken', false],
+    ['parseToken', true],
+  ] as const)(
+    'rethrows buffer-pool failures resolving %s (minimal=%s)',
+    async (symbol, minimal) => {
+      const error = new Error(
+        'Buffer manager exception: buffer pool is full and no memory could be freed',
+      );
+      mockExecuteParameterized.mockRejectedValue(error);
+      await expect(gnSafeEditCheck(REPO_ID, { symbol, minimal })).rejects.toBe(error);
+    },
+  );
 
-  it.each(['upstream', 'downstream'])(
-    'rethrows resource failures from %s impact',
-    async (direction) => {
+  it.each([
+    ['upstream', false],
+    ['upstream', true],
+    ['downstream', false],
+    ['downstream', true],
+  ] as const)(
+    'rethrows resource failures from %s impact (minimal=%s)',
+    async (direction, minimal) => {
       setupMocks();
       const originalQuery = mockExecuteParameterized.getMockImplementation() as (
         ...args: unknown[]
@@ -354,7 +476,7 @@ describe('gnSafeEditCheck', () => {
         if (query.includes(shape)) throw error;
         return originalQuery(...args);
       });
-      await expect(gnSafeEditCheck(REPO_ID, { symbol: NODE_ID })).rejects.toBe(error);
+      await expect(gnSafeEditCheck(REPO_ID, { symbol: NODE_ID, minimal })).rejects.toBe(error);
     },
   );
 
@@ -375,13 +497,12 @@ describe('gnSafeEditCheck', () => {
     ['fetchProcessCount', "r.type = 'PARTICIPATES_IN'"],
     ['fetchClusterCount', "r.type = 'MEMBER_OF'"],
     ['fetchCoChangeSiblings', 'other.filePath AS otherPath'],
-    ['fetchRecentTouchDays', 'r.lastDate AS lastDate'],
     ['fetchIsExported', 'RETURN s.isExported AS isExported'],
     ['upstream impact', 'MATCH (caller)-[r:CodeRelation]->(n)'],
     ['downstream impact', 'MATCH (n)-[r:CodeRelation]->(callee)'],
   ])('reports CAUTION and a warning when %s fails', async (probe, queryFragment) => {
-    setupMocks({ lastDate: new Date().toISOString() });
-    expect((await gnSafeEditCheck(REPO_ID, { symbol: 'parseToken' })).verdict).toBe('SAFE');
+    setupMocks();
+    expect((await gnSafeEditCheck(REPO_ID, { symbol: 'parseToken' })).verdict).toBe('CAUTION');
     const implementation = mockExecuteParameterized.getMockImplementation() as (
       ...args: unknown[]
     ) => Promise<unknown>;
@@ -400,7 +521,6 @@ describe('gnSafeEditCheck', () => {
     "r.type = 'PARTICIPATES_IN'",
     "r.type = 'MEMBER_OF'",
     'other.filePath AS otherPath',
-    'r.lastDate AS lastDate',
     'RETURN s.isExported AS isExported',
   ])('rethrows buffer-pool failures in graph probe %s', async (queryFragment) => {
     setupMocks();
@@ -449,9 +569,9 @@ describe('gnSafeEditCheck', () => {
   });
 
   // -------------------------------------------------------------------------
-  // 1. SAFE verdict: low-impact, well-tested, recently active
+  // 1. Unknown recency requires CAUTION even with low impact and strong coverage
   // -------------------------------------------------------------------------
-  it('returns SAFE verdict for low-impact + tested + recent symbol', async () => {
+  it('returns CAUTION with unknown recency for a low-impact tested symbol', async () => {
     setupMocks({
       upstreamN: 2,
       processCount: 1,
@@ -464,13 +584,21 @@ describe('gnSafeEditCheck', () => {
         ],
         likelihoodOfCoverage: 'HIGH',
       },
-      lastDate: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString(), // 5 days ago
     });
 
     const report = await gnSafeEditCheck(REPO_ID, { symbol: 'parseToken' });
 
+    expect(report.coChangeNetwork.recentTouchDays).toBe(-1);
+    expect(report.reasoning).toBe('co-change recency unavailable');
+    expect(report.warnings).toContain(
+      'Co-change recency unavailable: index does not store co-change dates.',
+    );
+    expect(report.reasoning).not.toContain('Graph probes failed');
+    expect(
+      mockExecuteParameterized.mock.calls.every(([, query]) => !query.includes('lastDate')),
+    ).toBe(true);
     expect(report.version).toBe(1);
-    expect(report.verdict).toBe('SAFE');
+    expect(report.verdict).toBe('CAUTION');
     expect(report.blastRadius.upstreamCount).toBe(2);
     expect(report.rawCounts?.upstream.direct).toBe(2);
     expect(report.rawCounts?.upstream.traversalDepth).toBe(1);
@@ -486,37 +614,39 @@ describe('gnSafeEditCheck', () => {
     expect(report.symbol.name).toBe('parseToken');
   });
 
-  it('downgrades SAFE when the index is stale and exposes freshness in the legacy report', async () => {
-    setupMocks({
-      upstreamN: 2,
-      isExported: false,
-      lastDate: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString(),
-    });
-    mockResolveTargetContext.mockResolvedValue({
-      version: 1,
-      status: 'ok',
-      targetRef: 'HEAD',
-      targetHead: 'head2',
-      currentHead: 'head2',
-      indexedHead: 'head1',
-      graphAuthority: { state: 'review', reason: 'indexedHead != targetHead' },
-      dirtyWorktree: false,
-      dirtyFileCount: 0,
-      warnings: [],
-    });
-    const report = await gnSafeEditCheck(REPO_ID, { symbol: 'parseToken' });
-    expect(report.verdict).toBe('CAUTION');
-    expect(report.freshness).toMatchObject({
-      authoritative: false,
-      reason: 'indexedHead != targetHead',
-      indexedCommit: 'head1',
-      headCommit: 'head2',
-    });
-    expect(report.warnings.join(' ')).toContain('Verify callers in source before editing');
-    expect(report.reasoning).toContain('Graph is not authoritative');
-  });
+  it.each([false, true])(
+    'preserves CAUTION and independent stale-index freshness evidence (minimal=%s)',
+    async (minimal) => {
+      setupMocks({
+        upstreamN: 2,
+        isExported: false,
+      });
+      mockResolveTargetContext.mockResolvedValue({
+        version: 1,
+        status: 'ok',
+        targetRef: 'HEAD',
+        targetHead: 'head2',
+        currentHead: 'head2',
+        indexedHead: 'head1',
+        graphAuthority: { state: 'review', reason: 'indexedHead != targetHead' },
+        dirtyWorktree: false,
+        dirtyFileCount: 0,
+        warnings: [],
+      });
+      const report = await gnSafeEditCheck(REPO_ID, { symbol: 'parseToken', minimal });
+      expect(report.verdict).toBe('CAUTION');
+      expect(report.freshness).toMatchObject({
+        authoritative: false,
+        reason: 'indexedHead != targetHead',
+        indexedCommit: 'head1',
+        headCommit: 'head2',
+      });
+      expect(report.warnings.join(' ')).toContain('Verify callers in source before editing');
+      expect(report.reasoning).toContain('co-change recency unavailable');
+    },
+  );
 
-  it('downgrades SAFE when dirty source is absent from the graph', async () => {
+  it('preserves CAUTION and dirty-source freshness evidence', async () => {
     setupMocks({ upstreamN: 2, isExported: false });
     mockResolveTargetContext.mockResolvedValue({
       version: 1,
@@ -556,36 +686,40 @@ describe('gnSafeEditCheck', () => {
     expect(report.verdict).toBe('BLOCKED');
   });
 
-  it('includes freshness on the envelope results when the graph is stale', async () => {
-    setupMocks({ upstreamN: 2, isExported: false, lastDate: new Date().toISOString() });
-    mockResolveTargetContext.mockResolvedValue({
-      version: 1,
-      status: 'ok',
-      targetRef: 'HEAD',
-      targetHead: 'head2',
-      currentHead: 'head2',
-      indexedHead: 'head1',
-      graphAuthority: { state: 'review', reason: 'index stale' },
-      dirtyWorktree: false,
-      warnings: [],
-      embeddings: { status: 'available', count: 5 },
-      lsp: { status: 'unavailable', reason: 'no-lsp-server-on-path' },
-      sidecar: { status: 'unknown', reason: 'not-probed' },
-      policy: { status: 'unknown', reason: 'not-probed' },
-    });
-    const envelope = await gnSafeEditCheck(REPO_ID, {
-      symbol: 'parseToken',
-      legacyResponse: false,
-    });
-    expect(envelope.freshness).toMatchObject({
-      status: 'degraded',
-      actionable: false,
-      reason: 'index stale',
-      indexedCommit: 'head1',
-      headCommit: 'head2',
-    });
-    expect((envelope.results as Record<string, unknown>).verdict).toBe('CAUTION');
-  });
+  it.each([false, true])(
+    'includes envelope freshness when the graph is stale (minimal=%s)',
+    async (minimal) => {
+      setupMocks({ upstreamN: 2, isExported: false });
+      mockResolveTargetContext.mockResolvedValue({
+        version: 1,
+        status: 'ok',
+        targetRef: 'HEAD',
+        targetHead: 'head2',
+        currentHead: 'head2',
+        indexedHead: 'head1',
+        graphAuthority: { state: 'review', reason: 'index stale' },
+        dirtyWorktree: false,
+        warnings: [],
+        embeddings: { status: 'available', count: 5 },
+        lsp: { status: 'unavailable', reason: 'no-lsp-server-on-path' },
+        sidecar: { status: 'unknown', reason: 'not-probed' },
+        policy: { status: 'unknown', reason: 'not-probed' },
+      });
+      const envelope = await gnSafeEditCheck(REPO_ID, {
+        symbol: 'parseToken',
+        legacyResponse: false,
+        minimal,
+      });
+      expect(envelope.freshness).toMatchObject({
+        status: 'degraded',
+        actionable: false,
+        reason: 'index stale',
+        indexedCommit: 'head1',
+        headCommit: 'head2',
+      });
+      expect((envelope.results as Record<string, unknown>).verdict).toBe('CAUTION');
+    },
+  );
 
   it('keeps risk verdict unchanged when advisory docs evidence is enabled', async () => {
     setupMocks({
@@ -593,13 +727,12 @@ describe('gnSafeEditCheck', () => {
       processCount: 1,
       isExported: false,
       testCoverage: { coveringTests: ['test/unit/auth.test.ts'], likelihoodOfCoverage: 'HIGH' },
-      lastDate: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString(),
     });
 
     const report = await gnSafeEditCheck(REPO_ID, { symbol: 'parseToken', docsEvidence: true });
 
-    expect(report.verdict).toBe('SAFE');
-    expect(report.reasoning).toBe('Low blast radius, well-tested, recently active.');
+    expect(report.verdict).toBe('CAUTION');
+    expect(report.reasoning).toBe('co-change recency unavailable');
     expect(report.docEvidence).toMatchObject({ enabled: true, docEvidence: [] });
     expect(mockCollectDocsEvidence).toHaveBeenCalledWith(REPO_ID, [
       { nodeId: NODE_ID, name: 'parseToken', filePath: 'src/auth/token.ts' },
@@ -615,7 +748,6 @@ describe('gnSafeEditCheck', () => {
       processCount: 2,
       isExported: false,
       testCoverage: { coveringTests: ['test/unit/auth.test.ts'], likelihoodOfCoverage: 'MEDIUM' },
-      lastDate: new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString(), // 10 days ago
     });
 
     const report = await gnSafeEditCheck(REPO_ID, { symbol: 'parseToken' });
@@ -630,7 +762,6 @@ describe('gnSafeEditCheck', () => {
       processCount: 1,
       isExported: false,
       testCoverage: { coveringTests: [], likelihoodOfCoverage: 'NONE' },
-      lastDate: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString(),
     });
 
     const report = await gnSafeEditCheck(REPO_ID, { symbol: 'parseToken' });
@@ -648,7 +779,6 @@ describe('gnSafeEditCheck', () => {
       processCount: 7, // > 5 → DANGEROUS
       isExported: false,
       testCoverage: { coveringTests: ['test/unit/auth.test.ts'], likelihoodOfCoverage: 'HIGH' },
-      lastDate: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString(),
     });
 
     const report = await gnSafeEditCheck(REPO_ID, { symbol: 'parseToken' });
@@ -663,7 +793,6 @@ describe('gnSafeEditCheck', () => {
       processCount: 2,
       isExported: true, // exported → DANGEROUS (upstream < 100 so not BLOCKED)
       testCoverage: { coveringTests: ['test/unit/auth.test.ts'], likelihoodOfCoverage: 'HIGH' },
-      lastDate: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString(),
     });
 
     const report = await gnSafeEditCheck(REPO_ID, { symbol: 'parseToken' });
@@ -680,7 +809,6 @@ describe('gnSafeEditCheck', () => {
       processCount: 2,
       isExported: true, // AND exported → BLOCKED
       testCoverage: { coveringTests: ['test/unit/auth.test.ts'], likelihoodOfCoverage: 'HIGH' },
-      lastDate: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString(),
     });
 
     const report = await gnSafeEditCheck(REPO_ID, { symbol: 'parseToken' });
@@ -698,7 +826,6 @@ describe('gnSafeEditCheck', () => {
       processCount: 2,
       isExported: true, // AND exported → would be BLOCKED without force
       testCoverage: { coveringTests: ['test/unit/auth.test.ts'], likelihoodOfCoverage: 'HIGH' },
-      lastDate: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString(),
     });
 
     const report = await gnSafeEditCheck(REPO_ID, { symbol: 'parseToken', force: true });
@@ -736,7 +863,6 @@ describe('gnSafeEditCheck', () => {
       upstreamN: 4,
       processCount: 1,
       testCoverage: { coveringTests: ['test/unit/auth.test.ts'], likelihoodOfCoverage: 'HIGH' },
-      lastDate: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString(),
     });
     mockGetClient.mockResolvedValue(null);
 
@@ -756,7 +882,7 @@ describe('gnSafeEditCheck', () => {
       ]),
       nextTools: expect.arrayContaining(['gn_safe_refactor', 'gn_pre_commit_audit']),
     });
-    expect((report.results as Record<string, unknown>).verdict).toBe('SAFE');
+    expect((report.results as Record<string, unknown>).verdict).toBe('CAUTION');
   });
 
   it('restores ONTOINDEX_LSP_REFERENCES env var even when executeParameterized throws', async () => {
@@ -975,7 +1101,6 @@ describe('gnSafeEditCheck', () => {
         coveringTests: ['test/unit/document-broker.test.ts'],
         likelihoodOfCoverage: 'HIGH',
       },
-      lastDate: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString(),
     });
 
     const report = await gnSafeEditCheck(REPO_ID, { symbol: 'DocumentBroker' });
@@ -987,6 +1112,12 @@ describe('gnSafeEditCheck', () => {
     expect(report.rawCounts?.upstream.filters.classSeedExpansion).toBe(true);
     expect(report.rawCounts?.downstream.direct).toBe(0);
     expect(report.reasoning).not.toContain('3 upstream callers');
+    const compact = await gnSafeEditCheck(REPO_ID, { symbol: 'DocumentBroker', minimal: true });
+    expect(compact.dependentScope).toMatchObject({
+      observedCount: 2,
+      seedUids: [classId, constructorId, fileId],
+      classSeedExpansion: true,
+    });
   });
 
   it('keeps canonical node-id lookup exact when the target is a declaration', async () => {
@@ -1109,11 +1240,17 @@ describe('gnSafeEditCheck', () => {
         verdict: string;
         symbol: { nodeId: string };
         rawCounts?: unknown;
+        coChangeNetwork: { recentTouchDays: number };
+        warnings: string[];
         preChecks: Array<{ check: string; passed: boolean }>;
       };
 
       expect(report.verdict).toBe('CAUTION');
       expect(report.symbol.nodeId).toBe('');
+      expect(report.coChangeNetwork.recentTouchDays).toBe(-1);
+      expect(response.warnings).toContain(
+        'Co-change recency unavailable: index does not store co-change dates.',
+      );
       expect(report.rawCounts).toBeUndefined();
       expect(report.preChecks).toContainEqual(
         expect.objectContaining({ check: 'symbol_in_index', passed: false }),
@@ -1218,7 +1355,6 @@ describe('gnSafeEditCheck', () => {
         upstreamN: 15,
         isExported: false,
         testCoverage: { coveringTests: ['test/unit/auth.test.ts'], likelihoodOfCoverage: 'MEDIUM' },
-        lastDate: new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString(),
       });
 
       const report = await gnSafeEditCheck(REPO_ID, { symbol: 'parseToken' });
@@ -1229,17 +1365,16 @@ describe('gnSafeEditCheck', () => {
       expect(related?.visibility).toBe('public');
     });
 
-    it('SAFE verdict: suggestedNext includes gn_can_delete as public', async () => {
+    it('delete intent with CAUTION: suggestedNext includes gn_can_delete as public', async () => {
       setupMocks({
         upstreamN: 1,
         isExported: false,
         testCoverage: { coveringTests: ['test/unit/auth.test.ts'], likelihoodOfCoverage: 'HIGH' },
-        lastDate: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString(),
       });
 
-      const report = await gnSafeEditCheck(REPO_ID, { symbol: 'parseToken' });
+      const report = await gnSafeEditCheck(REPO_ID, { symbol: 'parseToken', intent: 'delete' });
 
-      expect(report.verdict).toBe('SAFE');
+      expect(report.verdict).toBe('CAUTION');
       const canDelete = report.suggestedNext.find((s) => s.tool === 'gn_can_delete');
       expect(canDelete).toBeDefined();
       expect(canDelete?.visibility).toBe('public');
@@ -1250,7 +1385,6 @@ describe('gnSafeEditCheck', () => {
         upstreamN: 5,
         isExported: false,
         testCoverage: { coveringTests: ['test/unit/auth.test.ts'], likelihoodOfCoverage: 'HIGH' },
-        lastDate: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString(),
       });
 
       const report = await gnSafeEditCheck(REPO_ID, {
@@ -1411,12 +1545,11 @@ describe('gnSafeEditCheck', () => {
       setupMocks({
         upstreamN: 3,
         testCoverage: { coveringTests: ['test/unit/auth.test.ts'], likelihoodOfCoverage: 'HIGH' },
-        lastDate: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString(),
       });
 
       const report = await gnSafeEditCheck(REPO_ID, { symbol: 'parseToken', intent: 'rename' });
 
-      expect(report.verdict).toBe('SAFE');
+      expect(report.verdict).toBe('CAUTION');
       expect(report.recommendedTool).toBe('rename_symbol');
       expect(report.recommendedToolVisibility).toBe('backend-fallback');
       expect(report.suggestedNext.find((s) => s.tool === 'rename_symbol')).toBeDefined();
@@ -1521,7 +1654,6 @@ describe('gnSafeEditCheck', () => {
         upstreamN: 2,
         lspRenameResult: { supported: true, placeholder: 'parseToken' },
         testCoverage: { coveringTests: ['test/unit/auth.test.ts'], likelihoodOfCoverage: 'HIGH' },
-        lastDate: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString(),
       });
 
       const reportReady = await gnSafeEditCheck(REPO_ID, {
@@ -1533,7 +1665,6 @@ describe('gnSafeEditCheck', () => {
         upstreamN: 2,
         lspRenameResult: { supported: false },
         testCoverage: { coveringTests: ['test/unit/auth.test.ts'], likelihoodOfCoverage: 'HIGH' },
-        lastDate: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString(),
       });
 
       const reportNotReady = await gnSafeEditCheck(REPO_ID, {

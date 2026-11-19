@@ -10,6 +10,7 @@ import { planDirtyOverlay, workspaceConfigurationIdentity } from '../../src/core
 import * as pool from '../../src/core/lbug/pool-adapter.js';
 import { resolveSymbolCandidates } from '../../src/mcp/local/backend-symbol-resolution.js';
 import * as backendOverlay from '../../src/mcp/local/backend-overlay.js';
+import * as nativeModule from '../../src/native/module.js';
 import {
   getOverlaySnapshot,
   isAutomaticWorkspaceEnabled,
@@ -23,6 +24,18 @@ import {
   withPinnedOverlay,
   type OverlaySnapshot,
 } from '../../src/mcp/local/backend-overlay.js';
+
+vi.mock('node:fs', async (importOriginal) => {
+  const original = await importOriginal<
+    typeof import('node:fs') & { default: typeof import('node:fs') }
+  >();
+  return {
+    ...original,
+    // Keep named builtin imports observable through the same default-export spies.
+    createReadStream: (...args: Parameters<typeof original.createReadStream>) =>
+      original.default.createReadStream(...args),
+  };
+});
 
 vi.mock('../../src/core/analyze-delta.js', async (importOriginal) => {
   const original = await importOriginal<typeof import('../../src/core/analyze-delta.js')>();
@@ -67,6 +80,16 @@ describe('backend-overlay snapshot', () => {
   let repo: string;
   let storage: string;
   const handle = () => ({ id: 'r', repoPath: repo, storagePath: storage });
+  const observeRoot = async () => {
+    const native = await nativeModule.loadOntoIndexNativeModule();
+    const acquire = vi.spyOn(native, 'openRootedDirectory');
+    const root = native.openRootedDirectory!(repo);
+    const openRegularFile = root.openRegularFile.bind(root);
+    const open = vi.spyOn(root, 'openRegularFile');
+    const close = vi.spyOn(root, 'close');
+    acquire.mockClear().mockReturnValue(root);
+    return { root, open, close, acquire, openRegularFile };
+  };
   const publishFixture = () => {
     fs.mkdirSync(path.join(storage, 'overlay', 'fixture'), { recursive: true });
     fs.writeFileSync(path.join(storage, 'overlay', 'CURRENT'), 'fixture\n');
@@ -375,29 +398,192 @@ describe('backend-overlay snapshot', () => {
     const filename = path.join(repo, 'src/gone.ts');
     const target = path.join(storage, 'target.ts');
     fs.writeFileSync(target, 'export const g = 1;\n');
-    const lstat = asyncFs.lstat;
-    let checks = 0;
-    vi.spyOn(asyncFs, 'lstat').mockImplementation(async (file, options) => {
-      const stat = await lstat(file, options);
-      if (String(file) === filename && ++checks === 2) {
+    const { open, close, openRegularFile } = await observeRoot();
+    open.mockImplementation((rel) => {
+      if (rel === 'src/gone.ts') {
         fs.unlinkSync(filename);
         fs.symlinkSync(target, filename);
       }
-      return stat;
+      return openRegularFile(rel);
     });
-    const open = vi.spyOn(asyncFs, 'open');
     const readFile = vi.spyOn(asyncFs, 'readFile');
     expect(await getOverlaySnapshot(handle())).toMatchObject({
       usable: false,
       reason: 'workspace graph input is not a regular file: src/gone.ts; rebuild',
     });
-    const index = open.mock.calls.findIndex(([file]) => String(file) === filename);
+    const index = open.mock.calls.findIndex(([rel]) => rel === 'src/gone.ts');
     expect(index).toBeGreaterThanOrEqual(0);
-    await expect(open.mock.results[index].value).rejects.toMatchObject({ code: 'ELOOP' });
+    expect(open.mock.results[index].type).toBe('throw');
+    expect(close).toHaveBeenCalledOnce();
     expect(readFile.mock.calls.some(([file]) => [filename, target].includes(String(file)))).toBe(
       false,
     );
   });
+
+  it.each(['inventory', 'overlay'] as const)(
+    'rejects restored ancestor swaps before %s opens an equal-content outside target',
+    async (caller) => {
+      fs.writeFileSync(path.join(repo, 'src/a.ts'), 'export const a = 2;\n');
+      if (caller === 'inventory') publishWorkspaceFixture();
+      else publishFixture();
+      vi.mocked(planDirtyOverlay).mockResolvedValueOnce(await planDirtyOverlay(repo));
+      const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'overlay-outside-'));
+      const { open, openRegularFile, close, acquire } = await observeRoot();
+      let attempted = false;
+      open.mockImplementation((rel) => {
+        if (rel !== 'src/a.ts') return openRegularFile(rel);
+        attempted = true;
+        fs.renameSync(path.join(repo, 'src'), path.join(repo, 'original-src'));
+        fs.symlinkSync(outside, path.join(repo, 'src'));
+        try {
+          return openRegularFile(rel);
+        } finally {
+          fs.unlinkSync(path.join(repo, 'src'));
+          fs.renameSync(path.join(repo, 'original-src'), path.join(repo, 'src'));
+        }
+      });
+      const stream = vi.spyOn(fs, 'createReadStream');
+      try {
+        fs.writeFileSync(path.join(outside, 'a.ts'), fs.readFileSync(path.join(repo, 'src/a.ts')));
+        const snapshot = await getOverlaySnapshot(handle());
+        expect(snapshot).toMatchObject({
+          usable: false,
+          reason:
+            caller === 'inventory'
+              ? 'workspace graph input is not a regular file: src/a.ts; rebuild'
+              : 'cannot read src/a.ts',
+        });
+        expect(attempted).toBe(true);
+        const index = open.mock.calls.findIndex(([rel]) => rel === 'src/a.ts');
+        expect(open.mock.results[index].type).toBe('throw');
+        expect(stream).toHaveBeenCalledTimes(caller === 'inventory' ? 1 : 0);
+        expect(acquire).toHaveBeenCalledOnce();
+        expect(close).toHaveBeenCalledOnce();
+        expect(fs.lstatSync(path.join(repo, 'src')).isDirectory()).toBe(true);
+      } finally {
+        fs.rmSync(outside, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each(['inventory', 'overlay'] as const)(
+    'fails closed for %s when native access cannot be acquired',
+    async (caller) => {
+      fs.writeFileSync(path.join(repo, 'src/a.ts'), 'export const a = 2;\n');
+      if (caller === 'inventory') publishWorkspaceFixture();
+      else publishFixture();
+      const load = vi.spyOn(nativeModule, 'loadOntoIndexNativeModule');
+      const stream = vi.spyOn(fs, 'createReadStream');
+      for (const failure of ['missing addon', 'missing export', 'unsupported syscall']) {
+        resetOverlaySnapshotCache();
+        if (failure === 'missing addon') load.mockRejectedValueOnce(new Error('MODULE_NOT_FOUND'));
+        else if (failure === 'missing export') load.mockResolvedValueOnce({});
+        else
+          load.mockResolvedValueOnce({
+            openRootedDirectory: () => {
+              throw new Error('ENOSYS');
+            },
+          });
+        expect(await getOverlaySnapshot(handle())).toMatchObject({
+          usable: false,
+          reason: expect.stringContaining('Secure workspace input access is unavailable'),
+          failureCause: expect.any(Error),
+        });
+      }
+      expect(stream).not.toHaveBeenCalled();
+    },
+  );
+
+  it('refuses configuration ancestor swaps through the real configuration identity reader', async () => {
+    fs.writeFileSync(path.join(repo, 'src/a.ts'), 'export const a = 2;\n');
+    fs.writeFileSync(path.join(repo, 'src/tsconfig.json'), '{}');
+    publishFixture();
+    const actual = await vi.importActual<typeof import('../../src/core/analyze-delta.js')>(
+      '../../src/core/analyze-delta.js',
+    );
+    const identity = await actual.workspaceConfigurationIdentity(repo, {
+      includePaths: ['src/a.ts'],
+    });
+    const metadataPath = path.join(storage, 'overlay', 'fixture', 'base.json');
+    fs.writeFileSync(
+      metadataPath,
+      JSON.stringify({ ...JSON.parse(fs.readFileSync(metadataPath, 'utf8')), ...identity }),
+    );
+    vi.mocked(workspaceConfigurationIdentity).mockImplementation(
+      actual.workspaceConfigurationIdentity,
+    );
+    vi.mocked(planDirtyOverlay).mockResolvedValueOnce(await planDirtyOverlay(repo));
+    const native = await nativeModule.loadOntoIndexNativeModule();
+    const acquire = native.openRootedDirectory!.bind(native);
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'overlay-config-outside-'));
+    fs.writeFileSync(path.join(outside, 'tsconfig.json'), '{}');
+    let attempted = false;
+    vi.spyOn(native, 'openRootedDirectory').mockImplementation((rootPath) => {
+      const root = acquire(rootPath);
+      const open = root.openRegularFile.bind(root);
+      vi.spyOn(root, 'openRegularFile').mockImplementation((relativePath) => {
+        if (relativePath !== 'src/tsconfig.json') return open(relativePath);
+        attempted = true;
+        fs.renameSync(path.join(repo, 'src'), path.join(repo, 'src-held'));
+        fs.symlinkSync(outside, path.join(repo, 'src'));
+        try {
+          return open(relativePath);
+        } finally {
+          fs.unlinkSync(path.join(repo, 'src'));
+          fs.renameSync(path.join(repo, 'src-held'), path.join(repo, 'src'));
+        }
+      });
+      return root;
+    });
+    try {
+      const snapshot = await getOverlaySnapshot(handle());
+      expect(attempted).toBe(true);
+      expect(snapshot).toMatchObject({ usable: false, failureCause: { code: 'changed-input' } });
+    } finally {
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['inventory', 'overlay'] as const)(
+    'closes the root when %s refuses a special file at lookup',
+    async (caller) => {
+      fs.writeFileSync(path.join(repo, 'src/a.ts'), 'export const a = 2;\n');
+      if (caller === 'inventory') publishWorkspaceFixture();
+      else publishFixture();
+      vi.mocked(planDirtyOverlay).mockResolvedValueOnce(await planDirtyOverlay(repo));
+      const { open, openRegularFile, close } = await observeRoot();
+      open.mockImplementation((rel) => {
+        if (rel === 'src/a.ts') {
+          fs.unlinkSync(path.join(repo, rel));
+          expect(spawnSync('mkfifo', [path.join(repo, rel)]).status).toBe(0);
+        }
+        return openRegularFile(rel);
+      });
+      const snapshot = await getOverlaySnapshot(handle());
+      expect(snapshot.usable).toBe(false);
+      const index = open.mock.calls.findIndex(([rel]) => rel === 'src/a.ts');
+      expect(open.mock.results[index].type).toBe('throw');
+      expect(close).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each(['inventory', 'overlay'] as const)(
+    'closes transferred descriptors when %s cannot construct a stream',
+    async (caller) => {
+      fs.writeFileSync(path.join(repo, 'src/a.ts'), 'export const a = 2;\n');
+      if (caller === 'inventory') publishWorkspaceFixture();
+      else publishFixture();
+      const { open, close } = await observeRoot();
+      vi.spyOn(fs, 'createReadStream').mockImplementation(() => {
+        throw new Error('controlled stream construction failure');
+      });
+      expect((await getOverlaySnapshot(handle())).usable).toBe(false);
+      expect(close).toHaveBeenCalledOnce();
+      const descriptors = open.mock.results.filter((result) => result.type === 'return');
+      expect(descriptors.length).toBeGreaterThan(0);
+      for (const result of descriptors) expect(() => fs.fstatSync(result.value)).toThrow();
+    },
+  );
 
   it.each(['valid', 'read failure', 'digest mismatch'] as const)(
     'hashes inventory in bounded batches and drains started reads: %s',
@@ -411,34 +597,45 @@ describe('backend-overlay snapshot', () => {
       const inputs = new Set(fs.readdirSync(path.join(repo, 'src')).map((name) => `src/${name}`));
       const started: string[] = [];
       const pending = new Map<string, (failure?: boolean) => void>();
-      const open = asyncFs.open;
+      const { open, openRegularFile, close, acquire } = await observeRoot();
+      const createReadStream = fs.createReadStream;
+      const descriptors: number[] = [];
       let active = 0;
       let maximumActive = 0;
       let releaseImmediately = false;
-      vi.spyOn(asyncFs, 'open').mockImplementation(async (file, flags, mode) => {
-        const handle = await open(file, flags, mode);
-        const rel = path.relative(repo, String(file));
-        if (!inputs.has(rel)) return handle;
-        vi.spyOn(handle, 'readFile').mockImplementation(() => {
+      // Track the descriptor's requested input without resolving a pathname to read it.
+      const relativePaths = new Map<number, string>();
+      open.mockImplementation((rel) => {
+        const fd = openRegularFile(rel);
+        relativePaths.set(fd, rel);
+        return fd;
+      });
+      acquire.mockClear();
+      vi.spyOn(fs, 'createReadStream').mockImplementation((file, options) => {
+        const stream = createReadStream(file, options);
+        const fd = (options as { fd: number }).fd;
+        const rel = relativePaths.get(fd)!;
+        descriptors.push(fd);
+        const iterate = stream[Symbol.asyncIterator].bind(stream);
+        stream[Symbol.asyncIterator] = async function* (): AsyncGenerator<any, undefined, any> {
           started.push(rel);
           active++;
           maximumActive = Math.max(maximumActive, active);
-          return new Promise<Buffer<ArrayBuffer>>((resolve, reject) => {
+          const failure = await new Promise<boolean>((resolve) => {
             const release = (failure = false) => {
               pending.delete(rel);
               active--;
-              if (failure && outcome === 'read failure')
-                reject(new Error('controlled read failure'));
-              else
-                resolve(
-                  failure ? Buffer.from('changed bytes') : fs.readFileSync(path.join(repo, rel)),
-                );
+              resolve(failure);
             };
             if (releaseImmediately) release();
             else pending.set(rel, release);
           });
-        });
-        return handle;
+          if (failure && outcome === 'read failure') throw new Error('controlled read failure');
+          if (failure) yield Buffer.from('changed bytes');
+          else yield* iterate();
+          return undefined;
+        };
+        return stream;
       });
       let settled = false;
       const snapshotPromise = getOverlaySnapshot(handle()).finally(() => {
@@ -448,6 +645,7 @@ describe('backend-overlay snapshot', () => {
         // A bounded wait fails on a sequential implementation; finally releases its blocked read.
         await vi.waitFor(() => expect(started).toHaveLength(4));
         expect(active).toBe(4);
+        expect(close).not.toHaveBeenCalled();
         if (outcome === 'valid') {
           for (const release of [...pending.values()]) release();
           await vi.waitFor(() => expect(started).toHaveLength(6));
@@ -462,6 +660,7 @@ describe('backend-overlay snapshot', () => {
           pending.get(started[1])!(true);
           await new Promise<void>((resolve) => setImmediate(resolve));
           expect(settled).toBe(false);
+          expect(close).not.toHaveBeenCalled();
           expect(active).toBe(3);
           expect(started).toHaveLength(4);
           // Only started[1] is corrupt: read-start order follows async lstat completion, so a second
@@ -479,6 +678,9 @@ describe('backend-overlay snapshot', () => {
         }
         expect(maximumActive).toBe(4);
         expect(active).toBe(0);
+        expect(acquire).toHaveBeenCalledOnce();
+        expect(close).toHaveBeenCalledOnce();
+        for (const fd of descriptors) expect(() => fs.fstatSync(fd)).toThrow();
       } finally {
         releaseImmediately = true;
         for (const release of [...pending.values()]) release();
@@ -667,18 +869,16 @@ describe('backend-overlay snapshot', () => {
     const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'overlay-outside-'));
     const target = path.join(outside, 'secret.ts');
     fs.writeFileSync(target, 'export const a = 2;\n');
-    const lstat = asyncFs.lstat;
+    const { open, close, openRegularFile } = await observeRoot();
     let swapped = false;
-    vi.spyOn(asyncFs, 'lstat').mockImplementation(async (file, options) => {
-      const stat = await lstat(file, options);
-      if (String(file) === filename && !swapped) {
+    open.mockImplementation((rel) => {
+      if (rel === 'src/a.ts' && !swapped) {
         swapped = true;
         fs.unlinkSync(filename);
         fs.symlinkSync(target, filename);
       }
-      return stat;
+      return openRegularFile(rel);
     });
-    const open = vi.spyOn(asyncFs, 'open');
     const readFile = vi.spyOn(asyncFs, 'readFile');
     try {
       expect(await getOverlaySnapshot(handle())).toMatchObject({
@@ -686,9 +886,10 @@ describe('backend-overlay snapshot', () => {
         reason: 'cannot read src/a.ts',
       });
       expect(swapped).toBe(true);
-      const index = open.mock.calls.findIndex(([file]) => String(file) === filename);
+      const index = open.mock.calls.findIndex(([rel]) => rel === 'src/a.ts');
       expect(index).toBeGreaterThanOrEqual(0);
-      await expect(open.mock.results[index].value).rejects.toMatchObject({ code: 'ELOOP' });
+      expect(open.mock.results[index].type).toBe('throw');
+      expect(close).toHaveBeenCalledOnce();
       expect(readFile.mock.calls.some(([file]) => [filename, target].includes(String(file)))).toBe(
         false,
       );

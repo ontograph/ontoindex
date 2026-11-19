@@ -11,12 +11,43 @@ import path from 'path';
 import { createRequire } from 'node:module';
 import { createTempDir, type TestDBHandle } from '../helpers/test-db.js';
 import { buildTestGraph } from '../helpers/test-graph.js';
-import { streamAllCSVsToDisk } from '../../src/core/lbug/csv-generator.js';
-import type { CsvRowWriterFactory } from '../../src/core/lbug/csv-row-writer.js';
+import { streamAllCSVsToDisk, escapeCSVField } from '../../src/core/lbug/csv-generator.js';
+import * as graphWriter from '../../src/native/graph-writer.js';
+import type { OntoIndexNativeModule } from '../../src/native/module.js';
+import {
+  BufferedCsvRowWriter,
+  type CsvRowWriterFactory,
+} from '../../src/core/lbug/csv-row-writer.js';
 
 let tmpHandle: TestDBHandle;
 let csvDir: string;
 let repoDir: string;
+
+// Decode quoted multiline CSV so graph-writer parity is independent of quoting style.
+function decodeCsv(csv: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let field = '';
+  let quoted = false;
+  for (let i = 0; i < csv.length; i++) {
+    const character = csv[i];
+    if (character === '"') {
+      if (quoted && csv[i + 1] === '"') {
+        field += '"';
+        i++;
+      } else quoted = !quoted;
+    } else if (!quoted && (character === ',' || character === '\n')) {
+      row.push(field);
+      field = '';
+      if (character === '\n') {
+        rows.push(row);
+        row = [];
+      }
+    } else field += character;
+  }
+  if (field.length || row.length) rows.push([...row, field]);
+  return rows;
+}
 
 beforeAll(async () => {
   tmpHandle = await createTempDir('csv-pipeline-test-');
@@ -44,6 +75,232 @@ afterAll(async () => {
 });
 
 describe('streamAllCSVsToDisk', () => {
+  it.each(['constructor', 'row', 'finish', 'relationship', 'relationship finish', 'result'])(
+    'aborts every returned writer and preserves the original %s failure',
+    async (stage) => {
+      const graph = buildTestGraph(
+        [
+          { id: 'file:a', label: 'File', name: 'a', filePath: 'src/index.ts' },
+          { id: 'file:b', label: 'File', name: 'b', filePath: 'src/utils.ts' },
+        ],
+        [{ sourceId: 'file:a', targetId: 'file:b', type: 'CONTAINS' }],
+      );
+      const primary = new Error(`${stage} failed`);
+      const cleanups: ReturnType<typeof vi.fn>[] = [];
+      let release!: () => void;
+      const cleanupGate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let cleanupStarted!: () => void;
+      const started = new Promise<void>((resolve) => {
+        cleanupStarted = resolve;
+      });
+      const previousLimit = process.getMaxListeners();
+      const createWriter: CsvRowWriterFactory = (csvPath) => {
+        if (stage === 'constructor' && cleanups.length === 2) throw primary;
+        const index = cleanups.length;
+        const abort = vi.fn(() => {
+          cleanupStarted();
+          if (index === 0) throw new Error('synchronous cleanup failure');
+          return cleanupGate.then(() => {
+            throw new Error('async cleanup failure');
+          });
+        });
+        cleanups.push(abort);
+        const relationship = csvPath.endsWith('/relations.csv');
+        let finished = false;
+        return {
+          csvPath,
+          get rows() {
+            if (stage === 'result' && finished && !relationship) throw primary;
+            return 1;
+          },
+          addRow: () => {
+            if (stage === 'row' || (stage === 'relationship' && relationship)) throw primary;
+          },
+          finish: async () => {
+            if (stage === 'finish' || (stage === 'relationship finish' && relationship))
+              throw primary;
+            finished = true;
+          },
+          abort,
+        };
+      };
+      let settled = false;
+      const pending = streamAllCSVsToDisk(graph, repoDir, csvDir, { createWriter });
+      const rejection = expect(pending).rejects.toBe(primary);
+      void pending.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        },
+      );
+      await started;
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      expect(cleanups.length).toBeGreaterThan(1);
+      expect(cleanups.every((cleanup) => cleanup.mock.calls.length === 1)).toBe(true);
+      release();
+      await rejection;
+      expect(process.getMaxListeners()).toBe(previousLimit);
+    },
+  );
+
+  it.skipIf(process.platform !== 'linux')(
+    'returns to the Linux fd baseline after repeated source mutations',
+    async () => {
+      const filePath = 'src/mutating.csv-test.ts';
+      const fullPath = path.join(repoDir, filePath);
+      const graph = buildTestGraph([
+        { id: 'function:a', label: 'Function', name: 'a', filePath, startLine: 1, endLine: 1 },
+        { id: 'function:b', label: 'Function', name: 'b', filePath, startLine: 2, endLine: 2 },
+      ]);
+      const baseline = (await fs.readdir('/proc/self/fd')).length;
+      for (let attempt = 0; attempt < 6; attempt++) {
+        await fs.writeFile(fullPath, 'export function a() {}\nexport function b() {}\n');
+        let mutated = false;
+        const createWriter: CsvRowWriterFactory = (csvPath, header) => {
+          const writer = new BufferedCsvRowWriter(csvPath, header);
+          if (csvPath.endsWith('/function.csv')) {
+            const addRow = writer.addRow.bind(writer);
+            writer.addRow = async (row) => {
+              await addRow(row);
+              if (!mutated) {
+                mutated = true;
+                await fs.appendFile(fullPath, '// mutation between snippets\n');
+              }
+            };
+          }
+          return writer;
+        };
+        await expect(streamAllCSVsToDisk(graph, repoDir, csvDir, { createWriter })).rejects.toThrow(
+          `CSV source changed: ${filePath}`,
+        );
+        expect(mutated).toBe(true);
+        expect((await fs.readdir('/proc/self/fd')).length).toBe(baseline);
+      }
+    },
+  );
+
+  it('preserves emission order for late interleaved overlapping snippets without graph.nodes', async () => {
+    const contents = new Map([
+      [
+        'src/interleave-a.ts',
+        'a'.repeat(5 * 1024 * 1024) +
+          '\n' +
+          Array.from({ length: 90 }, (_, i) => `a${i}😀\r`).join('\n') +
+          '\n',
+      ],
+      [
+        'src/interleave-b.ts',
+        'b'.repeat(5 * 1024 * 1024) +
+          '\n' +
+          Array.from({ length: 90 }, (_, i) => `b${i}`).join('\n'),
+      ],
+    ]);
+    for (const [file, content] of contents) await fs.writeFile(path.join(repoDir, file), content);
+    const inputs = [
+      { filePath: 'src/interleave-a.ts', startLine: 87, endLine: 89 },
+      { filePath: 'src/interleave-b.ts', startLine: 70, endLine: 70 },
+      { filePath: 'src/interleave-a.ts', startLine: 86, endLine: 88 },
+      { filePath: 'src/interleave-a.ts', startLine: 1, endLine: 1 },
+    ].map((input, i) => ({
+      ...input,
+      id: `Function:${i}`,
+      label: 'Function' as const,
+      name: `symbol${i}`,
+    }));
+    const graph = buildTestGraph(inputs);
+    Object.defineProperty(graph, 'nodes', {
+      get() {
+        throw new Error('graph.nodes must not materialize');
+      },
+    });
+    vi.stubEnv('ONTOINDEX_MAX_SNIPPET_CHARS', '40');
+    const fullRead = vi.spyOn(fs, 'readFile');
+    try {
+      const result = await streamAllCSVsToDisk(graph, repoDir, csvDir);
+      expect(fullRead).not.toHaveBeenCalled();
+      fullRead.mockRestore();
+      const expected = inputs
+        .map((node) => {
+          let snippet = contents
+            .get(node.filePath)!
+            .split('\n')
+            .slice(Math.max(0, node.startLine - 2), node.endLine + 3)
+            .join('\n');
+          if (snippet.length > 40) snippet = snippet.slice(0, 40) + '\n... [truncated]';
+          return (
+            [
+              escapeCSVField(node.id),
+              escapeCSVField(node.name),
+              escapeCSVField(node.filePath),
+              node.startLine,
+              node.endLine,
+              'false',
+              escapeCSVField(snippet),
+              '""',
+            ].join(',') + '\n'
+          );
+        })
+        .join('');
+      expect(await fs.readFile(result.nodeFiles.get('Function')!.csvPath, 'utf8')).toBe(
+        'id,name,filePath,startLine,endLine,isExported,content,description\n' + expected,
+      );
+    } finally {
+      fullRead.mockRestore();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('admits native node and relationship batches by bytes before creating ordinary writers', async () => {
+    const nodes = Array.from({ length: 5 }, (_, i) => ({
+      id: `Folder:${i}`,
+      label: 'Folder' as const,
+      name: `${i}`,
+      filePath: '',
+    }));
+    const relationships = nodes.slice(1).map((node) => ({
+      sourceId: nodes[0].id,
+      targetId: node.id,
+      type: 'CONTAINS' as const,
+    }));
+    const graph = buildTestGraph(nodes, relationships);
+    const ordinaryWriter = vi.fn(() => {
+      throw new Error('ordinary writer must not start');
+    });
+    const enabled = vi.spyOn(graphWriter, 'isNativeGraphWriterEnabled').mockReturnValue(true);
+    const estimate = vi
+      .spyOn(graphWriter, 'estimateNativeGraphRecordBytes')
+      .mockReturnValue(Math.floor(graphWriter.NATIVE_GRAPH_BATCH_BYTES / 2));
+    const batch = vi.spyOn(graphWriter, 'writeGraphBatch').mockResolvedValue({
+      nodeCounts: new Map(),
+      relCounts: new Map(),
+    });
+    try {
+      const result = await streamAllCSVsToDisk(graph, repoDir, csvDir, {
+        createWriter: ordinaryWriter,
+      });
+      expect(ordinaryWriter).not.toHaveBeenCalled();
+      expect(
+        batch.mock.calls.map(([, nodeBatch, relBatch]) => [nodeBatch.length, relBatch.length]),
+      ).toEqual([
+        [2, 0],
+        [2, 0],
+        [1, 0],
+        [0, 2],
+        [0, 2],
+      ]);
+      expect(result.relRows).toBe(4);
+    } finally {
+      enabled.mockRestore();
+      estimate.mockRestore();
+      batch.mockRestore();
+    }
+  });
+
   it.each([
     ['ascii', 'a'.repeat(10_000)],
     ['cjk', '漢'.repeat(10_000)],
@@ -464,6 +721,7 @@ describe('streamAllCSVsToDisk', () => {
         finish: async () => {
           writer.finished = true;
         },
+        abort: async () => undefined,
       };
     };
 
@@ -571,6 +829,139 @@ describe('streamAllCSVsToDisk', () => {
     expect(await fs.readFile(nativeResult.relCsvPath, 'utf-8')).toBe(
       await fs.readFile(tsResult.relCsvPath, 'utf-8'),
     );
+  });
+
+  it('matches decoded canonical CSV fields through the source addon graph writer', async () => {
+    const require = createRequire(import.meta.url);
+    const nativeModule = require('../../../ontoindex-native/index.cjs') as OntoIndexNativeModule;
+    expect(nativeModule.writeGraphBatchNative).toBeTypeOf('function');
+    const sourcePath = 'src/csv-parity-crlf.ts';
+    await fs.writeFile(
+      path.join(repoDir, sourcePath),
+      'export function parity() {\r\n  return "😀";\r\n}\r\n',
+    );
+    const raw = 'a\r\nb\rc\t\n😀\uFFFD\uD800x\uDC00\u0000\u000B\u007F\uFFFE\uFFFF,"\\\'';
+    const methodId = `Method:${raw}`;
+    const conceptId = `Concept:${raw}`;
+    const graph = buildTestGraph([
+      {
+        id: 'Function:crlf',
+        label: 'Function',
+        name: 'parity',
+        filePath: sourcePath,
+        startLine: 1,
+        endLine: 3,
+        isExported: true,
+      },
+      {
+        id: methodId,
+        label: 'Method',
+        name: raw,
+        filePath: '',
+        startLine: 0,
+        endLine: 0,
+        extra: {
+          description: raw,
+          returnType: raw,
+          declarationFilePath: 123,
+          definitionFilePath: raw,
+          declarationStartLine: '4',
+          declarationEndLine: 0,
+          definitionStartLine: NaN,
+          definitionEndLine: false,
+        },
+      },
+      {
+        id: 'Method:missing',
+        label: 'Method',
+        name: '',
+        filePath: '',
+      },
+      {
+        id: conceptId,
+        label: 'Concept',
+        name: raw,
+        filePath: raw,
+        extra: {
+          aliases: [raw, '', 1, null, '\u0000'],
+          sourceDocuments: [raw],
+          sourceFactKeys: false,
+          resolutionKeys: ['\uFFFF'],
+          authority: '\u0000',
+          confidence: '\u000B',
+          evidenceClass: '\uFFFE',
+          freshness: '\uFFFF',
+        },
+      },
+      {
+        id: 'Concept:defaults',
+        label: 'Concept',
+        name: '',
+        filePath: '',
+        extra: { authority: false, confidence: '', evidenceClass: 4, freshness: null },
+      },
+      { id: 'Concept:missing', label: 'Concept', name: '', filePath: '' },
+    ]);
+    graph.addRelationship({
+      id: 'parity:rel',
+      sourceId: methodId,
+      targetId: conceptId,
+      type: `CALLS${raw}` as any,
+      confidence: null as any,
+      reason: raw,
+      step: null as any,
+    });
+    const tsDir = path.join(tmpHandle.dbPath, 'csv-parity-ts');
+    const nativeDir = path.join(tmpHandle.dbPath, 'csv-parity-native');
+    const canonicalMode = vi
+      .spyOn(graphWriter, 'isNativeGraphWriterEnabled')
+      .mockReturnValue(false);
+    let canonical: Awaited<ReturnType<typeof streamAllCSVsToDisk>>;
+    try {
+      canonical = await streamAllCSVsToDisk(graph, repoDir, tsDir, {
+        createWriter: (csvPath, header) => new BufferedCsvRowWriter(csvPath, header),
+      });
+    } finally {
+      canonicalMode.mockRestore();
+    }
+    const writeGraphBatch = graphWriter.writeGraphBatch;
+    const nativeMode = vi.spyOn(graphWriter, 'isNativeGraphWriterEnabled').mockReturnValue(true);
+    const sourceAddon = vi
+      .spyOn(graphWriter, 'writeGraphBatch')
+      .mockImplementation((directory, nodes, relationships) =>
+        writeGraphBatch(directory, nodes, relationships, {
+          env: { ONTOINDEX_NATIVE_GRAPH_WRITER: '1' },
+          nativeModule,
+        }),
+      );
+    try {
+      await streamAllCSVsToDisk(graph, repoDir, nativeDir);
+      expect(sourceAddon).toHaveBeenCalled();
+    } finally {
+      sourceAddon.mockRestore();
+      nativeMode.mockRestore();
+    }
+    for (const label of ['Function', 'Method', 'Concept'] as const) {
+      expect(
+        decodeCsv(await fs.readFile(path.join(nativeDir, `nodes_${label}.csv`), 'utf8')),
+      ).toEqual(decodeCsv(await fs.readFile(canonical.nodeFiles.get(label)!.csvPath, 'utf8')));
+    }
+    const nativeRelationships = decodeCsv(
+      await fs.readFile(path.join(nativeDir, 'rels_Method_to_Concept.csv'), 'utf8'),
+    );
+    const canonicalRelationships = decodeCsv(await fs.readFile(canonical.relCsvPath, 'utf8'));
+    expect(nativeRelationships.slice(1)).toEqual(canonicalRelationships.slice(1));
+    const concepts = decodeCsv(
+      await fs.readFile(canonical.nodeFiles.get('Concept')!.csvPath, 'utf8'),
+    );
+    expect(concepts[1].slice(7)).toEqual(['', '', '', '']);
+    expect(concepts[1][6]).toBe("['']");
+    expect(concepts[2].slice(7)).toEqual(['advisory', 'low', 'docs_evidence', 'unknown']);
+    const functions = decodeCsv(
+      await fs.readFile(canonical.nodeFiles.get('Function')!.csvPath, 'utf8'),
+    );
+    expect(functions[1][5]).toBe('true');
+    expect(functions[1][6]).toBe('export function parity() {\n  return "😀";\n}\n');
   });
 
   // ─── Const node isExported ───────────────────────────────────────────

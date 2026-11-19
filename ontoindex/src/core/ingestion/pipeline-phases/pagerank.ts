@@ -54,7 +54,6 @@ export const pageRankPhase: PipelinePhase = {
       }
     });
 
-    console.log(`[pageRank] Computed importance for ${nodesUpdated} nodes.`);
     return { status: 'success', stats: { nodesUpdated } };
   },
 };

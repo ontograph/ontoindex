@@ -481,6 +481,7 @@ export const isHardcodedIgnoredDirectory = (name: string): boolean => {
  * Returns an `ignore` instance with all patterns, or null if no files found.
  */
 interface IgnoreOptions {
+  readFile?: (relativePath: string, maxBytes?: number) => Promise<Buffer>;
   /** Skip .gitignore parsing, only read .ontoindexignore. Defaults to ONTOINDEX_NO_GITIGNORE env var. */
   noGitignore?: boolean;
 }
@@ -514,12 +515,15 @@ export const loadIgnoreRules = async (
 
   for (const filename of filenames) {
     try {
-      const content = await readIgnoreFile(nodePath.join(repoPath, filename));
+      const content = options?.readFile
+        ? (await options.readFile(filename)).toString('utf8')
+        : await readIgnoreFile(nodePath.join(repoPath, filename));
       ig.add(content);
       hasRules = true;
     } catch (err: unknown) {
       const code = (err as NodeJS.ErrnoException).code;
       if (code !== 'ENOENT') {
+        if (options?.readFile) throw err;
         console.warn(`  Warning: could not read ${filename}: ${(err as Error).message}`);
       }
     }

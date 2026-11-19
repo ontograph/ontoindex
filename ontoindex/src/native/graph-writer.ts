@@ -1,9 +1,75 @@
 import { GraphNode, GraphRelationship } from 'ontoindex-shared';
 import { createRequire } from 'module';
 import { isNativeFeatureEnabled, type OntoIndexNativeModule } from './module.js';
+import { sanitizeUTF8 } from '../core/lbug/csv-sanitize.js';
 const require = createRequire(import.meta.url);
 
 let nativeModule: OntoIndexNativeModule | null = null;
+
+export const NATIVE_GRAPH_BATCH_BYTES = 64 * 1024 * 1024;
+const NATIVE_GRAPH_BATCH_COUNT = 1000;
+
+function estimatePropertyBytes(value: unknown): number {
+  if (value === null || value === undefined) return 0;
+  if (Array.isArray(value)) {
+    let bytes = 2;
+    for (const item of value) {
+      if (item !== null && item !== undefined) {
+        bytes += (typeof item === 'string' ? item.length : String(item).length) * 12 + 32;
+      }
+    }
+    return bytes;
+  }
+  // UTF-8, array quoting/backslash expansion and CSV quote escaping, without
+  // allocating an escaped copy of large content strings.
+  return (typeof value === 'string' ? value.length : String(value).length) * 12 + 16;
+}
+
+/** Conservative admission estimate; one oversized record is written alone.
+ * The input record and its largest scalar conversion remain a single-object
+ * residual, including explicit uncapped File content.
+ */
+export function estimateNativeGraphRecordBytes(record: GraphNode | GraphRelationship): number {
+  let bytes = 128;
+  if ('properties' in record) {
+    bytes +=
+      estimatePropertyBytes(record.id) +
+      estimatePropertyBytes(record.label || deriveLabel(record.id));
+    for (const key in record.properties) {
+      if (Object.prototype.hasOwnProperty.call(record.properties, key)) {
+        bytes += estimatePropertyBytes(key) + estimatePropertyBytes(record.properties[key]) + 32;
+      }
+    }
+  } else {
+    bytes +=
+      estimatePropertyBytes(record.sourceId) +
+      estimatePropertyBytes(record.targetId) +
+      estimatePropertyBytes(deriveLabel(record.sourceId)) +
+      estimatePropertyBytes(deriveLabel(record.targetId)) +
+      estimatePropertyBytes(record.type) +
+      estimatePropertyBytes(record.reason) +
+      estimatePropertyBytes(record.confidence) +
+      estimatePropertyBytes(record.step ?? 0) +
+      128;
+  }
+  return bytes;
+}
+
+function serializedRecordBytes(record: Record<string, string | Record<string, string>>): number {
+  let bytes = 128;
+  for (const key in record) {
+    bytes += Buffer.byteLength(key) * 2 + 32;
+    const value = record[key];
+    if (typeof value === 'string') {
+      bytes += Buffer.byteLength(value) * 2;
+    } else {
+      for (const property in value) {
+        bytes += (Buffer.byteLength(property) + Buffer.byteLength(value[property])) * 2 + 32;
+      }
+    }
+  }
+  return bytes;
+}
 
 export interface GraphWriterRuntime {
   env?: NodeJS.ProcessEnv;
@@ -20,15 +86,17 @@ export interface NativeGraphWriterStatus {
 
 function serializeNativeProperty(value: unknown): string {
   if (Array.isArray(value)) {
-    return `[${value
-      .filter((item): item is string | number | boolean => item !== null && item !== undefined)
-      .map((item) => `'${String(item).replace(/\\/g, '\\\\').replace(/'/g, "''")}'`)
-      .join(',')}]`;
+    return sanitizeUTF8(
+      `[${value
+        .filter((item): item is string | number | boolean => item !== null && item !== undefined)
+        .map((item) => `'${String(item).replace(/\\/g, '\\\\').replace(/'/g, "''")}'`)
+        .join(',')}]`,
+    );
   }
   if (value === undefined || value === null) {
     return '';
   }
-  return String(value);
+  return sanitizeUTF8(String(value));
 }
 
 try {
@@ -74,45 +142,111 @@ export async function writeGraphBatch(
   const selectedNativeModule = 'nativeModule' in runtime ? runtime.nativeModule : nativeModule;
 
   if (isNativeGraphWriterEnabled(runtime) && selectedNativeModule?.writeGraphBatchNative) {
-    try {
-      // 1. Prepare Nodes for Native
-      const nativeNodes = nodes.map((node) => {
-        const label = node.label || deriveLabel(node.id);
-        nodeCounts.set(label, (nodeCounts.get(label) || 0) + 1);
-        return {
-          id: node.id,
-          label,
-          properties: Object.fromEntries(
-            Object.entries(node.properties).map(([k, v]) => [k, serializeNativeProperty(v)]),
-          ),
-        };
-      });
+    const writeNative = selectedNativeModule.writeGraphBatchNative.bind(selectedNativeModule);
+    let nativeNodes: { id: string; label: string; properties: Record<string, string> }[] = [];
+    let nativeRels: {
+      fromId: string;
+      toId: string;
+      relType: string;
+      fromLabel: string;
+      toLabel: string;
+      properties: Record<string, string>;
+    }[] = [];
+    let batchBytes = 0;
+    const flush = () => {
+      if (nativeNodes.length + nativeRels.length === 0) return;
+      writeNative(csvDir, nativeNodes, nativeRels);
+      nativeNodes = [];
+      nativeRels = [];
+      batchBytes = 0;
+    };
+    const admit = (bytes: number) => {
+      if (
+        nativeNodes.length + nativeRels.length >= NATIVE_GRAPH_BATCH_COUNT ||
+        batchBytes + bytes > NATIVE_GRAPH_BATCH_BYTES
+      )
+        flush();
+    };
 
-      // 2. Prepare Relationships for Native
-      const nativeRels = relationships.map((rel) => {
-        const fromLabel = deriveLabel(rel.sourceId);
-        const toLabel = deriveLabel(rel.targetId);
-        const pairKey = `${fromLabel}|${toLabel}`;
-        relCounts.set(pairKey, (relCounts.get(pairKey) || 0) + 1);
-        return {
-          fromId: rel.sourceId,
-          toId: rel.targetId,
-          relType: rel.type,
-          fromLabel,
-          toLabel,
-          properties: {
-            confidence: String(rel.confidence),
-            reason: rel.reason,
-            step: rel.step !== undefined ? String(rel.step) : '0',
-          },
-        };
-      });
-
-      selectedNativeModule.writeGraphBatchNative(csvDir, nativeNodes, nativeRels);
-      return { nodeCounts, relCounts };
-    } catch (e) {
-      console.warn('[native] Native graph batch write failed, falling back:', e);
+    for (const node of nodes) {
+      admit(estimateNativeGraphRecordBytes(node));
+      const label = node.label || deriveLabel(node.id);
+      const properties: Record<string, string> = Object.create(null);
+      for (const key in node.properties) {
+        if (Object.prototype.hasOwnProperty.call(node.properties, key)) {
+          let value: unknown = node.properties[key];
+          if (label === 'Concept') {
+            if (['aliases', 'sourceDocuments', 'sourceFactKeys', 'resolutionKeys'].includes(key)) {
+              value = Array.isArray(value)
+                ? value.filter((item) => typeof item === 'string' && item.length > 0)
+                : [];
+            } else if (['authority', 'confidence', 'evidenceClass', 'freshness'].includes(key)) {
+              const defaults: Record<string, string> = {
+                authority: 'advisory',
+                confidence: 'low',
+                evidenceClass: 'docs_evidence',
+                freshness: 'unknown',
+              };
+              value = typeof value === 'string' && value.length > 0 ? value : defaults[key];
+            }
+          }
+          if (label === 'Method') {
+            if (['declarationFilePath', 'definitionFilePath'].includes(key)) {
+              value = typeof value === 'string' ? value : '';
+            } else if (
+              [
+                'declarationStartLine',
+                'declarationEndLine',
+                'definitionStartLine',
+                'definitionEndLine',
+              ].includes(key)
+            ) {
+              value = typeof value === 'number' ? value : -1;
+            }
+          }
+          properties[key] = serializeNativeProperty(value);
+        }
+      }
+      const nativeNode = {
+        id: sanitizeUTF8(node.id),
+        label,
+        properties,
+      };
+      const bytes = serializedRecordBytes(nativeNode);
+      admit(bytes);
+      nativeNodes.push(nativeNode);
+      batchBytes += bytes;
+      nodeCounts.set(label, (nodeCounts.get(label) || 0) + 1);
+      if (batchBytes >= NATIVE_GRAPH_BATCH_BYTES) flush();
     }
+
+    for (const rel of relationships) {
+      admit(estimateNativeGraphRecordBytes(rel));
+      const fromLabel = deriveLabel(rel.sourceId);
+      const toLabel = deriveLabel(rel.targetId);
+      const pairKey = `${fromLabel}|${toLabel}`;
+      const nativeRel = {
+        fromId: sanitizeUTF8(rel.sourceId),
+        toId: sanitizeUTF8(rel.targetId),
+        relType: sanitizeUTF8(rel.type),
+        fromLabel,
+        toLabel,
+        properties: {
+          confidence: String(rel.confidence ?? 1.0),
+          reason: sanitizeUTF8(rel.reason ?? ''),
+          step: String(rel.step ?? 0),
+        },
+      };
+      const bytes = serializedRecordBytes(nativeRel);
+      admit(bytes);
+      nativeRels.push(nativeRel);
+      batchBytes += bytes;
+      relCounts.set(pairKey, (relCounts.get(pairKey) || 0) + 1);
+      if (batchBytes >= NATIVE_GRAPH_BATCH_BYTES) flush();
+    }
+
+    flush();
+    return { nodeCounts, relCounts };
   }
 
   // Fallback: Pure TS (no-op for now)

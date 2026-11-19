@@ -10,6 +10,51 @@ import {
 import { SupportedLanguages } from 'ontoindex-shared';
 
 describe('filesystem-walker', () => {
+  it('uses the secure reader for bounded shebang probes and ignore rules', async () => {
+    const repo = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-walker-secure-'));
+    try {
+      await fs.writeFile(path.join(repo, 'tool'), '#!/bin/bash\n');
+      await fs.writeFile(path.join(repo, 'skip.ts'), 'skip');
+      const readFile = vi.fn(async (relativePath: string, maxBytes?: number) => {
+        if (relativePath === '.gitignore') return Buffer.from('skip.ts\n');
+        if (relativePath === '.ontoindexignore') return Buffer.alloc(0);
+        expect(relativePath).toBe('tool');
+        expect(maxBytes).toBe(256);
+        return Buffer.from('#!/usr/bin/env python3\n');
+      });
+      const files = await walkRepositoryPaths(repo, undefined, { readFile });
+      expect(files).toEqual([
+        expect.objectContaining({ path: 'tool', shebangLanguage: SupportedLanguages.Python }),
+      ]);
+      expect(readFile).toHaveBeenCalledWith('.ontoindexignore');
+    } finally {
+      await fs.rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('reports failed secure shebang reads without falling back to pathname reads', async () => {
+    const repo = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-walker-secure-'));
+    const error = new Error('unsafe script');
+    try {
+      await fs.writeFile(path.join(repo, 'tool'), '#!/usr/bin/env python3\n');
+      const onUnreadableFile = vi.fn();
+      const files = await walkRepositoryPaths(repo, undefined, {
+        readFile: async (relativePath) => {
+          if (relativePath === 'tool') throw error;
+          return Buffer.alloc(0);
+        },
+        onUnreadableFile,
+      });
+      expect(files).toEqual([]);
+      expect(onUnreadableFile).toHaveBeenCalledWith(
+        { path: 'tool', size: 0, degraded: true },
+        error,
+      );
+    } finally {
+      await fs.rm(repo, { recursive: true, force: true });
+    }
+  });
+
   let tmpDir: string;
 
   beforeAll(async () => {

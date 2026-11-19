@@ -81,15 +81,22 @@ describe('native file lock wrapper', () => {
 
   it('rejects unsupported platforms before loading native code', async () => {
     const load = vi.spyOn(nativeModule, 'loadOntoIndexNativeModule');
-    const descriptor = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    const archDescriptor = Object.getOwnPropertyDescriptor(process, 'arch')!;
     try {
-      Object.defineProperty(process, 'platform', { ...descriptor, value: 'unsupported' });
+      Object.defineProperty(process, 'platform', { ...platformDescriptor, value: 'darwin' });
+      Object.defineProperty(process, 'arch', { ...archDescriptor, value: 'x64' });
       await expect(acquireNativeFileLock('/unsupported')).rejects.toThrow(
-        'Native file locking requires Linux: /unsupported',
+        'Native file locking requires Linux or Apple Silicon macOS: /unsupported',
+      );
+      Object.defineProperty(process, 'platform', { ...platformDescriptor, value: 'unsupported' });
+      await expect(acquireNativeFileLock('/unsupported')).rejects.toThrow(
+        'Native file locking requires Linux or Apple Silicon macOS: /unsupported',
       );
       expect(load).not.toHaveBeenCalled();
     } finally {
-      Object.defineProperty(process, 'platform', descriptor);
+      Object.defineProperty(process, 'platform', platformDescriptor);
+      Object.defineProperty(process, 'arch', archDescriptor);
     }
   });
 

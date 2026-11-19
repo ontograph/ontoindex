@@ -10,6 +10,7 @@ import { SupportedLanguages } from 'ontoindex-shared';
 import { createParserForLanguage } from '../../src/core/tree-sitter/parser-loader.js';
 import { loadAnalysisCatalog } from '../../src/analysis-packs/catalog.js';
 import * as gitProcess from '../../src/core/process/exec-file.js';
+import * as nativeModule from '../../src/native/module.js';
 import { workspaceBuildExitCode } from '../../src/mcp/local/workspace-build-supervisor.js';
 
 vi.mock('../../src/core/process/exec-file.js', async (importOriginal) => ({
@@ -99,6 +100,70 @@ afterEach(async () => {
 });
 
 describe('workspace input capture', () => {
+  it('retries a transient native refusal during extensionless shebang scanning', async () => {
+    const root = await makeRepo();
+    await fs.writeFile(path.join(root, 'src/tool'), '#!/usr/bin/env python\nprint(1)\n');
+    const open = nativeModule.openRootedFile;
+    let refused = false;
+    vi.spyOn(nativeModule, 'openRootedFile').mockImplementation(async (handle, filename) => {
+      if (filename === 'src/tool' && !refused) {
+        refused = true;
+        throw new Error('transient rooted open refusal');
+      }
+      return open(handle, filename);
+    });
+    const beforeRead = vi.fn();
+    const result = await capture(root, { hooks: { beforeRead } });
+    expect(refused).toBe(true);
+    expect(result.capturedPaths).toContain('src/tool');
+    expect(beforeRead.mock.calls.every(([, attempt]) => attempt === 2)).toBe(true);
+  });
+
+  it.each(['capture', 'identity'] as const)(
+    'fails closed when native rooted access is unavailable for %s',
+    async (reader) => {
+      const root = await makeRepo();
+      const load = vi.spyOn(nativeModule, 'loadOntoIndexNativeModule');
+      for (const kind of ['module', 'export', 'syscall']) {
+        if (kind === 'module') load.mockRejectedValue(new Error('private/path/addon missing'));
+        else if (kind === 'export') load.mockResolvedValue({});
+        else
+          load.mockResolvedValue({
+            openRootedDirectory: () => {
+              throw new Error('private/path ENOSYS');
+            },
+          });
+        const action = reader === 'capture' ? capture(root) : workspaceConfigurationIdentity(root);
+        await expect(action).rejects.toMatchObject({
+          code: 'unsupported',
+          message: expect.stringContaining('Secure workspace input access is unavailable'),
+        });
+        expect(
+          await pendingCaptures(root).catch((error: NodeJS.ErrnoException) => {
+            if (error.code !== 'ENOENT') throw error;
+            return [];
+          }),
+        ).toEqual([]);
+      }
+    },
+  );
+
+  it('uses canonical roots for capture and configuration aliases', async () => {
+    const root = await makeRepo();
+    const aliasParent = await fs.mkdtemp(path.join(os.tmpdir(), 'capture-alias-'));
+    roots.push(aliasParent);
+    const alias = path.join(aliasParent, 'repo');
+    await fs.symlink(root, alias);
+    const native = await nativeModule.loadOntoIndexNativeModule();
+    const open = vi.spyOn(native, 'openRootedDirectory');
+    const baseline = await workspaceConfigurationIdentity(root);
+    expect(await workspaceConfigurationIdentity(alias)).toEqual(baseline);
+    const result = await capture(alias);
+    expect(result.canonicalRepoPath).toBe(await fs.realpath(root));
+    expect(open.mock.calls.every(([filename]) => filename !== alias)).toBe(true);
+    expect(open.mock.calls.some(([filename]) => filename === result.canonicalRepoPath)).toBe(true);
+  });
+
   it.each(['ELOOP', 'ENXIO', 'EISDIR', 'ENOTDIR', 'ENAMETOOLONG'])(
     'retries an injected %s that occurs only on the first attempt',
     async (code) => {

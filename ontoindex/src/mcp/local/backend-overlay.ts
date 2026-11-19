@@ -7,7 +7,8 @@
  * "no callers" or "zero impact".
  */
 import fs from 'node:fs/promises';
-import { constants, readFileSync, realpathSync } from 'node:fs';
+import { closeSync, createReadStream, readFileSync, realpathSync } from 'node:fs';
+import { finished } from 'node:stream/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { AsyncLocalStorage } from 'node:async_hooks';
@@ -29,33 +30,40 @@ import { walkRepositoryPaths } from '../../core/ingestion/filesystem-walker.js';
 import { LbugOpenError } from '../../core/lbug/open-error.js';
 import { digestDatabaseFile } from '../../core/lbug/database-digest.js';
 import {
+  loadOntoIndexNativeModule,
+  openRootedFile,
+  type NativeRootedDirectory,
+} from '../../native/module.js';
+import {
   acquireOverlayGenerationPin,
   readActiveGenerationMeta,
 } from '../../storage/repo-manager.js';
 
-async function readRegularFileDigest(root: string, rel: string): Promise<string | null> {
-  const filename = path.join(root, rel);
-  const beforeOpen = await fs.lstat(filename);
-  let handle;
+async function readRegularFileDigest(
+  root: NativeRootedDirectory,
+  rel: string,
+): Promise<string | null> {
+  let fd: number;
   try {
-    handle = await fs.open(
-      filename,
-      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
-    );
+    fd = root.openRegularFile(rel);
+  } catch {
+    return null;
+  }
+  let stream;
+  try {
+    stream = createReadStream('', { fd, autoClose: true, highWaterMark: 64 * 1024 });
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ELOOP') return null;
+    closeSync(fd);
     throw error;
   }
+  const closed = finished(stream).catch(() => {});
   try {
-    const stat = await handle.stat();
-    if (!stat.isFile() || stat.dev !== beforeOpen.dev || stat.ino !== beforeOpen.ino) return null;
-    const parent = path.dirname(filename);
-    if ((await fs.realpath(parent)) !== parent) return null;
-    return createHash('sha256')
-      .update(await handle.readFile())
-      .digest('hex');
+    const hash = createHash('sha256');
+    for await (const chunk of stream) hash.update(chunk);
+    return hash.digest('hex');
   } finally {
-    await handle.close();
+    stream.destroy();
+    await closed;
   }
 }
 
@@ -634,114 +642,169 @@ async function computeSnapshot(
     validatedConfiguration = identity;
   }
   let canonicalRepoPath: string | undefined;
-  if (workspaceGraph) {
-    const inventory = (
-      recordedBase as { inventory?: Record<string, [number, number | null, number | null, string]> }
-    ).inventory;
-    if (!inventory || typeof inventory !== 'object' || Array.isArray(inventory)) {
-      return { ...base, usable: false, reason: 'workspace graph has no input inventory; rebuild' };
-    }
-    try {
-      canonicalRepoPath ??= await fs.realpath(repo.repoPath);
-      const root = canonicalRepoPath;
-      let unreadable = false;
-      const scanned = await walkRepositoryPaths(repo.repoPath, undefined, {
-        onUnreadableFile: () => {
-          unreadable = true;
-        },
-      });
-      if (unreadable)
-        return { ...base, usable: false, reason: 'workspace graph has unreadable inputs; rebuild' };
-      // Configuration eligibility is checked by workspaceConfigurationIdentity above;
-      // those inputs are also retained here for stat/content validation.
-      const current = new Set(scanned.map((entry) => entry.path));
-      for (const rel of Object.keys(inventory)) {
-        if (
-          isResolverConfigPath(rel) &&
-          (await fs.lstat(path.join(repo.repoPath, rel)).catch(() => null)) &&
-          (await captureReadPath(canonicalRepoPath, rel, true))
-        )
-          current.add(rel);
-      }
-      const changedPaths = [...current].filter((rel) => !Object.hasOwn(inventory, rel));
-      changedPaths.push(...Object.keys(inventory).filter((rel) => !current.has(rel)));
-      if (changedPaths.length)
+  let rootedDirectory: NativeRootedDirectory | undefined;
+  try {
+    if (workspaceGraph || overlayPaths.size > 0) {
+      try {
+        canonicalRepoPath = await fs.realpath(repo.repoPath);
+        const native = await loadOntoIndexNativeModule();
+        if (!native.openRootedDirectory) throw new Error('rooted file access unavailable');
+        rootedDirectory = native.openRootedDirectory(canonicalRepoPath);
+      } catch (failureCause) {
         return {
           ...base,
           usable: false,
-          reason: `workspace graph input paths changed: ${changedPaths.slice(0, 5).join(', ')}; rebuild`,
+          failureCause,
+          reason:
+            'Secure workspace input access is unavailable; install the native addon with rooted file access support',
         };
-      const currentPaths = [...current];
-      for (let offset = 0; offset < currentPaths.length; offset += 4) {
-        const results = await Promise.allSettled(
-          currentPaths.slice(offset, offset + 4).map(async (rel) => {
-            const recorded = inventory[rel];
-            if (
-              !Array.isArray(recorded) ||
-              recorded.length !== 4 ||
-              typeof recorded[3] !== 'string'
-            ) {
-              return {
+      }
+    }
+    if (workspaceGraph) {
+      const inventory = (
+        recordedBase as {
+          inventory?: Record<string, [number, number | null, number | null, string]>;
+        }
+      ).inventory;
+      if (!inventory || typeof inventory !== 'object' || Array.isArray(inventory)) {
+        return {
+          ...base,
+          usable: false,
+          reason: 'workspace graph has no input inventory; rebuild',
+        };
+      }
+      try {
+        canonicalRepoPath ??= await fs.realpath(repo.repoPath);
+        const root = canonicalRepoPath;
+        let unreadable = false;
+        const scanned = await walkRepositoryPaths(root, undefined, {
+          readFile: async (relativePath, maxBytes) => {
+            // Preserve ENOENT for optional ignore files; native failures lack errno.
+            const before = await fs.lstat(path.join(root, relativePath));
+            const handle = await openRootedFile(rootedDirectory!, relativePath);
+            try {
+              const stat = await handle.stat();
+              if (before.dev !== stat.dev || before.ino !== stat.ino)
+                throw new Error('Workspace input identity changed during inventory read');
+              const content = Buffer.alloc(
+                maxBytes === undefined ? stat.size + 1 : Math.min(stat.size, maxBytes),
+              );
+              let length = 0;
+              while (length < content.length) {
+                const result = await handle.read(content, length, content.length - length, null);
+                if (result.bytesRead === 0) break;
+                length += result.bytesRead;
+              }
+              if (length !== (maxBytes === undefined ? stat.size : Math.min(stat.size, maxBytes)))
+                throw new Error('Workspace input changed during inventory read');
+              return content.subarray(0, length);
+            } finally {
+              await handle.close();
+            }
+          },
+          onUnreadableFile: () => {
+            unreadable = true;
+          },
+        });
+        if (unreadable)
+          return {
+            ...base,
+            usable: false,
+            reason: 'workspace graph has unreadable inputs; rebuild',
+          };
+        // Configuration eligibility is checked by workspaceConfigurationIdentity above;
+        // those inputs are also retained here for stat/content validation.
+        const current = new Set(scanned.map((entry) => entry.path));
+        for (const rel of Object.keys(inventory)) {
+          if (
+            isResolverConfigPath(rel) &&
+            (await fs.lstat(path.join(repo.repoPath, rel)).catch(() => null)) &&
+            (await captureReadPath(canonicalRepoPath, rel, true))
+          )
+            current.add(rel);
+        }
+        const changedPaths = [...current].filter((rel) => !Object.hasOwn(inventory, rel));
+        changedPaths.push(...Object.keys(inventory).filter((rel) => !current.has(rel)));
+        if (changedPaths.length)
+          return {
+            ...base,
+            usable: false,
+            reason: `workspace graph input paths changed: ${changedPaths.slice(0, 5).join(', ')}; rebuild`,
+          };
+        const currentPaths = [...current];
+        for (let offset = 0; offset < currentPaths.length; offset += 4) {
+          const results = await Promise.allSettled(
+            currentPaths.slice(offset, offset + 4).map(async (rel) => {
+              const recorded = inventory[rel];
+              if (
+                !Array.isArray(recorded) ||
+                recorded.length !== 4 ||
+                typeof recorded[3] !== 'string'
+              ) {
+                return {
+                  rel,
+                  digest: null,
+                  reason: `workspace graph has malformed inventory for ${rel}; rebuild`,
+                };
+              }
+              const filename = isResolverConfigPath(rel)
+                ? await captureReadPath(canonicalRepoPath, rel, true)
+                : path.join(repo.repoPath, rel);
+              const notRegular = {
                 rel,
                 digest: null,
-                reason: `workspace graph has malformed inventory for ${rel}; rebuild`,
+                reason: `workspace graph input is not a regular file: ${rel}; rebuild`,
               };
-            }
-            const filename = isResolverConfigPath(rel)
-              ? await captureReadPath(canonicalRepoPath, rel, true)
-              : path.join(repo.repoPath, rel);
-            const notRegular = {
-              rel,
-              digest: null,
-              reason: `workspace graph input is not a regular file: ${rel}; rebuild`,
-            };
-            if (!filename) return notRegular;
-            const digest = await readRegularFileDigest(
-              root,
-              isResolverConfigPath(rel) ? path.relative(root, filename) : rel,
-            );
-            if (digest === null) return notRegular;
-            return {
-              rel,
-              digest,
-              reason:
-                digest !== recorded[3]
-                  ? `overlay is stale for ${rel}; rebuild: ontoindex analyze --dirty-overlay`
-                  : null,
-            };
-          }),
-        );
-        for (const result of results) {
-          if (result.status === 'rejected') throw result.reason;
-          const { rel, digest, reason } = result.value;
-          if (digest !== null) validatedInputs.set(rel, digest);
-          if (reason) return { ...base, usable: false, reason };
+              if (!filename) return notRegular;
+              const digest = await readRegularFileDigest(
+                rootedDirectory!,
+                isResolverConfigPath(rel) ? path.relative(root, filename) : rel,
+              );
+              if (digest === null) return notRegular;
+              return {
+                rel,
+                digest,
+                reason:
+                  digest !== recorded[3]
+                    ? `overlay is stale for ${rel}; rebuild: ontoindex analyze --dirty-overlay`
+                    : null,
+              };
+            }),
+          );
+          for (const result of results) {
+            if (result.status === 'rejected') throw result.reason;
+            const { rel, digest, reason } = result.value;
+            if (digest !== null) validatedInputs.set(rel, digest);
+            if (reason) return { ...base, usable: false, reason };
+          }
         }
-      }
-    } catch {
-      return {
-        ...base,
-        usable: false,
-        reason: 'cannot validate workspace graph input inventory; rebuild',
-      };
-    }
-  }
-  for (const rel of overlayPaths) {
-    try {
-      canonicalRepoPath ??= await fs.realpath(repo.repoPath);
-      const digest = await readRegularFileDigest(canonicalRepoPath, rel);
-      if (digest === null) return { ...base, usable: false, reason: `cannot read ${rel}` };
-      validatedInputs.set(rel, digest);
-      if (inputs?.[rel] !== digest) {
+      } catch {
         return {
           ...base,
           usable: false,
-          reason: `overlay is stale for ${rel}; rebuild: ontoindex analyze --dirty-overlay`,
+          reason: 'cannot validate workspace graph input inventory; rebuild',
         };
       }
-    } catch {
-      return { ...base, usable: false, reason: `cannot read ${rel}` };
     }
+    for (const rel of overlayPaths) {
+      try {
+        canonicalRepoPath ??= await fs.realpath(repo.repoPath);
+        const digest = await readRegularFileDigest(rootedDirectory!, rel);
+        if (digest === null) return { ...base, usable: false, reason: `cannot read ${rel}` };
+        validatedInputs.set(rel, digest);
+        if (inputs?.[rel] !== digest) {
+          return {
+            ...base,
+            usable: false,
+            reason: `overlay is stale for ${rel}; rebuild: ontoindex analyze --dirty-overlay`,
+          };
+        }
+      } catch {
+        return { ...base, usable: false, reason: `cannot read ${rel}` };
+      }
+    }
+  } finally {
+    rootedDirectory?.close();
   }
   try {
     const failure = JSON.parse(

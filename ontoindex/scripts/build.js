@@ -22,6 +22,12 @@ const SHARED_DEST = path.join(DIST, '_shared');
 const DIST_SUPER_DISPATCH = path.join(DIST, 'mcp', 'super', 'dispatch.js');
 const LADYBUG_EXTENSIONS_VERSION = 'v0.17.0';
 const NATIVE_ROOT = path.resolve(ROOT, '..', 'ontoindex-native');
+const NATIVE_PLATFORM_DIR =
+  process.platform === 'linux'
+    ? `${process.platform}-${process.arch}`
+    : process.platform === 'darwin' && process.arch === 'arm64'
+      ? 'darwin-arm64'
+      : null;
 const NATIVE_ARTIFACTS = [
   'index.cjs',
   'native.cjs',
@@ -36,8 +42,7 @@ const nativeArtifactReady = (artifact) => {
   }
 };
 // Cargo owns freshness, including source changes behind an existing gitignored addon.
-// Native file locking is Linux-only, so other platforms skip the build.
-if (process.platform === 'linux') {
+if (NATIVE_PLATFORM_DIR) {
   console.log('[build] building ontoindex-native (cargo build --release)...');
   execSync('npm run build', {
     cwd: NATIVE_ROOT,
@@ -54,7 +59,8 @@ if (process.platform === 'linux') {
     stdio: 'inherit',
   });
 }
-const NATIVE_AVAILABLE = NATIVE_ARTIFACTS.every(nativeArtifactReady);
+const NATIVE_AVAILABLE =
+  NATIVE_PLATFORM_DIR !== null && NATIVE_ARTIFACTS.every(nativeArtifactReady);
 if (!NATIVE_AVAILABLE) {
   console.warn('[build] ontoindex-native addon unavailable on this platform; skipping it.');
 }
@@ -74,7 +80,7 @@ execSync('npx tsc', { cwd: ROOT, stdio: 'inherit' });
 if (NATIVE_AVAILABLE) {
   console.log('[build] copying native addon into dist/native/addon...');
   for (const artifact of NATIVE_ARTIFACTS) {
-    const dest = path.join(DIST, 'native', 'addon', artifact);
+    const dest = path.join(DIST, 'native', 'addon', NATIVE_PLATFORM_DIR, artifact);
     fs.mkdirSync(path.dirname(dest), { recursive: true });
     fs.copyFileSync(path.join(NATIVE_ROOT, artifact), dest);
   }
@@ -121,6 +127,9 @@ function currentLbugExtensionPlatformDir() {
   const arch = process.arch === 'x64' ? 'amd64' : process.arch;
   if (process.platform === 'linux' || process.platform === 'win32') {
     return `${process.platform}_${arch}`;
+  }
+  if (process.platform === 'darwin' && process.arch === 'arm64') {
+    return 'osx_arm64';
   }
   return null;
 }

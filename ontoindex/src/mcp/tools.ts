@@ -685,7 +685,7 @@ Output includes:
 - risk: LOW / MEDIUM / HIGH / CRITICAL
 - summary: direct callers, processes affected, modules affected
 - affected_processes: which execution flows break and at which step
-- affected_modules: which functional areas are hit (direct vs indirect)
+- affected_modules: which functional areas are hit (direct, indirect, or unknown when direct-membership classification is incomplete)
 - byDepth: all affected symbols grouped by traversal depth
 
 Depth groups:
@@ -774,7 +774,7 @@ SERVICE: optional monorepo path prefix (case-sensitive path segments). When "rep
         timeoutMs: {
           type: 'number',
           description:
-            'Wall-clock budget in milliseconds for the Phase-1 local impact leg (default 30000)',
+            'Group impact budget in milliseconds for local work and fan-out admission (default 30000). Active work is cooperatively cancelled and awaited; settlement can exceed the budget.',
           minimum: 1,
           maximum: 3600000,
         },

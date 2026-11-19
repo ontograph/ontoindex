@@ -381,8 +381,12 @@ describe.skipIf(!HAS_SELF_INDEX)('gnCanDelete', () => {
         expect(typeof caller.filePath).toBe('string');
       }
     } else {
-      // symbol not indexed — graceful DELETE-SAFE + warning
-      expect(report.verdict).toBe('DELETE-SAFE');
+      // An unresolved symbol cannot establish complete deletion evidence.
+      expect(report.verdict).toBe('CAUTION');
+      expect(report.blockers).toContainEqual({
+        type: 'incomplete-evidence',
+        detail: 'symbol resolution failed',
+      });
       expect(report.warnings.some((w) => w.includes('not in index'))).toBe(true);
     }
 

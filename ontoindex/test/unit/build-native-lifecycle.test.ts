@@ -18,9 +18,11 @@ async function runBuild(
     missingProvenance?: boolean;
     reachCopy?: boolean;
   } = {},
+  platform: NodeJS.Platform = 'linux',
+  arch = 'x64',
 ) {
   vi.resetModules();
-  vi.stubGlobal('process', { ...process, platform: 'linux' });
+  vi.stubGlobal('process', { ...process, platform, arch });
   vi.spyOn(console, 'log').mockImplementation(() => {});
   const stop = new Error(
     options.reachCopy ? 'reached shared copy' : 'reached TypeScript compilation',
@@ -63,9 +65,12 @@ async function runBuild(
   return { result, stop, execSync, execFileSync, statSync, rmSync, copyFileSync };
 }
 
-describe('Linux native build lifecycle', () => {
-  it('builds even when an existing addon is present, before TypeScript compilation', async () => {
-    const build = await runBuild();
+describe('native build lifecycle', () => {
+  it.each([
+    ['linux', 'x64'],
+    ['darwin', 'arm64'],
+  ] as const)('%s/%s builds before TypeScript compilation', async (platform, arch) => {
+    const build = await runBuild({}, platform, arch);
     await expect(build.result).rejects.toThrow(build.stop);
     expect(build.execSync.mock.calls.map(([command]) => command)).toEqual([
       'npm run build',
@@ -92,6 +97,14 @@ describe('Linux native build lifecycle', () => {
     expect(build.statSync.mock.invocationCallOrder[3]).toBeLessThan(vendoredCall);
     expect(vendoredCall).toBeLessThan(build.rmSync.mock.invocationCallOrder[0]);
     expect(vendoredCall).toBeLessThan(build.execSync.mock.invocationCallOrder[1]);
+  });
+
+  it('skips the native build on unsupported platforms', async () => {
+    const build = await runBuild({ reachCopy: true }, 'darwin', 'x64');
+    await expect(build.result).rejects.toThrow(build.stop);
+    expect(build.execSync).not.toHaveBeenCalledWith('npm run build', expect.anything());
+    expect(build.statSync).not.toHaveBeenCalled();
+    expect(build.copyFileSync).not.toHaveBeenCalled();
   });
 
   it('propagates a vendored native build failure before deleting or copying output', async () => {
@@ -128,17 +141,23 @@ describe('Linux native build lifecycle', () => {
     expect(build.copyFileSync).not.toHaveBeenCalled();
   });
 
-  it('distributes the sidecar with the native addon', async () => {
-    const build = await runBuild({ reachCopy: true });
-    await expect(build.result).rejects.toThrow(build.stop);
-    expect(build.copyFileSync).toHaveBeenCalledWith(
-      expect.stringContaining(
-        `${path.sep}ontoindex-native${path.sep}native${path.sep}build-provenance.json`,
-      ),
-      expect.stringContaining(
-        `${path.sep}dist${path.sep}native${path.sep}addon${path.sep}native${path.sep}build-provenance.json`,
-      ),
-    );
-    expect(build.copyFileSync).toHaveBeenCalledTimes(4);
-  });
+  it.each([
+    ['linux', 'x64', 'linux-x64'],
+    ['darwin', 'arm64', 'darwin-arm64'],
+  ] as const)(
+    '%s/%s distributes the sidecar in its platform directory',
+    async (platform, arch, platformDir) => {
+      const build = await runBuild({ reachCopy: true }, platform, arch);
+      await expect(build.result).rejects.toThrow(build.stop);
+      expect(build.copyFileSync).toHaveBeenCalledWith(
+        expect.stringContaining(
+          `${path.sep}ontoindex-native${path.sep}native${path.sep}build-provenance.json`,
+        ),
+        expect.stringContaining(
+          `${path.sep}dist${path.sep}native${path.sep}addon${path.sep}${platformDir}${path.sep}native${path.sep}build-provenance.json`,
+        ),
+      );
+      expect(build.copyFileSync).toHaveBeenCalledTimes(4);
+    },
+  );
 });

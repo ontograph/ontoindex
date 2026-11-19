@@ -122,8 +122,9 @@ export interface GroupImpactResult {
   };
   risk: string;
   /**
-   * Milliseconds budget applied to the **Phase 1 local impact** leg (`safeLocalImpact`).
-   * If the walk hits this wall first, expect `truncationReason: 'timeout'` and a partial `local` payload.
+   * Milliseconds budget for local impact and bridge fan-out admission. Active work
+   * receives cooperative cancellation and is awaited before cleanup, so settlement
+   * can exceed this budget. Expiry yields UNKNOWN risk and timeout truncation.
    */
   timeoutMs?: number;
   /** Present when local impact or fan-out stopped early (timeout, graph cap, etc.). */
@@ -166,6 +167,13 @@ export interface CrossRepoImpact {
   };
   by_depth: Record<string, unknown[]>;
   affected_processes: string[];
+  risk?: string;
+  error?: unknown;
+  partial?: boolean;
+  truncated?: boolean;
+  traversalComplete?: boolean;
+  warnings?: unknown;
+  budget?: unknown;
   source?: unknown;
   graphImpactAvailable?: unknown;
   targetContext?: unknown;

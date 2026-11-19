@@ -270,6 +270,41 @@ describe('isHardcodedIgnoredDirectory', () => {
 });
 
 describe('loadIgnoreRules', () => {
+  it('loads secure ignore bytes without opening pathname files', async () => {
+    const readFile = vi.fn(async (filename: string) => {
+      if (filename === '.gitignore') return Buffer.from('private.ts\n');
+      throw Object.assign(new Error('absent'), { code: 'ENOENT' });
+    });
+    const rules = await loadIgnoreRules('/nonexistent/secure-repository', {
+      noGitignore: false,
+      readFile,
+    });
+    expect(rules?.ignores('private.ts')).toBe(true);
+    expect(readFile.mock.calls).toEqual([['.gitignore'], ['.ontoindexignore']]);
+  });
+
+  it('propagates unsafe secure reads without pathname fallback', async () => {
+    const error = Object.assign(new Error('unsafe ignore'), { code: 'ELOOP' });
+    await expect(
+      loadIgnoreRules('/nonexistent/secure-repository', {
+        noGitignore: false,
+        readFile: async () => {
+          throw error;
+        },
+      }),
+    ).rejects.toBe(error);
+  });
+
+  it('treats secure ENOENT reads as absent ignore files', async () => {
+    await expect(
+      loadIgnoreRules('/nonexistent/secure-repository', {
+        readFile: async () => {
+          throw Object.assign(new Error('absent'), { code: 'ENOENT' });
+        },
+      }),
+    ).resolves.toBeNull();
+  });
+
   let tmpDir: string;
 
   beforeAll(async () => {

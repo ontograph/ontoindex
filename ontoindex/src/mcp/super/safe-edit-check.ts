@@ -7,7 +7,7 @@
  * Pure facade — no caching, no DB writes, no process-global side effects.
  *
  * Verdict matrix is DETERMINISTIC: same inputs → same verdict.
- * No randomness; recentTouchDays is computed from stored graph data, not wall-clock.
+ * Co-change recency is unknown (-1): the index does not store co-change dates.
  *
  */
 
@@ -96,6 +96,7 @@ export interface EditCheckReport {
   };
   coChangeNetwork: {
     siblings: string[];
+    /** Days since the last co-change, or -1 when recency is unavailable. */
     recentTouchDays: number;
   };
   lspRefs?: Array<{ filePath: string; line: number; column: number }>;
@@ -169,17 +170,6 @@ function editCheckFreshness(
 }
 
 type QueryRow = Record<string, unknown> & { [index: number]: unknown };
-
-type ImpactResultTuple = [
-  UpstreamResult,
-  DownstreamResult,
-  number,
-  number,
-  TestCoverageResult,
-  string[],
-  number,
-  boolean,
-];
 
 type LspReference = {
   uri?: unknown;
@@ -489,39 +479,6 @@ async function fetchCoChangeSiblings(
   }
 }
 
-/**
- * Single-call: most recent co-change date, returned as days-ago integer.
- * Returns 0 (recently touched) when no date is available — safe default.
- */
-async function fetchRecentTouchDays(
-  repoId: string,
-  filePath: string,
-  warnings: string[],
-): Promise<number> {
-  try {
-    const rows = (await executeParameterized(
-      repoId,
-      `MATCH (f:File {filePath: $path})-[r:CodeRelation {type: 'CO_CHANGED_WITH'}]-(other:File)
-       RETURN r.lastDate AS lastDate
-       ORDER BY r.lastDate DESC
-       LIMIT 1`,
-      { path: filePath },
-    )) as QueryRow[];
-    if (rows.length === 0) return 0;
-    const lastDateStr = rowString(rows[0], 'lastDate', 0);
-    if (!lastDateStr) return 0;
-    const lastDate = new Date(lastDateStr);
-    if (Number.isNaN(lastDate.getTime())) return 0;
-    return Math.floor((Date.now() - lastDate.getTime()) / (1000 * 60 * 60 * 24));
-  } catch (err) {
-    if (classifyLbugOpenError(err) === 'resource') throw err;
-    warnings.push(
-      `fetchRecentTouchDays failed: ${err instanceof Error ? err.message : String(err)}`,
-    );
-    return 0;
-  }
-}
-
 /** Single-call: whether the symbol is exported. */
 async function fetchIsExported(
   repoId: string,
@@ -579,13 +536,19 @@ function computeVerdict(
     };
   }
 
-  // CAUTION: upstream 10-100 OR no test coverage OR recently untouched (>30 days).
-  if (upstream.count >= 10 || likelihood === 'NONE' || recentTouchDays > 30) {
+  // CAUTION: upstream 10-100 OR no test coverage OR unknown/stale co-change recency.
+  if (
+    upstream.count >= 10 ||
+    likelihood === 'NONE' ||
+    recentTouchDays < 0 ||
+    recentTouchDays > 30
+  ) {
     return {
       verdict: 'CAUTION',
       reasoning: [
         upstream.count >= 10 ? `${upstream.count} upstream callers` : '',
         likelihood === 'NONE' ? 'no test coverage detected' : '',
+        recentTouchDays < 0 ? 'co-change recency unavailable' : '',
         recentTouchDays > 30 ? `last co-changed ${recentTouchDays} days ago` : '',
       ]
         .filter(Boolean)
@@ -855,6 +818,8 @@ function compactEditCheck(
     },
     verdict: report.verdict,
     reasoning: report.reasoning,
+    ...(report.basedOnReads !== undefined ? { basedOnReads: report.basedOnReads } : {}),
+    ...(report.docEvidence !== undefined ? { docEvidence: report.docEvidence } : {}),
     freshness: report.freshness ?? { authoritative: false, reason: 'target context unavailable' },
     warnings: report.warnings,
     preChecks: report.preChecks,
@@ -864,6 +829,12 @@ function compactEditCheck(
       maxDepth: 1,
       relationTypes: SAFE_EDIT_UPSTREAM_RELATION_TYPES,
       includeTests: false,
+      ...(upstream?.rawCounts
+        ? {
+            seedUids: upstream.rawCounts.seedUids,
+            classSeedExpansion: upstream.rawCounts.filters.classSeedExpansion,
+          }
+        : {}),
       partial: upstreamOmissionsUnknown,
       traversalFailed: upstream?.traversalFailed ?? true,
     },
@@ -918,7 +889,10 @@ export async function gnSafeEditCheck(
 ): Promise<
   EditCheckReport | CompactEditCheckReport | CapabilityResponseEnvelope<Record<string, unknown>>
 > {
-  const warnings: string[] = [];
+  const warnings: string[] = [
+    'Co-change recency unavailable: index does not store co-change dates.',
+  ];
+  const recentTouchDays = -1;
   const intent = params.intent ?? 'general';
   const force = params.force === true;
   const targetContext = await resolveTargetContext({
@@ -980,7 +954,7 @@ export async function gnSafeEditCheck(
         transitiveImpact: { processCount: 0, clusterCount: 0 },
       },
       testCoverage: { coveringTests: [], likelihoodOfCoverage: 'NONE' },
-      coChangeNetwork: { siblings: [], recentTouchDays: 0 },
+      coChangeNetwork: { siblings: [], recentTouchDays },
       recommendedTool: 'manual',
       preChecks: [
         {
@@ -1000,23 +974,8 @@ export async function gnSafeEditCheck(
     if (params.legacyResponse !== false) return output;
     return createEnvelopeFromLegacy({
       legacy: output as unknown as Record<string, unknown>,
-      ...(params.minimal === true ? { limits: (output as CompactEditCheckReport).limits } : {}),
       tool: 'gn_safe_edit_check',
       status: 'degraded',
-      ...(params.minimal === true
-        ? {
-            freshness: {
-              status: freshness.authoritative ? ('fresh' as const) : ('degraded' as const),
-              actionable: freshness.authoritative,
-              reason: freshness.reason,
-              ...(freshness.indexedCommit ? { indexedCommit: freshness.indexedCommit } : {}),
-              ...(freshness.headCommit ? { headCommit: freshness.headCommit } : {}),
-              ...(freshness.dirtyFileCount != null
-                ? { dirtyFileCount: freshness.dirtyFileCount }
-                : {}),
-            },
-          }
-        : {}),
       targetContext,
       capabilitiesUsed: ['symbol-graph'],
       nextTools: ['gn_find_related', 'gn_explain_module'],
@@ -1026,7 +985,9 @@ export async function gnSafeEditCheck(
 
   // --- 2. Impact analysis with bounded DB concurrency ---------------------
   const probeWarnings: string[] = [];
-  const impactResults = await runLimitedTuple<ImpactResultTuple>(
+  const impactResults = await runLimitedTuple<
+    [UpstreamResult, DownstreamResult, number, number, TestCoverageResult, string[], boolean]
+  >(
     [
       () => fetchUpstream(repoId, resolved),
       () => fetchDownstream(repoId, resolved),
@@ -1034,7 +995,6 @@ export async function gnSafeEditCheck(
       () => fetchClusterCount(repoId, resolved.nodeId, probeWarnings),
       () => findTestFiles(repoId, resolved.filePath, resolved.name),
       () => fetchCoChangeSiblings(repoId, resolved.filePath, probeWarnings),
-      () => fetchRecentTouchDays(repoId, resolved.filePath, probeWarnings),
       () => fetchIsExported(repoId, resolved.nodeId, probeWarnings),
     ],
     IMPACT_QUERY_CONCURRENCY,
@@ -1047,7 +1007,6 @@ export async function gnSafeEditCheck(
     clusterCount,
     testCoverage,
     coChangeSiblings,
-    recentTouchDays,
     isExported,
   ] = impactResults;
   warnings.push(...probeWarnings, ...upstream.warnings, ...downstream.warnings);
@@ -1206,7 +1165,6 @@ export async function gnSafeEditCheck(
 
   return createEnvelopeFromLegacy({
     legacy: output as unknown as Record<string, unknown>,
-    ...(params.minimal === true ? { limits: (output as CompactEditCheckReport).limits } : {}),
     tool: 'gn_safe_edit_check',
     status:
       verdict === 'BLOCKED'

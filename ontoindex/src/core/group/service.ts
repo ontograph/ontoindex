@@ -64,6 +64,7 @@ export interface GroupToolPort {
       relationTypes: string[];
       minConfidence: number;
       includeTests: boolean;
+      signal?: AbortSignal;
     },
   ): Promise<unknown | null>;
   context(
