@@ -8,12 +8,18 @@ const scriptUrl = new URL('../../scripts/build-vendored-natives.cjs', import.met
 const scriptDirectory = path.dirname(fileURLToPath(scriptUrl));
 const vendor = path.resolve(scriptDirectory, '../vendor');
 const runtime = path.join(vendor, 'tree-sitter');
+const typescriptParser = path.join(vendor, 'tree-sitter-typescript');
 const artifact = path.join(runtime, 'build/Release/tree_sitter_runtime_binding.node');
+const typescriptArtifact = path.join(
+  typescriptParser,
+  'build/Release/tree_sitter_typescript_binding.node',
+);
 type Result = { status: number | null; signal?: string | null; error?: Error };
 
 async function fixture(
   options: {
     platform?: string;
+    arch?: string;
     entries?: string[];
     missing?: string[];
     build?: Result;
@@ -22,13 +28,19 @@ async function fixture(
     canonicalSelected?: string;
     loadFailure?: boolean;
     installedRuntime?: string;
+    verifyPackage?: 'tree-sitter' | 'tree-sitter-typescript';
     bundledNodeGyp?: boolean;
   } = {},
 ) {
   const source = await fs.readFile(scriptUrl, 'utf8');
+  const verifyDirectory =
+    options.verifyPackage === 'tree-sitter-typescript' ? typescriptParser : runtime;
+  const verifyArtifact =
+    options.verifyPackage === 'tree-sitter-typescript' ? typescriptArtifact : artifact;
   const events: string[] = [];
   const processState = {
     platform: options.platform ?? 'linux',
+    arch: options.arch ?? 'x64',
     execPath: '/node',
     env: options.bundledNodeGyp ? {} : { npm_config_node_gyp: '/node-gyp.js' },
     exitCode: undefined as number | undefined,
@@ -57,15 +69,15 @@ async function fixture(
     if (options.verification) return options.verification;
     const load = Object.assign(
       (dir: string) => {
-        expect(dir).toBe(runtime);
+        expect(dir).toBe(verifyDirectory);
         events.push('child:load');
         if (options.loadFailure) throw new Error('Runtime load failed');
       },
       {
         resolve: (dir: string) => {
-          expect(dir).toBe(runtime);
+          expect(dir).toBe(verifyDirectory);
           events.push('child:resolve');
-          return options.selected ?? artifact;
+          return options.selected ?? verifyArtifact;
         },
       },
     );
@@ -78,24 +90,24 @@ async function fixture(
             return {
               realpathSync: (filename: string) => {
                 events.push(`realpath:${filename}`);
-                return filename === (options.selected ?? artifact)
-                  ? (options.canonicalSelected ?? filename)
+                return filename === (options.selected ?? verifyArtifact)
+                  ? options.canonicalSelected ?? filename
                   : filename;
               },
             };
           if (specifier === 'node:module')
             return {
               createRequire: (manifest: string) => {
-                if (manifest === path.resolve(runtime, '../../package.json')) {
+                if (manifest === path.resolve(verifyDirectory, '../../package.json')) {
                   return {
                     resolve: (dependency: string) => {
-                      expect(dependency).toBe('tree-sitter/package.json');
+                      expect(dependency).toBe(`${options.verifyPackage ?? 'tree-sitter'}/package.json`);
                       events.push('child:resolve-app');
-                      return path.join(options.installedRuntime ?? runtime, 'package.json');
+                      return path.join(options.installedRuntime ?? verifyDirectory, 'package.json');
                     },
                   };
                 }
-                expect(manifest).toBe(path.join(runtime, 'package.json'));
+                expect(manifest).toBe(path.join(verifyDirectory, 'package.json'));
                 return (dependency: string) => {
                   expect(dependency).toBe('node-gyp-build');
                   return load;
@@ -169,6 +181,45 @@ describe('vendored native runtime lifecycle', () => {
       { cwd: runtime, env: build.process.env, stdio: ['ignore', 2, 2] },
     ]);
     expect(build.error).toHaveBeenCalledWith('[tree-sitter] Rebuilding required native runtime');
+  });
+
+  it.each([
+    { platform: 'darwin', arch: 'arm64' },
+    { platform: 'linux', arch: 'x64' },
+  ])('rebuilds TypeScript from source on $platform/$arch', async ({ platform, arch }) => {
+    const build = await fixture({
+      platform,
+      arch,
+      entries: ['tree-sitter-typescript'],
+      verifyPackage: 'tree-sitter-typescript',
+    });
+    expect(build.events).toEqual([
+      'build:tree-sitter-typescript',
+      'verify:tree-sitter-typescript',
+      'child:resolve-app',
+      `realpath:${typescriptParser}`,
+      `realpath:${typescriptParser}`,
+      'child:resolve',
+      `realpath:${typescriptArtifact}`,
+      `realpath:${typescriptArtifact}`,
+      'child:load',
+    ]);
+    expect(build.process.exitCode).toBeUndefined();
+    expect(build.error).toHaveBeenCalledWith(
+      '[tree-sitter-typescript] Rebuilding required TypeScript parser',
+    );
+  });
+
+  it('fails closed when a required TypeScript parser build fails', async () => {
+    const build = await fixture({
+      platform: 'darwin',
+      arch: 'arm64',
+      entries: ['tree-sitter-typescript'],
+      verifyPackage: 'tree-sitter-typescript',
+      build: { status: 1 },
+    });
+    expect(build.events).toEqual(['build:tree-sitter-typescript']);
+    expect(build.process.exitCode).toBe(1);
   });
 
   it('keeps the missing grammar rebuild path and distinct log', async () => {

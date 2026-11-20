@@ -47,7 +47,7 @@ jobs:
     uses: ./.github/workflows/ci-tests.yml
     with:
       # `inputs` is empty on pull_request/push; a boolean input must still receive a boolean.
-      # Pull requests run Linux only: the native file lock and parser artifacts are Linux-only.
+      # Pull requests run Linux only; ordinary pushes keep the runtime matrix.
       linux_only: ${{ inputs.linux_only == true || github.event_name == 'pull_request' }}
     permissions:
       contents: read

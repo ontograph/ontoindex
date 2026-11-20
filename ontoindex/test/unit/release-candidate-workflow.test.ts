@@ -37,6 +37,7 @@ describe('release-candidate workflow', () => {
     const ci = load(ciWorkflow) as Workflow;
     const tests = load(testsWorkflow) as Workflow;
     const rc = load(workflow) as Workflow;
+    const stable = load(stableWorkflow) as Workflow;
 
     for (const reusable of [ci, tests]) {
       expect(reusable.on.workflow_call.inputs.linux_only).toMatchObject({
@@ -45,6 +46,10 @@ describe('release-candidate workflow', () => {
       });
     }
     expect(rc.jobs.ci).toMatchObject({
+      uses: './.github/workflows/ci.yml',
+      with: { linux_only: true },
+    });
+    expect(stable.jobs.ci).toMatchObject({
       uses: './.github/workflows/ci.yml',
       with: { linux_only: true },
     });

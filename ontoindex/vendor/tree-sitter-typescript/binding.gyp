@@ -1,7 +1,7 @@
 {
   "targets": [],
   "conditions": [
-    ["OS=='linux'", {
+    ["OS=='linux' or OS=='mac'", {
       "targets": [
         {
           "target_name": "tree_sitter_typescript_binding",

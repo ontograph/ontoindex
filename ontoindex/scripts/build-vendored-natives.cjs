@@ -12,8 +12,13 @@ for (const entry of fs.readdirSync(vendor, { withFileTypes: true })) {
   if (!fs.existsSync(path.join(dir, 'binding.gyp'))) continue;
   const requirePackage = createRequire(path.join(dir, 'package.json'));
   const rebuildRuntime = process.platform === 'linux' && entry.name === 'tree-sitter';
+  const rebuildTypeScript =
+    entry.name === 'tree-sitter-typescript' &&
+    ((process.platform === 'darwin' && process.arch === 'arm64') ||
+      (process.platform === 'linux' && process.arch === 'x64'));
+  const rebuildRequired = rebuildRuntime || rebuildTypeScript;
 
-  if (!rebuildRuntime) {
+  if (!rebuildRequired) {
     try {
       requirePackage('node-gyp-build')(dir);
       continue;
@@ -31,9 +36,12 @@ for (const entry of fs.readdirSync(vendor, { withFileTypes: true })) {
         // npm's lifecycle environment normally supplies its bundled node-gyp.
       }
     }
-    console.error(
-      `[${entry.name}] ${rebuildRuntime ? 'Rebuilding required native runtime' : 'Building missing native binary'}`,
-    );
+    const buildDescription = rebuildRuntime
+      ? 'Rebuilding required native runtime'
+      : rebuildTypeScript
+        ? 'Rebuilding required TypeScript parser'
+        : 'Building missing native binary';
+    console.error(`[${entry.name}] ${buildDescription}`);
     const result = spawnSync(
       nodeGyp ? process.execPath : process.platform === 'win32' ? 'npx.cmd' : 'npx',
       nodeGyp
@@ -50,8 +58,8 @@ for (const entry of fs.readdirSync(vendor, { withFileTypes: true })) {
     if (result.status !== 0 || result.signal) {
       throw new Error(`node-gyp exited with ${result.signal || result.status}`);
     }
-    if (rebuildRuntime) {
-      // A fresh process cannot reuse a previously loaded runtime from Node's cache.
+    if (rebuildRequired) {
+      // A fresh process cannot reuse a previously loaded native module from Node's cache.
       const verification = spawnSync(
         process.execPath,
         [
@@ -61,18 +69,26 @@ for (const entry of fs.readdirSync(vendor, { withFileTypes: true })) {
         const path = require('node:path');
         const { createRequire } = require('node:module');
         const dir = process.argv[1];
+        const dependency = ${JSON.stringify(entry.name)};
+        const binding = ${JSON.stringify(
+          entry.name === 'tree-sitter'
+            ? 'tree_sitter_runtime_binding.node'
+            : 'tree_sitter_typescript_binding.node',
+        )};
+        const prebuildEnv = dependency.toUpperCase().replace(/-/g, '_') + '_PREBUILD';
         const requireApp = createRequire(path.join(dir, '..', '..', 'package.json'));
-        const installed = path.dirname(requireApp.resolve('tree-sitter/package.json'));
+        const installed = path.dirname(requireApp.resolve(dependency + '/package.json'));
         if (fs.realpathSync(installed) !== fs.realpathSync(dir)) {
-          throw new Error('Application tree-sitter must resolve to rebuilt vendor runtime: ' + dir);
+          const kind = dependency === 'tree-sitter' ? 'runtime' : 'parser';
+          throw new Error('Application ' + dependency + ' must resolve to rebuilt vendor ' + kind + ': ' + dir);
         }
         const requirePackage = createRequire(path.join(dir, 'package.json'));
         const load = requirePackage('node-gyp-build');
         const selected = load.resolve(dir);
-        const expected = path.join(dir, 'build', 'Release', 'tree_sitter_runtime_binding.node');
+        const expected = path.join(dir, 'build', 'Release', binding);
         if (fs.realpathSync(selected) !== fs.realpathSync(expected)) {
-          throw new Error('Tree-sitter selected ' + selected + ' instead of ' + expected +
-            '; unset TREE_SITTER_PREBUILD and PREBUILDS_ONLY so the rebuilt runtime is loaded');
+          throw new Error(dependency + ' selected ' + selected + ' instead of ' + expected +
+            '; unset ' + prebuildEnv + ' and PREBUILDS_ONLY so the rebuilt parser is loaded');
         }
         load(dir);
       `,
@@ -92,6 +108,6 @@ for (const entry of fs.readdirSync(vendor, { withFileTypes: true })) {
   } catch (err) {
     console.error(`[${entry.name}] Native build failed: ${err.message}`);
     console.error(`Repair manually: cd ${JSON.stringify(dir)} && node-gyp rebuild --jobs=4`);
-    if (entry.name === 'tree-sitter') process.exitCode = 1;
+    if (rebuildRequired) process.exitCode = 1;
   }
 }

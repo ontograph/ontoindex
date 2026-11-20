@@ -172,11 +172,11 @@ module.exports = function defineGrammar(dialect) {
       ),
 
       call_expression: $ => choice(
-        prec('call', seq(
+        prec.dynamic(1, prec('call', seq(
           field('function', choice($.expression, $.import)),
           field('type_arguments', optional($.type_arguments)),
           field('arguments', $.arguments),
-        )),
+        ))),
         prec('template_call', seq(
           field('function', choice($.primary_expression, $.new_expression)),
           field('arguments', $.template_string),

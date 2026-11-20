@@ -19,6 +19,8 @@ jobs:
   ci:
     if: ${{ !contains(github.ref_name, '-') }}
     uses: ./.github/workflows/ci.yml
+    with:
+      linux_only: true
     permissions:
       contents: read
       actions: read
