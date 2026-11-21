@@ -15,7 +15,7 @@ Pass `repo: '<repo>'` in every tool call.
 | Context             | `inspect`: context, evidence, shape, ipc; `inspect({action: "related", ...})`                                                                                                                        |
 | Edit safety         | `impact`: symbol, batch, route, diff; `audit({action: "safe_edit_check", ...})`, `audit({action: "can_delete", ...})`                                                                                |
 | Verification        | `audit({action: "verify_diff", ...})`, `audit({action: "review_diff", ...})`, `impact({action: "diff_impact", ...})`, `audit({action: "test_gap", ...})`, `audit({action: "pre_commit_audit", ...})` |
-| Index lifecycle     | `manage({action: "ensure_fresh", ...})`, `manage({action: "analyze_job", jobId, job_action: "status", ...})` (coordinate refresh through navigation)                                                     |
+| Index lifecycle     | `gn_ensure_fresh({repo: "<absolute worktree path>", autoAnalyze: true})`; poll queued/reused jobs with `gn_analyze_job` (follow the navigation gate and recheck freshness)                                                     |
 | Audits/docs         | `audit`, `docs`                                                                                                                                                                                      |
 | Session/refactoring | `manage`; `refactor`: rename (preview only), replace, sandbox                                                                                                                                        |
 
