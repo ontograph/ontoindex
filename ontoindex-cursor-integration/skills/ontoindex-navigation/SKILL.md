@@ -1,17 +1,14 @@
 ---
 name: ontoindex-navigation
-description: 'Read first for every repository code task to select OntoIndex evidence and handle index freshness.'
+description: 'Read before using OntoIndex graph evidence or operating index freshness.'
 ---
 
 # OntoIndex Navigation
 
-Always query OntoIndex first using the task-appropriate tool below.
-Repo queries schedule one managed background refresh when HEAD differs from the indexed commit, or when a repository without commits has changed files in its recorded indexed scope. The response uses the existing index with a stale/refreshing warning.
-Use stale/refreshing results, label claims with that freshness, and verify edited or new code from source. Uncommitted edits use the automatic overlay; check coverage warnings and inspect uncovered source directly.
-Never fall back to grep-only just because the index is stale.
-Automatic refresh keeps the recorded scope, excludes `huge-repo-symbols` indexes, and is rate-limited by `ONTOINDEX_AUTO_REFRESH_INTERVAL_MS` (default 300000 ms). `ONTOINDEX_AUTO_REFRESH=0` disables it.
-Only the coordinating session may run the installed `ontoindex analyze` manually when immediate refresh is required and no refresh job is active; check the returned refresh/job status first.
-Sub-agents never start reindex jobs; refresh-on-query covers them.
+Use OntoIndex when the task needs graph evidence. If graph evidence is not needed, use lean-ctx or source inspection directly.
+Resolve this checkout's absolute worktree root and pass it as `repo` on every call. Before graph-dependent work, call `gn_ensure_fresh({repo: "<absolute worktree path>", autoAnalyze: true})`, including first-time indexing. If `analysisSubmission.status` is `queued` or `reused`, poll `gn_analyze_job({repo: "<same absolute path>", jobId: "<returned id>"})` until terminal; only `complete` with `exitCode: 0` passes.
+Check freshness again. `blocked`, job failure, or `needsAnalysis: true` stops graph work; reuse running jobs and diagnose before retrying. Recheck after HEAD changes. Verify uncommitted changes against source and diff.
+Do not run `reindex.sh`, project wrappers, or local `ontoindex analyze` for this gate. MCP resolves its own installation and providers.
 
 | Task                   | Tool call (always pass `repo: '<repo>'`)                                                                                                                             |
 | ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -28,4 +25,4 @@ With `impact`, `maxDepth: 1` returns direct dependents to review first; membersh
 If tools are missing from the session, search the tool catalog for `ontoindex`.
 If tools remain unavailable, a call fails, or a result reports degraded/untrusted evidence, say exactly:
 `OntoIndex stale/degraded: <reason>; source inspection is authority.`
-Continue with usable OntoIndex evidence and bounded source inspection; use bounded `rg` and file reads when tools cannot answer. A stale warning alone does not trigger this failure path. Never present `rg` or `git diff` as OntoIndex evidence.
+Do not use stale graph results or make graph claims. Continue only with bounded source inspection where graph evidence is not required; report the blocked graph-dependent portion. Never present `rg` or `git diff` as OntoIndex evidence.
