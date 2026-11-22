@@ -161,7 +161,8 @@ export interface ActiveGenerationMetaPair {
     | 'active-generation-metadata-mismatch'
     | 'active-generation-changed-during-read'
     | 'generation-tagged-root-metadata-without-active-generation'
-    | 'legacy-root-metadata-unavailable';
+    | 'legacy-root-metadata-unavailable'
+    | 'index-not-created';
 }
 
 export interface ActiveGenerationMetaReadDeps {
@@ -1292,13 +1293,24 @@ export const readActiveGenerationMeta = async (
           authority: 'legacy-root',
         };
       }
+      const storagePathUninitialized = await fs
+        .lstat(storagePath)
+        .then(
+          async (stats) =>
+            stats.isDirectory() &&
+            !stats.isSymbolicLink() &&
+            (await fs.readdir(storagePath)).length === 0,
+        )
+        .catch((error: NodeJS.ErrnoException) => error.code === 'ENOENT');
       return {
         activeGeneration: null,
         meta: null,
         authority: 'untrusted',
         reason: legacyMeta
           ? 'generation-tagged-root-metadata-without-active-generation'
-          : 'legacy-root-metadata-unavailable',
+          : storagePathUninitialized
+            ? 'index-not-created'
+            : 'legacy-root-metadata-unavailable',
       };
     }
 
@@ -1812,6 +1824,8 @@ interface RegisterRepoOptions {
    * re-analyses of the same path without `--name` preserve the alias.
    */
   name?: string;
+  /** Keep existing registry metadata when another caller registered first. */
+  ifAbsent?: boolean;
   /** Deprecated compatibility field. Duplicate names are always rejected. */
   allowDuplicateName?: boolean;
 }
@@ -1875,9 +1889,9 @@ const hasCustomAlias = (entry: RegistryEntry, inferredName: string | null): bool
  * `name`, throw {@link RegistryNameCollisionError}. Existing duplicate
  * registry entries remain readable, but no new ambiguity is introduced.
  *
- * Returns the `name` that was actually written to the registry — the
- * caller can re-use it to keep AGENTS.md / skill files aligned with the
- * MCP-visible repo name (#979).
+ * Returns the registry `name` written or preserved — the caller can re-use
+ * it to keep AGENTS.md / skill files aligned with the MCP-visible repo name
+ * (#979).
  */
 export const registerRepo = async (
   repoPath: string,
@@ -1896,6 +1910,7 @@ export const registerRepo = async (
       sameRepoPath(entryPath, resolved),
     );
     const existing = existingIdx >= 0 ? entries[existingIdx] : null;
+    if (existing && opts?.ifAbsent) return existing.name;
 
     // Precedence: explicit --name > preserved alias > remote-inferred > basename.
     // Skip the `git config` subprocess entirely when --name was passed —

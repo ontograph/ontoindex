@@ -423,6 +423,8 @@ interface AnalyzeOptions {
   verbose?: boolean;
   /** Skip AGENTS.md and CLAUDE.md ontoindex block updates. */
   skipAgentsMd?: boolean;
+  /** Skip all repository AI context and OntoIndex skill file generation. */
+  skipAiContext?: boolean;
   /** Omit volatile symbol/relationship counts from AGENTS.md and CLAUDE.md. */
   noStats?: boolean;
   /** Index the folder even when no .git directory is present. */
@@ -906,6 +908,7 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
         ...(profile ? { profile } : {}),
         ...(includePaths ? { includePaths } : {}),
         skipAgentsMd: experimentalFileDeltaPlan?.safeToBound ? true : options?.skipAgentsMd,
+        skipAiContext: options?.skipAiContext,
         noStats: experimentalFileDeltaPlan?.safeToBound ? true : options?.noStats,
         skipNativeClose: process.env.ONTOINDEX_ANALYZE_NATIVE_CLOSE !== '1',
         registryName: options?.name,
@@ -987,7 +990,7 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
     }
 
     // Skill generation (CLI-only, uses pipeline result from analysis)
-    if (options?.skills && result.pipelineResult) {
+    if (options?.skills && !options.skipAiContext && result.pipelineResult) {
       updateBar(99, 'Generating skill files...');
       try {
         const { generateSkillFiles, parseSkillTargets } = await import('./skill-gen.js');

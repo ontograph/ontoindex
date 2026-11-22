@@ -139,6 +139,7 @@ import {
   readAnalysisPublicationReceipt,
   type ManagedAnalysisContext,
 } from '../../src/core/analysis/analysis-publication-receipt.js';
+import { generateAIContextFiles } from '../../src/cli/ai-context.js';
 import {
   computeSourceManifest,
   sourceManifestDigest,
@@ -171,6 +172,7 @@ const beginManagedAnalysisPublicationMock =
   beginManagedAnalysisPublication as unknown as ReturnType<typeof vi.fn>;
 const commitManagedAnalysisPublicationMock =
   commitManagedAnalysisPublication as unknown as ReturnType<typeof vi.fn>;
+const generateAIContextFilesMock = vi.mocked(generateAIContextFiles);
 
 const MANAGED_TARGET_HEAD = 'a'.repeat(40);
 const MANAGED_OPTIONS_DIGEST = 'b'.repeat(64);
@@ -2360,6 +2362,28 @@ describe('runFullAnalysis snapshot persistence', () => {
       await expect(
         fs.stat(path.join(repoDir, '.ontoindex', 'enrichment', 'sidecar-store.json')),
       ).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await fs.rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('skips repository AI context generation when skipAiContext is enabled', async () => {
+    const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-analyze-skip-ai-context-'));
+    try {
+      runPipelineMock.mockResolvedValue({
+        graph: createKnowledgeGraph(),
+        repoPath: repoDir,
+        totalFileCount: 0,
+        communityResult: undefined,
+        processResult: undefined,
+        usedWorkerPool: false,
+      });
+      executeQueryMock.mockResolvedValue([]);
+
+      await runFullAnalysis(repoDir, { skipAiContext: true }, { onProgress: vi.fn() });
+
+      // generateAIContextFiles owns AGENTS.md, CLAUDE.md, and .claude/skills/ontoindex writes.
+      expect(generateAIContextFilesMock).not.toHaveBeenCalled();
     } finally {
       await fs.rm(repoDir, { recursive: true, force: true });
     }

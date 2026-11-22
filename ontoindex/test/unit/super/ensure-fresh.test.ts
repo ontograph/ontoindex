@@ -27,6 +27,8 @@ vi.mock('../../../src/storage/repo-manager.js', () => ({
     () => `${process.env.ONTOINDEX_HOME || '/home/testuser/.ontoindex'}/registry.json`,
   ),
   loadMeta: vi.fn(),
+  registerRepo: vi.fn(),
+  RegistryNameCollisionError: class RegistryNameCollisionError extends Error {},
   readActiveGenerationMeta: vi.fn(),
   resolveActiveIndexGeneration: vi.fn(),
 }));
@@ -66,6 +68,8 @@ import type { LocalBackend } from '../../../src/mcp/local/local-backend.js';
 import { readRuntimeHealth } from '../../../src/core/runtime/runtime-health.js';
 import {
   loadMeta,
+  registerRepo,
+  RegistryNameCollisionError,
   readActiveGenerationMeta,
   resolveActiveIndexGeneration,
 } from '../../../src/storage/repo-manager.js';
@@ -83,6 +87,7 @@ const mockReadFileSync = vi.mocked(readFileSync);
 const mockReadRuntimeHealth = vi.mocked(readRuntimeHealth);
 const mockLoadMeta = vi.mocked(loadMeta);
 const mockReadActiveGenerationMeta = vi.mocked(readActiveGenerationMeta);
+const mockRegisterRepo = vi.mocked(registerRepo);
 const mockResolveActiveIndexGeneration = vi.mocked(resolveActiveIndexGeneration);
 const mockSubmitAnalysisJob = vi.mocked(submitAnalysisJob);
 const mockComputeSourceManifest = vi.mocked(computeSourceManifest);
@@ -110,12 +115,7 @@ const STALE_INDEXED_COMMIT = 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef';
 
 function makeRuntimeHealth(
   freshnessState:
-    | 'clean'
-    | 'stale'
-    | 'dirty'
-    | 'degraded'
-    | 'untrusted'
-    | 'failed-after-partial-run' = 'clean',
+    'clean' | 'stale' | 'dirty' | 'degraded' | 'untrusted' | 'failed-after-partial-run' = 'clean',
 ) {
   return {
     version: 1 as const,
@@ -231,6 +231,39 @@ function setupExecFile(
   });
 }
 
+function setupSourceManifestMismatchTargetContext() {
+  setupExecFile({ currentCommit: CURRENT_COMMIT, statusOutput: '' });
+  mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: CURRENT_COMMIT }) as any);
+  mockLoadMeta.mockResolvedValue(makeMeta({ lastCommit: CURRENT_COMMIT }) as any);
+  mockReadRuntimeHealth.mockResolvedValue(makeRuntimeHealth('clean'));
+  mockResolveTargetContext.mockResolvedValue({
+    version: 1,
+    status: 'ok',
+    repoKey: REPO_ID,
+    repoLabel: REPO_ID,
+    repoPath: REPO_PATH,
+    targetRef: 'HEAD',
+    targetHead: CURRENT_COMMIT,
+    currentHead: CURRENT_COMMIT,
+    indexedHead: CURRENT_COMMIT,
+    graphAuthority: {
+      state: 'review',
+      reason: 'current source manifest does not match indexed manifest',
+    },
+    dirtyWorktree: false,
+    dirtyFileCount: 0,
+    changedSinceIndex: false,
+    snapshotMode: 'committed-head',
+    qualityMode: 'fast',
+    scopeConfidence: 'high',
+    embeddings: { status: 'available', count: 12 },
+    lsp: { status: 'unknown' },
+    sidecar: { status: 'unknown' },
+    policy: { status: 'unknown' },
+    warnings: [],
+  } as any);
+}
+
 function setupSpawnExit(code: number = 0) {
   mockSpawn.mockImplementation(() => {
     const child = new EventEmitter() as any;
@@ -315,6 +348,7 @@ describe('gnEnsureFresh', () => {
         createdAt: '2026-08-05T00:00:00.000Z',
       } as Awaited<ReturnType<typeof mockSubmitAnalysisJob>>['job'],
     });
+    mockRegisterRepo.mockResolvedValue('registered-repo');
     mockComputeSourceManifest.mockResolvedValue({
       version: 1,
       head: CURRENT_COMMIT,
@@ -549,6 +583,7 @@ describe('gnEnsureFresh', () => {
       pipelineProfile: 'full',
     });
     expect(mockSubmitAnalysisJob.mock.calls[0][0].args).toContain('analyze');
+    expect(mockSubmitAnalysisJob.mock.calls[0][0].args).toContain('--skip-ai-context');
     expect(mockSubmitAnalysisJob.mock.calls[0][0].args).not.toContain('--embeddings');
 
     expect(report.actionsTaken).toHaveLength(1);
@@ -556,6 +591,54 @@ describe('gnEnsureFresh', () => {
     expect(report.analysisJob?.id).toBe('job-1');
     expect(report.analysisSubmission).toEqual({ status: 'queued', jobId: 'job-1' });
     expect(report.postCheck).toBeUndefined();
+  });
+
+  it('submits managed analysis when the source manifest is stale and the worktree is clean', async () => {
+    setupExecFile({ currentCommit: CURRENT_COMMIT, statusOutput: '' });
+    mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: CURRENT_COMMIT }) as any);
+    mockLoadMeta.mockResolvedValue(makeMeta({ lastCommit: CURRENT_COMMIT }) as any);
+    mockReadRuntimeHealth.mockResolvedValue({
+      ...makeRuntimeHealth('stale'),
+      degradedReason: 'current source manifest does not match indexed manifest',
+    });
+
+    const report = await gnEnsureFresh(REPO_ID, { autoAnalyze: true });
+
+    expect(mockSubmitAnalysisJob).toHaveBeenCalledTimes(1);
+    expect(mockSubmitAnalysisJob.mock.calls[0][0].args).toContain('analyze');
+    expect(mockSubmitAnalysisJob.mock.calls[0][0].args).not.toContain('--force');
+    expect(report.preCheck.isStale).toBe(false);
+    expect(report.dirtyFileCount).toBe(0);
+    expect(report.runtimeHealth?.freshnessState).toBe('stale');
+    expect(report.analysisSubmission).toEqual({ status: 'queued', jobId: 'job-1' });
+  });
+
+  it('queues managed analysis when the modern graph authority reports a source-manifest mismatch', async () => {
+    setupSourceManifestMismatchTargetContext();
+
+    const envelope = await gnEnsureFresh(REPO_ID, { autoAnalyze: true, legacyResponse: false });
+
+    expect(mockSubmitAnalysisJob).toHaveBeenCalledTimes(1);
+    expect(mockSubmitAnalysisJob.mock.calls[0][0].args).toContain('analyze');
+    expect(mockSubmitAnalysisJob.mock.calls[0][0].args).not.toContain('--force');
+    expect(envelope.freshness).toMatchObject({
+      status: 'stale',
+      reason: 'current source manifest does not match indexed manifest',
+      graphAuthorityState: 'review',
+    });
+    expect(envelope.results.analysisSubmission).toEqual({ status: 'queued', jobId: 'job-1' });
+    expect(mockResolveTargetContext).toHaveBeenCalledTimes(1);
+  });
+
+  it('queues managed analysis for a legacy response when graph authority reports a source-manifest mismatch', async () => {
+    setupSourceManifestMismatchTargetContext();
+
+    const report = await gnEnsureFresh(REPO_ID, { autoAnalyze: true, legacyResponse: true });
+
+    expect(mockSubmitAnalysisJob).toHaveBeenCalledTimes(1);
+    expect(mockSubmitAnalysisJob.mock.calls[0][0].args).not.toContain('--force');
+    expect(report.analysisSubmission).toEqual({ status: 'queued', jobId: 'job-1' });
+    expect(mockResolveTargetContext).toHaveBeenCalledTimes(1);
   });
 
   it('passes the recorded scope to the manifest and analyze job', async () => {
@@ -594,6 +677,83 @@ describe('gnEnsureFresh', () => {
     expect(report.runtimeHealth?.freshnessState).toBe('untrusted');
     expect(report.recommendations.some((item) => item.includes('repair manually'))).toBe(true);
     expect(report.actionsTaken).toHaveLength(0);
+  });
+
+  it('submits a normal managed analysis for a clean repo with no prior index', async () => {
+    setupExecFile({ currentCommit: CURRENT_COMMIT, statusOutput: '' });
+    mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: '' }) as any);
+    mockReadActiveGenerationMeta.mockResolvedValue({
+      activeGeneration: null,
+      meta: null,
+      authority: 'untrusted',
+      reason: 'index-not-created',
+    });
+    mockReadRuntimeHealth.mockResolvedValue({
+      ...makeRuntimeHealth('untrusted'),
+      hasRuntimeArtifacts: false,
+    });
+
+    const report = await gnEnsureFresh(REPO_ID, { autoAnalyze: true, withEmbeddings: true });
+
+    expect(mockSubmitAnalysisJob).toHaveBeenCalledTimes(1);
+    expect(mockSubmitAnalysisJob.mock.calls[0][0].args).toContain('analyze');
+    expect(mockSubmitAnalysisJob.mock.calls[0][0].args).not.toContain('--force');
+    expect(mockSubmitAnalysisJob.mock.calls[0][0].args).toContain('--embeddings');
+    expect(report.analysisSubmission.status).toBe('queued');
+    expect(report.runtimeHealth?.freshnessState).toBe('degraded');
+    expect(report.warnings).toContain(
+      'No index has been created for this registered repository yet.',
+    );
+    expect(
+      report.warnings.some((warning) => warning.includes('metadata authority is untrusted')),
+    ).toBe(false);
+  });
+
+  it('creates the first index for a dirty repo using its worktree identity', async () => {
+    setupExecFile({ currentCommit: CURRENT_COMMIT, statusOutput: ' M src/edit.ts\n' });
+    mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: '' }) as any);
+    mockReadActiveGenerationMeta.mockResolvedValue({
+      activeGeneration: null,
+      meta: null,
+      authority: 'untrusted',
+      reason: 'index-not-created',
+    });
+    mockReadRuntimeHealth.mockResolvedValue({
+      ...makeRuntimeHealth('untrusted'),
+      dirtyWorktree: true,
+      hasRuntimeArtifacts: false,
+    });
+
+    const report = await gnEnsureFresh(REPO_ID, { autoAnalyze: true });
+
+    expect(mockSubmitAnalysisJob).toHaveBeenCalledTimes(1);
+    const submission = mockSubmitAnalysisJob.mock.calls[0][0];
+    expect(submission.args).not.toContain('--force');
+    expect(submission.sourceIdentity).toBe(`worktree:${submission.sourceManifestDigest}`);
+    expect(report.analysisSubmission.status).toBe('queued');
+  });
+
+  it('still blocks autoAnalyze when active-generation metadata is mismatched', async () => {
+    setupExecFile({ currentCommit: CURRENT_COMMIT });
+    mockReadActiveGenerationMeta.mockResolvedValue({
+      activeGeneration: {
+        generationId: 'generation-1',
+        generationPath: `${REPO_PATH}/.ontoindex/generations/generation-1`,
+        lbugPath: `${REPO_PATH}/.ontoindex/generations/generation-1/lbug`,
+        metaPath: `${REPO_PATH}/.ontoindex/generations/generation-1/meta.json`,
+        snapshotPath: `${REPO_PATH}/.ontoindex/generations/generation-1/snapshot.json`,
+      },
+      meta: null,
+      authority: 'untrusted',
+      reason: 'active-generation-metadata-mismatch',
+    });
+    mockReadRuntimeHealth.mockResolvedValue(makeRuntimeHealth('clean'));
+
+    const report = await gnEnsureFresh(REPO_ID, { autoAnalyze: true });
+
+    expect(mockSubmitAnalysisJob).not.toHaveBeenCalled();
+    expect(report.runtimeHealth?.freshnessState).toBe('untrusted');
+    expect(report.analysisSubmission.reasonCode).toBe('untrusted');
   });
 
   it('routes stale-lock recovery through one managed analyze invocation', async () => {
@@ -948,6 +1108,108 @@ describe('gnEnsureFresh', () => {
       reasonCode: 'REPO_NOT_REGISTERED',
       message: 'Repository is not registered; analysis cannot be submitted.',
     });
+    expect(mockRegisterRepo).not.toHaveBeenCalled();
+  });
+
+  it('registers an exact unindexed worktree root before submitting its first analysis', async () => {
+    setupExecFile({ currentCommit: CURRENT_COMMIT });
+    mockReadFileSync
+      .mockImplementationOnce(() => {
+        throw Object.assign(new Error('registry is missing'), { code: 'ENOENT' });
+      })
+      .mockReturnValueOnce(
+        makeRegistry({ name: 'registered-repo', path: REPO_PATH, lastCommit: '' }) as any,
+      );
+    mockReadActiveGenerationMeta.mockResolvedValue({
+      activeGeneration: null,
+      meta: null,
+      authority: 'untrusted',
+      reason: 'index-not-created',
+    });
+    mockReadRuntimeHealth.mockResolvedValue({
+      ...makeRuntimeHealth('untrusted'),
+      hasRuntimeArtifacts: false,
+    });
+    mockResolveTargetContext.mockResolvedValueOnce({
+      version: 1,
+      status: 'not-found',
+      targetRef: 'HEAD',
+      dirtyWorktree: null,
+      changedSinceIndex: null,
+      snapshotMode: 'unknown',
+      qualityMode: 'fast',
+      embeddings: { status: 'unknown' },
+      lsp: { status: 'unknown' },
+      sidecar: { status: 'unknown' },
+      policy: { status: 'unknown' },
+      warnings: [],
+    } as any);
+
+    const report = await gnEnsureFresh(REPO_PATH, {
+      repo: REPO_PATH,
+      autoAnalyze: true,
+      legacyResponse: false,
+    });
+
+    expect(mockRegisterRepo).toHaveBeenCalledWith(
+      REPO_PATH,
+      expect.objectContaining({ lastCommit: '', indexedAt: '' }),
+      expect.objectContaining({ name: expect.any(String), ifAbsent: true }),
+    );
+    expect(mockSubmitAnalysisJob).toHaveBeenCalledTimes(1);
+    expect(mockSubmitAnalysisJob.mock.calls[0][0].args).not.toContain('--force');
+    expect(report.results.analysisSubmission).toEqual({ status: 'queued', jobId: 'job-1' });
+    expect(report.results.actionsTaken).toEqual(
+      expect.arrayContaining([expect.stringContaining('Ensured registry entry')]),
+    );
+    expect(mockResolveTargetContext).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not register an absolute path below the Git worktree root', async () => {
+    setupExecFile({ currentCommit: CURRENT_COMMIT, repoRoot: REPO_PATH });
+    mockReadFileSync.mockReturnValue('[]' as any);
+
+    const report = await gnEnsureFresh(REPO_ID, {
+      repo: path.join(REPO_PATH, 'nested'),
+      autoAnalyze: true,
+    });
+
+    expect(report.analysisSubmission).toMatchObject({
+      status: 'blocked',
+      reasonCode: 'REPO_PATH_NOT_WORKTREE_ROOT',
+    });
+    expect(mockRegisterRepo).not.toHaveBeenCalled();
+    expect(mockSubmitAnalysisJob).not.toHaveBeenCalled();
+  });
+
+  it('retries an unindexed worktree registration with a path-specific name after a collision', async () => {
+    setupExecFile({ currentCommit: CURRENT_COMMIT });
+    mockReadFileSync
+      .mockReturnValueOnce('[]' as any)
+      .mockReturnValueOnce(
+        makeRegistry({ name: 'registered-repo', path: REPO_PATH, lastCommit: '' }) as any,
+      );
+    mockRegisterRepo
+      .mockRejectedValueOnce(
+        new RegistryNameCollisionError('repo-name', '/another/repo', REPO_PATH),
+      )
+      .mockResolvedValueOnce('registered-repo');
+    mockReadActiveGenerationMeta.mockResolvedValue({
+      activeGeneration: null,
+      meta: null,
+      authority: 'untrusted',
+      reason: 'index-not-created',
+    });
+    mockReadRuntimeHealth.mockResolvedValue({
+      ...makeRuntimeHealth('untrusted'),
+      hasRuntimeArtifacts: false,
+    });
+
+    const report = await gnEnsureFresh(REPO_PATH, { repo: REPO_PATH, autoAnalyze: true });
+
+    expect(mockRegisterRepo).toHaveBeenCalledTimes(2);
+    expect(mockRegisterRepo.mock.calls[1][2]?.name).toMatch(/-[a-f0-9]{8}$/);
+    expect(report.analysisSubmission.status).toBe('queued');
   });
 
   it('preserves the real unregistered-repo freshness report through the facade', async () => {

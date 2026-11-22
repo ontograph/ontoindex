@@ -581,6 +581,59 @@ describe('index generations', () => {
     expect(result.activeGeneration?.generationId).toBe('generation-1');
     expect(result.meta?.generationId).toBe(result.activeGeneration?.generationId);
   });
+
+  it('recognizes missing or empty storage but keeps existing artifacts untrusted', async () => {
+    const temp = await createTempDir('ontoindex-missing-index-');
+    const storagePath = path.join(temp.dbPath, '.ontoindex');
+    try {
+      expect(await readActiveGenerationMeta(storagePath)).toEqual({
+        activeGeneration: null,
+        meta: null,
+        authority: 'untrusted',
+        reason: 'index-not-created',
+      });
+
+      await fs.mkdir(storagePath);
+      expect(await readActiveGenerationMeta(storagePath)).toEqual({
+        activeGeneration: null,
+        meta: null,
+        authority: 'untrusted',
+        reason: 'index-not-created',
+      });
+
+      await fs.writeFile(path.join(storagePath, 'partial-index'), 'incomplete');
+      expect(await readActiveGenerationMeta(storagePath)).toEqual({
+        activeGeneration: null,
+        meta: null,
+        authority: 'untrusted',
+        reason: 'legacy-root-metadata-unavailable',
+      });
+    } finally {
+      await temp.cleanup();
+    }
+  });
+
+  it('keeps mismatched active-generation metadata untrusted', async () => {
+    const activeGeneration = {
+      generationId: 'generation-1',
+      generationPath: '/tmp/generations/generation-1',
+      lbugPath: '/tmp/generations/generation-1/lbug',
+      metaPath: '/tmp/generations/generation-1/meta.json',
+      snapshotPath: '/tmp/generations/generation-1/snapshot.json',
+    };
+
+    const result = await readActiveGenerationMeta('/tmp/ontoindex-mismatched-generation', {
+      resolveActiveGeneration: vi.fn().mockResolvedValue(activeGeneration),
+      readMetaFile: vi.fn().mockResolvedValue({ generationId: 'generation-2' }),
+    });
+
+    expect(result).toEqual({
+      activeGeneration,
+      meta: null,
+      authority: 'untrusted',
+      reason: 'active-generation-metadata-mismatch',
+    });
+  });
 });
 
 // ─── readRegistry ────────────────────────────────────────────────────
@@ -738,6 +791,31 @@ describe('registerRepo name override + collision guard (#829)', () => {
     const entries = await listRegisteredRepos();
     expect(entries).toHaveLength(1);
     expect(entries[0].name).toBe('custom-alias');
+  });
+
+  it('registerRepo({ ifAbsent: true }) preserves an existing entry', async () => {
+    const indexedMeta = {
+      ...meta,
+      lastCommit: 'indexed-commit',
+      indexedAt: '2026-11-21T00:00:00.000Z',
+      stats: { files: 7 },
+    };
+    await registerRepo(tmpRepoA.dbPath, indexedMeta, { name: 'indexed-alias' });
+
+    const name = await registerRepo(
+      tmpRepoA.dbPath,
+      { ...meta, lastCommit: '', indexedAt: '', stats: {} },
+      { name: 'unindexed-alias', ifAbsent: true },
+    );
+
+    expect(name).toBe('indexed-alias');
+    expect(await listRegisteredRepos()).toMatchObject([
+      {
+        name: 'indexed-alias',
+        lastCommit: 'indexed-commit',
+        indexedAt: '2026-11-21T00:00:00.000Z',
+      },
+    ]);
   });
 
   it('re-registerRepo with a different name overrides the previous alias', async () => {

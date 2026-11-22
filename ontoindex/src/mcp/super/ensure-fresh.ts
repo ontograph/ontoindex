@@ -9,6 +9,7 @@
  * It never modifies the index without explicit caller consent.
  */
 
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'fs';
 import path, { join } from 'path';
 import { execFileText } from '../../core/process/exec-file.js';
@@ -33,6 +34,8 @@ import {
 import { isAutomaticWorkspaceEnabled } from '../local/backend-overlay.js';
 import {
   getGlobalRegistryPath,
+  registerRepo,
+  RegistryNameCollisionError,
   readActiveGenerationMeta,
   type RepoMeta,
 } from '../../storage/repo-manager.js';
@@ -196,6 +199,59 @@ function findRegistryEntry(
 ): RegistryEntry | undefined {
   const result = resolveRegistryEntry(registry, selector ?? cwdRepoRoot);
   return result.status === 'ok' ? result.entry : undefined;
+}
+
+function isMissingFileError(error: unknown): boolean {
+  return error !== null && typeof error === 'object' && 'code' in error && error.code === 'ENOENT';
+}
+
+function samePath(left: string, right: string): boolean {
+  return process.platform === 'win32' ? left.toLowerCase() === right.toLowerCase() : left === right;
+}
+
+function sanitizeRegistryName(value: string): string {
+  return value.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'repo';
+}
+
+async function ensureRepoRegistered(repoRoot: string): Promise<string> {
+  let branch = '';
+  try {
+    branch = (
+      await execFileText('git', ['branch', '--show-current'], {
+        cwd: repoRoot,
+        timeoutMs: GIT_PROBE_TIMEOUT_MS,
+        maxBuffer: GIT_PROBE_MAX_BUFFER,
+      })
+    ).trim();
+  } catch {
+    // Detached worktrees use their parent directory as a readable fallback.
+  }
+
+  const repoName = path.basename(repoRoot);
+  const worktreeName =
+    branch.split('/').filter(Boolean).pop() || path.basename(path.dirname(repoRoot));
+  const worktreeSlug = sanitizeRegistryName(worktreeName);
+  const repoSlug = sanitizeRegistryName(repoName);
+  const name = worktreeSlug.toLowerCase().startsWith(`${repoSlug.toLowerCase()}-`)
+    ? worktreeSlug
+    : `${repoSlug}-${worktreeSlug}`;
+  const meta: RepoMeta = {
+    repoPath: repoRoot,
+    lastCommit: '',
+    indexedAt: '',
+    stats: {},
+  };
+
+  try {
+    return await registerRepo(repoRoot, meta, { name: name.slice(0, 80), ifAbsent: true });
+  } catch (error) {
+    if (!(error instanceof RegistryNameCollisionError)) throw error;
+    const pathHash = createHash('sha256').update(repoRoot).digest('hex').slice(0, 8);
+    return registerRepo(repoRoot, meta, {
+      name: `${name.slice(0, 80)}-${pathHash}`,
+      ifAbsent: true,
+    });
+  }
 }
 
 function registryEntryMatchesSelector(
@@ -463,6 +519,15 @@ export async function gnEnsureFresh(
   const ttlMs = freshnessCacheTtlMs();
   const cacheKey = freshnessCacheKey(repoId, params, requiredGraphCapabilities);
   let report: EnsureFreshReport | undefined;
+  let preflightTargetContext: Awaited<ReturnType<typeof resolveTargetContext>> | undefined;
+
+  if (params.autoAnalyze === true) {
+    preflightTargetContext = await resolveTargetContext({
+      repo: params.repo ?? repoId,
+      verifyGraphAuthority: true,
+      requiredGraphCapabilities,
+    });
+  }
 
   if (cacheable && ttlMs > 0) {
     const cached = freshnessCache.get(cacheKey);
@@ -474,10 +539,16 @@ export async function gnEnsureFresh(
   }
 
   if (report === undefined) {
-    report = await buildEnsureFreshReport(repoId, {
-      ...params,
-      requiredGraphCapabilities,
-    });
+    report = await buildEnsureFreshReport(
+      repoId,
+      {
+        ...params,
+        requiredGraphCapabilities,
+      },
+      preflightTargetContext?.graphAuthority?.state === 'review' &&
+        preflightTargetContext.graphAuthority.reason ===
+          'current source manifest does not match indexed manifest',
+    );
     if (cacheable && ttlMs > 0) {
       freshnessCache.set(cacheKey, {
         expiresAt: Date.now() + ttlMs,
@@ -487,11 +558,14 @@ export async function gnEnsureFresh(
   }
 
   if (params.legacyResponse !== false) return report;
-  const targetContext = await resolveTargetContext({
-    repo: params.repo ?? repoId,
-    verifyGraphAuthority: true,
-    requiredGraphCapabilities,
-  });
+  const targetContext =
+    preflightTargetContext?.status === 'ok'
+      ? preflightTargetContext
+      : await resolveTargetContext({
+          repo: params.repo ?? repoId,
+          verifyGraphAuthority: true,
+          requiredGraphCapabilities,
+        });
   return createEnvelopeFromLegacy({
     legacy: report,
     tool: 'gn_ensure_fresh',
@@ -525,6 +599,7 @@ export async function gnEnsureFresh(
 async function buildEnsureFreshReport(
   repoId: string,
   params: EnsureFreshParams,
+  sourceManifestStale = false,
 ): Promise<EnsureFreshReport> {
   const requiredGraphCapabilities = normalizeRequiredGraphCapabilities(
     params.requiredGraphCapabilities,
@@ -541,19 +616,23 @@ async function buildEnsureFreshReport(
   try {
     registry = parseRegistryJson(readFileSync(registryPath, 'utf8'));
   } catch (err) {
-    warnings.push('cannot read ~/.ontoindex/registry.json: ' + String(err));
-    return emptyReport(
-      warnings,
-      recommendations,
-      {},
-      params.autoAnalyze === true
-        ? {
-            status: 'blocked',
-            reasonCode: 'REGISTRY_UNAVAILABLE',
-            message: 'Repository registry is unavailable; analysis cannot be submitted.',
-          }
-        : { status: 'not-requested' },
-    );
+    if (isMissingFileError(err)) {
+      registry = [];
+    } else {
+      warnings.push('cannot read ~/.ontoindex/registry.json: ' + String(err));
+      return emptyReport(
+        warnings,
+        recommendations,
+        {},
+        params.autoAnalyze === true
+          ? {
+              status: 'blocked',
+              reasonCode: 'REGISTRY_UNAVAILABLE',
+              message: 'Repository registry is unavailable; analysis cannot be submitted.',
+            }
+          : { status: 'not-requested' },
+      );
+    }
   }
 
   // ---- 2. Resolve the repo from the same registry semantics as MCP --------
@@ -561,7 +640,84 @@ async function buildEnsureFreshReport(
   const cwdRepoRoot = selector ? undefined : await resolveCwdRepoRoot();
   const selection = resolveRegistryEntry(registry, selector ?? cwdRepoRoot);
   if (selection.status === 'ambiguous') warnings.push(selection.action);
-  const entry = findRegistryEntry(registry, selector, cwdRepoRoot);
+  let entry = findRegistryEntry(registry, selector, cwdRepoRoot);
+  if (!entry && params.autoAnalyze === true && selector && path.isAbsolute(selector)) {
+    const requestedRoot = path.resolve(selector);
+    let gitRoot: string;
+    try {
+      gitRoot = path.resolve(
+        (
+          await execFileText('git', ['rev-parse', '--show-toplevel'], {
+            cwd: requestedRoot,
+            timeoutMs: GIT_PROBE_TIMEOUT_MS,
+            maxBuffer: GIT_PROBE_MAX_BUFFER,
+          })
+        ).trim(),
+      );
+    } catch {
+      return emptyReport(
+        [
+          ...warnings,
+          `Cannot register ${requestedRoot}: it is not an accessible Git worktree root.`,
+        ],
+        ['Pass the absolute path to the Git worktree root before requesting autoAnalyze.'],
+        {
+          repoLabel: requestedRoot,
+          repoPath: requestedRoot,
+          scopeConfidence: 'low',
+        },
+        {
+          status: 'blocked',
+          reasonCode: 'REPO_NOT_GIT_ROOT',
+          message: 'An existing absolute Git worktree root is required for automatic registration.',
+        },
+      );
+    }
+    if (!samePath(gitRoot, requestedRoot)) {
+      return emptyReport(
+        [
+          ...warnings,
+          `Cannot register ${requestedRoot}: Git reports the worktree root as ${gitRoot}.`,
+        ],
+        ['Pass the exact absolute path returned by git rev-parse --show-toplevel.'],
+        {
+          repoLabel: requestedRoot,
+          repoPath: requestedRoot,
+          scopeConfidence: 'low',
+        },
+        {
+          status: 'blocked',
+          reasonCode: 'REPO_PATH_NOT_WORKTREE_ROOT',
+          message: 'Only the exact Git worktree root can be registered automatically.',
+        },
+      );
+    }
+
+    try {
+      const registeredName = await ensureRepoRegistered(gitRoot);
+      registry = parseRegistryJson(readFileSync(registryPath, 'utf8'));
+      entry = findRegistryEntry(registry, registeredName, undefined);
+      if (!entry)
+        throw new Error('registered repository was not present in the registry after write');
+      actionsTaken.push(`Ensured registry entry "${registeredName}" exists.`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return emptyReport(
+        [...warnings, `Cannot register ${requestedRoot}: ${message}`],
+        ['Resolve the registry error before retrying autoAnalyze.'],
+        {
+          repoLabel: requestedRoot,
+          repoPath: requestedRoot,
+          scopeConfidence: 'low',
+        },
+        {
+          status: 'blocked',
+          reasonCode: 'REPO_REGISTRATION_FAILED',
+          message: 'Repository registration failed; managed analysis was not submitted.',
+        },
+      );
+    }
+  }
   if (!entry) {
     return emptyReport(
       [...warnings, 'repo not in registry — run ontoindex analyze'],
@@ -616,15 +772,6 @@ async function buildEnsureFreshReport(
   const trustedMetadataIndexedCommit =
     generationMeta.authority !== 'untrusted' ? (repoMeta?.lastCommit ?? '') : '';
   const indexedCommit = trustedMetadataIndexedCommit || registryIndexedCommit;
-  if (generationMeta.authority === 'untrusted') {
-    warnings.push(
-      `Active generation metadata authority is untrusted (${generationMeta.reason ?? 'unknown reason'}); ${
-        registryIndexedCommit
-          ? `using registry commit ${registryIndexedCommit} as a conservative indexed-commit fallback`
-          : 'no trusted indexed-commit fallback is available'
-      }. Generation metadata is excluded from commit, embeddings, and runtime claims.`,
-    );
-  }
   if (
     trustedMetadataIndexedCommit &&
     registryIndexedCommit &&
@@ -672,6 +819,46 @@ async function buildEnsureFreshReport(
     repoLabel: entry.name ?? selector ?? repoRoot,
     meta: runtimeFallbackMeta,
   });
+  const isFirstIndex =
+    generationMeta.authority === 'untrusted' &&
+    generationMeta.reason === 'index-not-created' &&
+    !generationMeta.activeGeneration &&
+    !repoMeta &&
+    !registryIndexedCommit &&
+    currentHeadAvailable &&
+    dirtyFileCount !== null &&
+    runtimeHealth.dirtyWorktree === dirtyFileCount > 0 &&
+    runtimeHealth.hasRuntimeArtifacts === false &&
+    runtimeHealth.analyzeLock.state === 'absent' &&
+    !runtimeHealth.analyzeLock.present &&
+    runtimeHealth.analysisCheckpoint.state === 'absent' &&
+    !runtimeHealth.analysisCheckpoint.present &&
+    !runtimeHealth.embeddingCheckpoint.present &&
+    runtimeHealth.freshnessState !== 'failed-after-partial-run';
+  if (isFirstIndex) {
+    warnings.push('No index has been created for this registered repository yet.');
+    runtimeHealth = {
+      ...runtimeHealth,
+      freshnessState: 'degraded',
+      degradedReason: 'No index has been created for this repository yet.',
+      repairCommand: 'ontoindex analyze',
+      repairAction: {
+        tool: 'ontoindex',
+        command: 'analyze',
+        args: [],
+        reason: 'create the first repository index',
+      },
+    };
+  }
+  if (generationMeta.authority === 'untrusted' && !isFirstIndex) {
+    warnings.push(
+      `Active generation metadata authority is untrusted (${generationMeta.reason ?? 'unknown reason'}); ${
+        registryIndexedCommit
+          ? `using registry commit ${registryIndexedCommit} as a conservative indexed-commit fallback`
+          : 'no trusted indexed-commit fallback is available'
+      }. Generation metadata is excluded from commit, embeddings, and runtime claims.`,
+    );
+  }
   if (runtimeHealth.workspaceReadiness?.state === 'not-checked' && isAutomaticWorkspaceEnabled()) {
     warnings.push(
       generationMeta.authority !== 'untrusted' && Boolean(generationMeta.meta?.lastCommit)
@@ -681,6 +868,7 @@ async function buildEnsureFreshReport(
   }
   if (
     generationMeta.authority === 'untrusted' &&
+    !isFirstIndex &&
     runtimeHealth.freshnessState !== 'failed-after-partial-run'
   ) {
     runtimeHealth = {
@@ -727,6 +915,7 @@ async function buildEnsureFreshReport(
     };
   }
   const refreshWorkNeeded =
+    isFirstIndex ||
     isStale ||
     // Uncommitted edits are absent from a commit-scoped graph, so a dirty tree
     // is refreshable work even when HEAD already matches the indexed commit.
@@ -734,6 +923,8 @@ async function buildEnsureFreshReport(
     (!currentHeadAvailable && indexedCommit !== '') ||
     embeddingsRepairRequired ||
     runtimeHealth.analyzeLock.state === 'stale' ||
+    runtimeHealth.freshnessState === 'stale' ||
+    sourceManifestStale ||
     runtimeHealth.freshnessState === 'failed-after-partial-run';
 
   // ---- 6. Recommendations (always populated) ------------------------------
@@ -783,6 +974,7 @@ async function buildEnsureFreshReport(
   } else if (
     params.autoAnalyze === true &&
     runtimeHealth.freshnessState === 'untrusted' &&
+    !isFirstIndex &&
     runtimeHealth.analyzeLock.state !== 'stale'
   ) {
     analysisSubmission = {
@@ -836,11 +1028,11 @@ async function buildEnsureFreshReport(
     }
 
     const cli = currentCliCommand();
-    const args = [...cli.argsPrefix, 'analyze'];
+    const args = [...cli.argsPrefix, 'analyze', '--skip-ai-context'];
     const forceRecovery =
       runtimeHealth.analyzeLock.state === 'stale' ||
       runtimeHealth.freshnessState === 'failed-after-partial-run';
-    const forceEmbeddingsRepair = !isStale && embeddingsRepairRequired;
+    const forceEmbeddingsRepair = !isFirstIndex && !isStale && embeddingsRepairRequired;
     const forceAnalyze = forceRecovery || forceEmbeddingsRepair;
     if (forceAnalyze) args.push('--force');
     if (params.withEmbeddings) args.push('--embeddings');

@@ -11,9 +11,15 @@ import {
 } from '../../src/cli/analyze.js';
 import { planExperimentalFileDeltaRefresh } from '../../src/core/analyze-delta.js';
 import { runFullAnalysis } from '../../src/core/run-analyze.js';
+import { generateSkillFiles } from '../../src/cli/skill-gen.js';
 
 vi.mock('../../src/core/run-analyze.js', () => ({
   runFullAnalysis: vi.fn(),
+}));
+
+vi.mock('../../src/cli/skill-gen.js', () => ({
+  generateSkillFiles: vi.fn(),
+  parseSkillTargets: vi.fn(),
 }));
 
 vi.mock('../../src/core/analyze-delta.js', async (importOriginal) => ({
@@ -55,6 +61,7 @@ function initTempGitRepo(repoPath: string) {
 describe('CLI help surface', () => {
   afterEach(() => {
     vi.mocked(runFullAnalysis).mockReset();
+    vi.mocked(generateSkillFiles).mockReset();
     vi.mocked(planExperimentalFileDeltaRefresh).mockReset();
     process.exitCode = undefined;
   });
@@ -71,6 +78,7 @@ describe('CLI help surface', () => {
     expect(result.stdout).toContain('--dry-run');
     expect(result.stdout).toContain('--explain-file <path>');
     expect(result.stdout).toContain('--workspace-graph');
+    expect(result.stdout).toContain('--skip-ai-context');
   });
 
   it.each([
@@ -213,7 +221,6 @@ describe('CLI help surface', () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-
     vi.mocked(runFullAnalysis).mockResolvedValue({
       repoName: 'temp',
       repoPath: tmpDir,
@@ -254,6 +261,55 @@ describe('CLI help surface', () => {
       logSpy.mockRestore();
       warnSpy.mockRestore();
       errorSpy.mockRestore();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('skips repo skill installation when skipAiContext is enabled', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-skip-ai-context-'));
+    initTempGitRepo(tmpDir);
+    fs.writeFileSync(path.join(tmpDir, 'sample.ts'), 'export const sample = 1;\n');
+    const originalNodeOptions = process.env.NODE_OPTIONS;
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((code) => {
+      process.exitCode = code ?? 0;
+      return undefined as never;
+    });
+
+    vi.mocked(runFullAnalysis).mockResolvedValue({
+      repoName: 'temp',
+      repoPath: tmpDir,
+      stats: {},
+      pipelineResult: {} as any,
+      alreadyUpToDate: false,
+    });
+    process.env.NODE_OPTIONS = `${originalNodeOptions || ''} --max-old-space-size=8192`.trim();
+
+    try {
+      await analyzeCommand(tmpDir, { skills: true, skipAiContext: true });
+
+      expect(runFullAnalysis).toHaveBeenCalledWith(
+        tmpDir,
+        expect.objectContaining({ skipAiContext: true }),
+        expect.objectContaining({ onProgress: expect.any(Function), onLog: expect.any(Function) }),
+      );
+      expect(generateSkillFiles).not.toHaveBeenCalled();
+      expect(fs.existsSync(path.join(tmpDir, '.claude', 'skills'))).toBe(false);
+      expect(fs.existsSync(path.join(tmpDir, 'AGENTS.md'))).toBe(false);
+      expect(fs.existsSync(path.join(tmpDir, 'CLAUDE.md'))).toBe(false);
+    } finally {
+      process.exitCode = undefined;
+      if (originalNodeOptions === undefined) {
+        delete process.env.NODE_OPTIONS;
+      } else {
+        process.env.NODE_OPTIONS = originalNodeOptions;
+      }
+      logSpy.mockRestore();
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
+      exitSpy.mockRestore();
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
