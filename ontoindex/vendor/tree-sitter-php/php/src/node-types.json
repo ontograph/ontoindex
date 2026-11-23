@@ -1321,6 +1321,14 @@
             "named": true
           },
           {
+            "type": "require_expression",
+            "named": true
+          },
+          {
+            "type": "require_once_expression",
+            "named": true
+          },
+          {
             "type": "unary_op_expression",
             "named": true
           }

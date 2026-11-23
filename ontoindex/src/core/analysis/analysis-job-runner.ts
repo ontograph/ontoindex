@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
+import { analysisTimeoutMs } from './analysis-timeout.js';
 
 import {
   claimAnalysisJobRunner,
@@ -15,7 +16,7 @@ import {
 } from './analysis-publication-receipt.js';
 
 const MAX_LOG_BYTES = 1024 * 1024;
-const JOB_TIMEOUT_MS = 30 * 60 * 1000;
+const JOB_TIMEOUT_MS = analysisTimeoutMs(process.env.ONTOINDEX_ANALYSIS_TIMEOUT_MS);
 const KILL_GRACE_MS = 5_000;
 const PROCESS_GROUP_EXIT_TIMEOUT_MS = KILL_GRACE_MS + 5_000;
 const PROCESS_GROUP_POLL_INTERVAL_MS = 25;
@@ -67,7 +68,7 @@ async function main(): Promise<void> {
     env: managedAnalysisEnvironment(job),
   });
   if (cancelling) stopChild();
-  const timeout = setTimeout(() => cancel('Analysis timed out (30 minute limit)'), JOB_TIMEOUT_MS);
+  const timeout = setTimeout(() => cancel(`Analysis timed out (${JOB_TIMEOUT_MS} ms limit)`), JOB_TIMEOUT_MS);
   timeout.unref?.();
   child.stdout?.on('data', (chunk: Buffer) => void append(chunk));
   child.stderr?.on('data', (chunk: Buffer) => void append(chunk));

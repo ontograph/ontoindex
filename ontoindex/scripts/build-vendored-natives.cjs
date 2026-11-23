@@ -16,7 +16,9 @@ for (const entry of fs.readdirSync(vendor, { withFileTypes: true })) {
     entry.name === 'tree-sitter-typescript' &&
     ((process.platform === 'darwin' && process.arch === 'arm64') ||
       (process.platform === 'linux' && process.arch === 'x64'));
-  const rebuildRequired = rebuildRuntime || rebuildTypeScript;
+  // The vendored PHP grammar differs from the distributed upstream prebuilds.
+  const rebuildPhp = entry.name === 'tree-sitter-php';
+  const rebuildRequired = rebuildRuntime || rebuildTypeScript || rebuildPhp;
 
   if (!rebuildRequired) {
     try {
@@ -73,7 +75,9 @@ for (const entry of fs.readdirSync(vendor, { withFileTypes: true })) {
         const binding = ${JSON.stringify(
           entry.name === 'tree-sitter'
             ? 'tree_sitter_runtime_binding.node'
-            : 'tree_sitter_typescript_binding.node',
+            : entry.name === 'tree-sitter-php'
+              ? 'tree_sitter_php_binding.node'
+              : 'tree_sitter_typescript_binding.node',
         )};
         const prebuildEnv = dependency.toUpperCase().replace(/-/g, '_') + '_PREBUILD';
         const requireApp = createRequire(path.join(dir, '..', '..', 'package.json'));

@@ -418,7 +418,11 @@ export interface LbugRuntimeDiagnostics {
 // Exceeding this limit indicates an unexpectedly large result set; we throw
 // rather than silently truncate to avoid data loss in callers that assume
 // completeness.
-const MAX_INTERNAL_ROWS = 50_000;
+const configuredInternalRows = Number(process.env.ONTOINDEX_MAX_INTERNAL_ROWS);
+const MAX_INTERNAL_ROWS =
+  Number.isSafeInteger(configuredInternalRows) && configuredInternalRows >= 50_000
+    ? Math.min(configuredInternalRows, 200_000)
+    : 50_000;
 const MAX_CACHED_EMBEDDINGS = (() => {
   const raw = Number.parseInt(process.env.ONTOINDEX_MAX_CACHED_EMBEDDINGS ?? '', 10);
   return Number.isFinite(raw) ? Math.max(0, Math.min(raw, MAX_INTERNAL_ROWS - 1)) : 20_000;

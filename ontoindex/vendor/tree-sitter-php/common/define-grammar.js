@@ -1080,6 +1080,8 @@ module.exports = function defineGrammar(dialect) {
           $._unary_expression,
           $.include_expression,
           $.include_once_expression,
+          $.require_expression,
+          $.require_once_expression,
           $.error_suppression_expression,
         )),
       )),

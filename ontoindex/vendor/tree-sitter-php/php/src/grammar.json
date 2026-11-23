@@ -5664,6 +5664,14 @@
                 },
                 {
                   "type": "SYMBOL",
+                  "name": "require_expression"
+                },
+                {
+                  "type": "SYMBOL",
+                  "name": "require_once_expression"
+                },
+                {
+                  "type": "SYMBOL",
                   "name": "error_suppression_expression"
                 }
               ]

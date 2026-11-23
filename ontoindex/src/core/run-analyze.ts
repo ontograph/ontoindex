@@ -1480,7 +1480,11 @@ export async function runFullAnalysis(
   let cachedEmbeddings: CachedEmbedding[] = [];
   let existingEmbeddings: Map<string, ExistingEmbeddingHashEntry> | undefined;
 
-  if (embeddingsEnabledForRun && existingMeta && !options.force) {
+  if (
+    embeddingsEnabledForRun &&
+    existingMeta &&
+    (!options.force || process.env.ONTOINDEX_PRESERVE_FORCE_EMBEDDINGS === '1')
+  ) {
     try {
       progress('embeddings', 0, 'Caching embeddings...');
       await initLbug(activeLbugPath);
