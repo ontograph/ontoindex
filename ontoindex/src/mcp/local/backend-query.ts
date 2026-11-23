@@ -9,6 +9,10 @@ import { collectBestChunks } from '../../core/embeddings/types.js';
 import { EMBEDDING_INDEX_NAME, EMBEDDING_TABLE_NAME } from '../../core/lbug/schema.js';
 import { findTopLevelResultLimit } from '../../core/cypher-limit.js';
 import { resolveSemanticVectorRowsFetcher } from '../../core/embeddings/zvec-semantic-backend.js';
+import {
+  EmbeddingRevisionMismatchError,
+  getEmbeddingRevisionMismatch,
+} from '../../core/embeddings/embedding-revision.js';
 
 interface QueryRepoHandle {
   id: string;
@@ -338,6 +342,11 @@ export async function semanticSearch(
     );
     if (!tableCheck.length) return [];
 
+    const { loadMeta } = await import('../../storage/repo-manager.js');
+    const meta = await loadMeta(repo.storagePath ?? repo.id);
+    const revisionMismatch = getEmbeddingRevisionMismatch(meta?.embedding_revision);
+    if (revisionMismatch) throw new EmbeddingRevisionMismatchError(revisionMismatch);
+
     const { embedQuery, getEmbeddingDims, isEmbedderReady } = await import('../core/embedder.js');
 
     // Apply intent-based model override on cold-start path only.
@@ -408,6 +417,7 @@ export async function semanticSearch(
 
     return results;
   } catch (err) {
+    if (err instanceof EmbeddingRevisionMismatchError) throw err;
     // Expected when embeddings are disabled — fall back to BM25-only.
     // Unexpected vector/DB/model errors are logged so degraded search is visible.
     if (!isExpectedEmbeddingUnavailableError(err)) {

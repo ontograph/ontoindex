@@ -24,29 +24,156 @@ describe('routesPhase', () => {
     await fs.writeFile(path.join(repoDir, 'server.php'), '<?php');
     await fs.writeFile(path.join(repoDir, 'client.js'), "fetch('/custom')");
     const modulePath = path.join(repoDir, 'provider.mjs');
-    await fs.writeFile(modulePath, `export default { apiVersion: 1, id: 'fixture', async collect(ctx) {
+    await fs.writeFile(
+      modulePath,
+      `export default { apiVersion: 1, id: 'fixture', async collect(ctx) {
       if (!(await ctx.readFiles(['server.php'])).has('server.php')) throw Error('missing file');
       return { routes: [{ routePath: '/custom', filePath: 'server.php', source: 'fixture', httpMethod: 'GET', handlerNodeId: 'Method:server.php:handler' }],
         consumers: [{ filePath: 'client.js', fetchURL: '/custom', lineNumber: 0, httpMethod: 'GET' }] };
-    }};`);
+    }};`,
+    );
     process.env.ONTOINDEX_ROUTE_PROVIDER = modulePath;
     const graph = createKnowledgeGraph();
-    graph.addNode({ id: 'Method:server.php:handler', label: 'Method', properties: { name: 'handler', filePath: 'server.php' } });
-    const parseOutput = { allPaths: ['server.php', 'client.js'], allFetchCalls: [], allExtractedRoutes: [], allDecoratorRoutes: [] } as unknown as ParseOutput;
-    await routesPhase.execute({ repoPath: repoDir, graph, onProgress: () => {}, pipelineStart: Date.now() },
-      new Map([['parse', { phaseName: 'parse', output: parseOutput, durationMs: 0 }]]));
+    graph.addNode({
+      id: 'Method:server.php:handler',
+      label: 'Method',
+      properties: { name: 'handler', filePath: 'server.php' },
+    });
+    const parseOutput = {
+      allPaths: ['server.php', 'client.js'],
+      allFetchCalls: [],
+      allExtractedRoutes: [],
+      allDecoratorRoutes: [],
+    } as unknown as ParseOutput;
+    await routesPhase.execute(
+      { repoPath: repoDir, graph, onProgress: () => {}, pipelineStart: Date.now() },
+      new Map([['parse', { phaseName: 'parse', output: parseOutput, durationMs: 0 }]]),
+    );
     const id = routeNodeId('/custom', 'GET');
     expect(graph.getNode(id)).toBeDefined();
-    expect(graph.relationships.some((r) => r.sourceId === 'Method:server.php:handler' && r.targetId === id)).toBe(true);
+    expect(
+      graph.relationships.some(
+        (r) => r.sourceId === 'Method:server.php:handler' && r.targetId === id,
+      ),
+    ).toBe(true);
     expect(graph.relationships.some((r) => r.type === 'FETCHES' && r.targetId === id)).toBe(true);
+  });
+
+  it('does not link a losing provider route to a route from another file', async () => {
+    repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-provider-collision-'));
+    await fs.writeFile(path.join(repoDir, 'routes.ts'), '');
+    await fs.writeFile(path.join(repoDir, 'server.php'), '<?php');
+    const modulePath = path.join(repoDir, 'provider.mjs');
+    await fs.writeFile(
+      modulePath,
+      `export default { apiVersion: 1, id: 'fixture', async collect() {
+      return { routes: [{ routePath: '/shared', filePath: 'server.php', source: 'fixture', httpMethod: 'GET', handlerNodeId: 'Method:controller.php:show' }] };
+    }};`,
+    );
+    process.env.ONTOINDEX_ROUTE_PROVIDER = modulePath;
+    const graph = createKnowledgeGraph();
+    graph.addNode({
+      id: 'Method:controller.php:show',
+      label: 'Method',
+      properties: { name: 'show', filePath: 'src/Controller.php' },
+    });
+    const parseOutput = {
+      allPaths: ['routes.ts', 'server.php'],
+      allFetchCalls: [],
+      allExtractedRoutes: [
+        {
+          filePath: 'routes.ts',
+          routePath: '/shared',
+          httpMethod: 'GET',
+          lineNumber: 1,
+          controllerName: null,
+          methodName: null,
+        },
+      ],
+      allDecoratorRoutes: [],
+    } as unknown as ParseOutput;
+
+    await routesPhase.execute(
+      { repoPath: repoDir, graph, onProgress: () => {}, pipelineStart: Date.now() },
+      new Map([['parse', { phaseName: 'parse', output: parseOutput, durationMs: 0 }]]),
+    );
+
+    const id = routeNodeId('/shared', 'GET');
+    expect(graph.getNode(id)?.properties.filePath).toBe('routes.ts');
+    expect(
+      graph.relationships.some(
+        (r) =>
+          r.type === 'HANDLES_ROUTE' &&
+          r.sourceId === 'Method:controller.php:show' &&
+          r.targetId === id,
+      ),
+    ).toBe(false);
+  });
+
+  it('does not link provider handlers when duplicate records disagree', async () => {
+    repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-provider-ambiguous-'));
+    await fs.writeFile(path.join(repoDir, 'server.php'), '<?php');
+    const modulePath = path.join(repoDir, 'provider.mjs');
+    await fs.writeFile(
+      modulePath,
+      `export default { apiVersion: 1, id: 'fixture', async collect() {
+      return { routes: [
+        { routePath: '/shared', filePath: 'server.php', source: 'fixture', httpMethod: 'GET', handlerSymbol: 'Items@show', handlerNodeId: 'Method:Items:show' },
+        { routePath: '/shared', filePath: 'server.php', source: 'fixture', httpMethod: 'GET', handlerSymbol: 'Items@list', handlerNodeId: 'Method:Items:list' },
+      ] };
+    }};`,
+    );
+    process.env.ONTOINDEX_ROUTE_PROVIDER = modulePath;
+    const graph = createKnowledgeGraph();
+    graph.addNode({
+      id: 'Method:Items:show',
+      label: 'Method',
+      properties: { name: 'show', filePath: 'src/Items.php' },
+    });
+    graph.addNode({
+      id: 'Method:Items:list',
+      label: 'Method',
+      properties: { name: 'list', filePath: 'src/Items.php' },
+    });
+    const parseOutput = {
+      allPaths: ['server.php'],
+      allFetchCalls: [],
+      allExtractedRoutes: [],
+      allDecoratorRoutes: [],
+    } as unknown as ParseOutput;
+
+    await routesPhase.execute(
+      { repoPath: repoDir, graph, onProgress: () => {}, pipelineStart: Date.now() },
+      new Map([['parse', { phaseName: 'parse', output: parseOutput, durationMs: 0 }]]),
+    );
+
+    const id = routeNodeId('/shared', 'GET');
+    expect(graph.getNode(id)?.properties.filePath).toBe('server.php');
+    expect(
+      graph.relationships.some(
+        (r) =>
+          r.type === 'HANDLES_ROUTE' &&
+          ['Method:Items:show', 'Method:Items:list'].includes(r.sourceId) &&
+          r.targetId === id,
+      ),
+    ).toBe(false);
   });
 
   it('fails the analysis when a configured provider cannot be loaded', async () => {
     process.env.ONTOINDEX_ROUTE_PROVIDER = 'relative.mjs';
     const graph = createKnowledgeGraph();
-    const output = { allPaths: [], allFetchCalls: [], allExtractedRoutes: [], allDecoratorRoutes: [] } as unknown as ParseOutput;
-    await expect(routesPhase.execute({ repoPath: '/tmp', graph, onProgress: () => {}, pipelineStart: Date.now() },
-      new Map([['parse', { phaseName: 'parse', output, durationMs: 0 }]]))).rejects.toThrow('absolute path');
+    const output = {
+      allPaths: [],
+      allFetchCalls: [],
+      allExtractedRoutes: [],
+      allDecoratorRoutes: [],
+    } as unknown as ParseOutput;
+    await expect(
+      routesPhase.execute(
+        { repoPath: '/tmp', graph, onProgress: () => {}, pipelineStart: Date.now() },
+        new Map([['parse', { phaseName: 'parse', output, durationMs: 0 }]]),
+      ),
+    ).rejects.toThrow('absolute path');
   });
 
   it('retains response and middleware evidence for file-based routes', async () => {

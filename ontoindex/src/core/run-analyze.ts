@@ -55,6 +55,10 @@ import type { DegradedFileGroupCount, RepoMeta } from '../storage/repo-manager.j
 import { getCurrentCommit, hasGitDir } from '../storage/git.js';
 import { getLanguageFromFilename } from 'ontoindex-shared';
 import type { CachedEmbedding } from './embeddings/types.js';
+import {
+  getConfiguredEmbeddingRevision,
+  getEmbeddingRevisionMismatch,
+} from './embeddings/embedding-revision.js';
 import { generateAIContextFiles } from '../cli/ai-context.js';
 import type { PipelineResult } from '../types/pipeline.js';
 import type { PipelineProgress } from 'ontoindex-shared';
@@ -1415,6 +1419,19 @@ export async function runFullAnalysis(
 
   const existingMeta = await loadMeta(storagePath);
   let embeddingVectorIndexDigest = existingMeta?.embeddingVectorIndexDigest;
+  const embeddingRevision = getConfiguredEmbeddingRevision();
+  const embeddingRevisionMismatch = getEmbeddingRevisionMismatch(
+    existingMeta?.embedding_revision,
+    embeddingRevision,
+  );
+  const existingMetaShowsEmbeddings =
+    (existingMeta?.stats?.embeddings ?? 0) > 0 ||
+    Boolean(existingMeta?.model_hash || existingMeta?.embedding_revision);
+
+  if (embeddingsEnabledForRun && embeddingRevisionMismatch && existingMetaShowsEmbeddings) {
+    gcTelemetry?.stop();
+    throw new Error(embeddingRevisionMismatch);
+  }
 
   // ── Embedding model hash guard ────────────────────────────────────
   // Refuse to re-embed against an existing index built with a different
@@ -1500,6 +1517,11 @@ export async function runFullAnalysis(
         /* swallow */
       }
     }
+  }
+
+  if (embeddingsEnabledForRun && embeddingRevisionMismatch && cachedEmbeddings.length > 0) {
+    gcTelemetry?.stop();
+    throw new Error(embeddingRevisionMismatch);
   }
 
   // ── Phase 1: Full Pipeline (0–60%) ────────────────────────────────
@@ -2122,6 +2144,7 @@ export async function runFullAnalysis(
       relationshipDistributions,
       ...(includePaths.length > 0 ? { includePaths } : {}),
       ...(persistedModelHash ? { model_hash: persistedModelHash } : {}),
+      ...(embeddingCount > 0 && embeddingRevision ? { embedding_revision: embeddingRevision } : {}),
       ...(embeddingVectorIndexDigest !== undefined ? { embeddingVectorIndexDigest } : {}),
       ...(degradedFiles.size > 0
         ? (() => {

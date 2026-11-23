@@ -14,6 +14,7 @@ const { embeddingPipelineMocks } = vi.hoisted(() => ({
   embeddingPipelineMocks: {
     runEmbeddingPipeline: vi.fn().mockResolvedValue(undefined),
     batchInsertEmbeddings: vi.fn().mockResolvedValue(undefined),
+    createVectorIndex: vi.fn().mockResolvedValue(true),
     EMBEDDING_TEXT_VERSION: 'v2',
   },
 }));
@@ -121,6 +122,7 @@ import {
   getLbugStats,
   initLbug,
   loadGraphToLbug,
+  loadCachedEmbeddings,
 } from '../../src/core/lbug/lbug-adapter.js';
 import { fetchExistingEmbeddingHashes } from '../../src/core/lbug/lbug-adapter.js';
 import {
@@ -162,6 +164,7 @@ const loadGraphToLbugMock = loadGraphToLbug as unknown as ReturnType<typeof vi.f
 const fetchExistingEmbeddingHashesMock = fetchExistingEmbeddingHashes as unknown as ReturnType<
   typeof vi.fn
 >;
+const loadCachedEmbeddingsMock = loadCachedEmbeddings as unknown as ReturnType<typeof vi.fn>;
 const loadMetaMock = loadMeta as unknown as ReturnType<typeof vi.fn>;
 const saveMetaMock = saveMeta as unknown as ReturnType<typeof vi.fn>;
 const getCurrentCommitMock = getCurrentCommit as unknown as ReturnType<typeof vi.fn>;
@@ -235,6 +238,11 @@ describe('runFullAnalysis snapshot persistence', () => {
     createFTSIndexMock.mockReset().mockResolvedValue(undefined);
     embeddingPipelineMocks.runEmbeddingPipeline.mockResolvedValue(undefined);
     embeddingPipelineMocks.batchInsertEmbeddings.mockResolvedValue(undefined);
+    embeddingPipelineMocks.createVectorIndex.mockReset().mockResolvedValue(true);
+    loadCachedEmbeddingsMock.mockReset().mockResolvedValue({
+      embeddingNodeIds: new Set(),
+      embeddings: [],
+    });
     loadMetaMock.mockResolvedValue(null);
     getLbugStatsMock.mockResolvedValue({ nodes: 3, edges: 2 });
     getCurrentCommitMock.mockReturnValue('abc123');
@@ -967,6 +975,38 @@ describe('runFullAnalysis snapshot persistence', () => {
         headCommit: 'abc123',
       });
     } finally {
+      await fs.rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses to reuse cached embeddings from a different pinned revision', async () => {
+    const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-analyze-revision-mismatch-'));
+    const previousRevision = process.env.ONTOINDEX_EMBEDDING_REVISION;
+    const previousUrl = process.env.ONTOINDEX_EMBEDDING_URL;
+    const previousModel = process.env.ONTOINDEX_EMBEDDING_MODEL;
+    process.env.ONTOINDEX_EMBEDDING_REVISION = 'revision-b';
+    delete process.env.ONTOINDEX_EMBEDDING_URL;
+    delete process.env.ONTOINDEX_EMBEDDING_MODEL;
+    try {
+      loadMetaMock.mockResolvedValue({
+        lastCommit: 'previous-commit',
+        embedding_revision: 'revision-a',
+        stats: { embeddings: 3 },
+      });
+
+      await expect(
+        runFullAnalysis(repoDir, { embeddings: true }, { onProgress: vi.fn() }),
+      ).rejects.toThrow('Embedding revision mismatch');
+
+      expect(loadCachedEmbeddingsMock).not.toHaveBeenCalled();
+      expect(runPipelineMock).not.toHaveBeenCalled();
+    } finally {
+      if (previousRevision === undefined) delete process.env.ONTOINDEX_EMBEDDING_REVISION;
+      else process.env.ONTOINDEX_EMBEDDING_REVISION = previousRevision;
+      if (previousUrl === undefined) delete process.env.ONTOINDEX_EMBEDDING_URL;
+      else process.env.ONTOINDEX_EMBEDDING_URL = previousUrl;
+      if (previousModel === undefined) delete process.env.ONTOINDEX_EMBEDDING_MODEL;
+      else process.env.ONTOINDEX_EMBEDDING_MODEL = previousModel;
       await fs.rm(repoDir, { recursive: true, force: true });
     }
   });
@@ -2199,6 +2239,54 @@ describe('runFullAnalysis snapshot persistence', () => {
     }
   });
 
+  it('recreates the vector index when cached embeddings are restored and generation is skipped', async () => {
+    const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-analyze-cached-vector-index-'));
+    const previousNodeLimit = process.env.ONTOINDEX_EMBEDDING_NODE_LIMIT;
+    process.env.ONTOINDEX_EMBEDDING_NODE_LIMIT = '1';
+    try {
+      const { EMBEDDING_DIMS } = await import('../../src/core/lbug/schema.js');
+      loadMetaMock.mockResolvedValue({ lastCommit: 'previous-commit', model_hash: '' });
+      loadCachedEmbeddingsMock.mockResolvedValue({
+        embeddingNodeIds: new Set(['Function:cached']),
+        embeddings: [
+          {
+            nodeId: 'Function:cached',
+            chunkIndex: 0,
+            startLine: 1,
+            endLine: 2,
+            embedding: new Array(EMBEDDING_DIMS).fill(0.25),
+            contentHash: 'cached-content-hash',
+          },
+        ],
+      });
+      runPipelineMock.mockResolvedValue({
+        graph: createKnowledgeGraph(),
+        repoPath: repoDir,
+        totalFileCount: 0,
+        communityResult: undefined,
+        processResult: undefined,
+        usedWorkerPool: false,
+      });
+      executeQueryMock.mockImplementation(async (query: string) => {
+        if (query.includes('RETURN count(n) AS cnt')) return [{ cnt: 2 }];
+        if (query.includes('RETURN count(e) AS cnt')) return [{ cnt: 1 }];
+        return [];
+      });
+
+      await runFullAnalysis(repoDir, { embeddings: true }, { onProgress: vi.fn() });
+
+      expect(loadCachedEmbeddingsMock).toHaveBeenCalledTimes(1);
+      expect(embeddingPipelineMocks.batchInsertEmbeddings).toHaveBeenCalledTimes(1);
+      expect(embeddingPipelineMocks.createVectorIndex).toHaveBeenCalledTimes(1);
+      expect(embeddingPipelineMocks.createVectorIndex).toHaveBeenCalledWith(executeQueryMock);
+      expect(embeddingPipelineMocks.runEmbeddingPipeline).not.toHaveBeenCalled();
+    } finally {
+      if (previousNodeLimit === undefined) delete process.env.ONTOINDEX_EMBEDDING_NODE_LIMIT;
+      else process.env.ONTOINDEX_EMBEDDING_NODE_LIMIT = previousNodeLimit;
+      await fs.rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
   it('runs explicit embeddings when total graph nodes exceed the cap but embeddable nodes do not', async () => {
     const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-analyze-'));
     try {
@@ -2246,7 +2334,13 @@ describe('runFullAnalysis snapshot persistence', () => {
   it('persists model_hash in meta.json when embeddings are generated', async () => {
     const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-analyze-'));
     const previousModelHash = process.env.ONTOINDEX_EMBEDDING_MODEL_HASH;
+    const previousRevision = process.env.ONTOINDEX_EMBEDDING_REVISION;
+    const previousUrl = process.env.ONTOINDEX_EMBEDDING_URL;
+    const previousModel = process.env.ONTOINDEX_EMBEDDING_MODEL;
     process.env.ONTOINDEX_EMBEDDING_MODEL_HASH = 'test-embedding-hash';
+    process.env.ONTOINDEX_EMBEDDING_REVISION = 'test-pinned-revision';
+    delete process.env.ONTOINDEX_EMBEDDING_URL;
+    delete process.env.ONTOINDEX_EMBEDDING_MODEL;
     try {
       const graph = createKnowledgeGraph();
       graph.addNode({
@@ -2275,6 +2369,7 @@ describe('runFullAnalysis snapshot persistence', () => {
         expect.stringContaining(path.join(repoDir, '.ontoindex', 'generations', '.staging-')),
         expect.objectContaining({
           model_hash: 'test-embedding-hash',
+          embedding_revision: 'test-pinned-revision',
           stats: expect.objectContaining({
             embeddings: 7,
           }),
@@ -2283,6 +2378,12 @@ describe('runFullAnalysis snapshot persistence', () => {
     } finally {
       if (previousModelHash === undefined) delete process.env.ONTOINDEX_EMBEDDING_MODEL_HASH;
       else process.env.ONTOINDEX_EMBEDDING_MODEL_HASH = previousModelHash;
+      if (previousRevision === undefined) delete process.env.ONTOINDEX_EMBEDDING_REVISION;
+      else process.env.ONTOINDEX_EMBEDDING_REVISION = previousRevision;
+      if (previousUrl === undefined) delete process.env.ONTOINDEX_EMBEDDING_URL;
+      else process.env.ONTOINDEX_EMBEDDING_URL = previousUrl;
+      if (previousModel === undefined) delete process.env.ONTOINDEX_EMBEDDING_MODEL;
+      else process.env.ONTOINDEX_EMBEDDING_MODEL = previousModel;
       await fs.rm(repoDir, { recursive: true, force: true });
     }
   });

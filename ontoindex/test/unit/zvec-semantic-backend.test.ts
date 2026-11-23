@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 
 vi.mock('../../src/core/lbug/pool-adapter.js', () => ({
   executeParameterized: vi.fn(),
@@ -20,6 +23,7 @@ import {
 } from '../../src/core/lbug/pool-adapter.js';
 import { embedQuery, getEmbeddingDims, isEmbedderReady } from '../../src/mcp/core/embedder.js';
 import { semanticSearch } from '../../src/mcp/local/backend-query.js';
+import { EmbeddingRevisionMismatchError } from '../../src/core/embeddings/embedding-revision.js';
 import {
   computeZvecEmbeddingRowsDigest,
   createZvecMirrorMetadata,
@@ -95,6 +99,9 @@ describe('zvec semantic backend routing', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     delete process.env.ONTOINDEX_VECTOR_BACKEND;
+    delete process.env.ONTOINDEX_EMBEDDING_REVISION;
+    delete process.env.ONTOINDEX_EMBEDDING_URL;
+    delete process.env.ONTOINDEX_EMBEDDING_MODEL;
     mockIsLbugReady.mockReturnValue(true);
     mockEmbedQuery.mockResolvedValue([0.11, 0.22, 0.33]);
     mockGetEmbeddingDims.mockReturnValue(3);
@@ -135,6 +142,7 @@ describe('zvec semantic backend routing', () => {
     resetZvecSemanticSearchCircuitBreakerForTests();
     setZvecSemanticSearchDriverForTests(undefined);
     delete process.env.ONTOINDEX_VECTOR_BACKEND;
+    delete process.env.ONTOINDEX_EMBEDDING_REVISION;
   });
 
   it('keeps the LadybugDB vector path when zvec is not requested', async () => {
@@ -155,6 +163,29 @@ describe('zvec semantic backend routing', () => {
       'repo-1',
       expect.stringContaining('QUERY_VECTOR_INDEX'),
     );
+  });
+
+  it('fails closed without querying vectors when configured and indexed revisions differ', async () => {
+    const storagePath = await fs.mkdtemp(path.join(os.tmpdir(), 'ontoindex-revision-query-'));
+    process.env.ONTOINDEX_EMBEDDING_REVISION = 'revision-b';
+    try {
+      await fs.writeFile(
+        path.join(storagePath, 'meta.json'),
+        JSON.stringify({ embedding_revision: 'revision-a', stats: { embeddings: 1 } }),
+      );
+
+      await expect(semanticSearch({ ...repo, storagePath }, 'cache store', 5)).rejects.toBeInstanceOf(
+        EmbeddingRevisionMismatchError,
+      );
+
+      expect(mockEmbedQuery).not.toHaveBeenCalled();
+      expect(mockExecuteQuery).not.toHaveBeenCalledWith(
+        repo.id,
+        expect.stringContaining('QUERY_VECTOR_INDEX'),
+      );
+    } finally {
+      await fs.rm(storagePath, { recursive: true, force: true });
+    }
   });
 
   it('falls back to LadybugDB when a requested zvec mirror is stale', async () => {

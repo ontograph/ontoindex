@@ -96,6 +96,8 @@ export interface RepoMeta {
    * from different model versions in the same index.
    */
   model_hash?: string;
+  /** Hugging Face revision used for local embeddings; absent on legacy indexes. */
+  embedding_revision?: string;
   embeddingVectorIndexDigest?: string;
   stats?: {
     files?: number;

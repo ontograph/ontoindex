@@ -75,6 +75,7 @@ import { getFileSkeleton } from '../../src/core/search/skeleton.js';
 import { appendQueryLog, queryLogEnabled } from '../../src/mcp/local/query-log.js';
 import { resolveTargetContext } from '../../src/mcp/shared/target-context.js';
 import { query } from '../../src/mcp/local/backend-search.js';
+import { EmbeddingRevisionMismatchError } from '../../src/core/embeddings/embedding-revision.js';
 import { embedQuery, isEmbedderReady } from '../../src/mcp/core/embedder.js';
 import {
   loadAnnNeighborEdges,
@@ -254,6 +255,21 @@ describe('backend-search typed input', () => {
     expect(result).not.toHaveProperty('retrieval_diagnostics');
     expect(mockLoadAnnNeighborEdges).not.toHaveBeenCalled();
     expect(mockEmbedQuery).not.toHaveBeenCalled();
+  });
+
+  it('surfaces embedding revision mismatches through the public search path', async () => {
+    const message = 'Embedding revision mismatch: index and runtime revisions differ.';
+    mockSemanticSearch.mockRejectedValueOnce(new EmbeddingRevisionMismatchError(message));
+
+    await expect(
+      query({ id: 'repo-1', repoPath: '/repo', lastCommit: 'abc123' } as any, {
+        query: 'cache store',
+        include_skeleton: false,
+      }),
+    ).rejects.toMatchObject({
+      name: 'EmbeddingRevisionMismatchError',
+      message,
+    });
   });
 
   it('filters emitted symbol-level results by include_paths and exclude_paths', async () => {
