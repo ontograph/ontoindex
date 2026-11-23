@@ -87,6 +87,20 @@ export const ContextSchema = BaseRepoSchema.extend({
 
 export interface ContextParams extends z.input<typeof ContextSchema> {}
 
+export const ParserDiagnosticsSchema = BaseRepoSchema.extend({
+  source: z.enum(['committed', 'workspace-overlay']).default('committed'),
+  diagnostic_kind: z.enum(['all', 'parse-error', 'degraded']).default('all'),
+  generation: z
+    .string()
+    .regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/)
+    .optional(),
+  cursor: z.string().max(512).optional(),
+  offset: z.number().int().min(0).default(0),
+  limit: z.number().int().min(1).max(100).default(50),
+});
+
+export interface ParserDiagnosticsParams extends z.input<typeof ParserDiagnosticsSchema> {}
+
 export const DetectChangesSchema = BaseRepoSchema.extend({
   scope: z.enum(['unstaged', 'staged', 'all', 'compare']).default('unstaged'),
   base_ref: z.string().optional(),
@@ -449,6 +463,7 @@ export const TOOL_SCHEMAS: Record<string, z.ZodObject> = {
   query: QuerySchema,
   cypher: CypherSchema,
   context: ContextSchema,
+  parser_diagnostics: ParserDiagnosticsSchema,
   detect_changes: DetectChangesSchema,
   cycle_detect: CycleDetectSchema,
   coupling_matrix: CouplingMatrixSchema,

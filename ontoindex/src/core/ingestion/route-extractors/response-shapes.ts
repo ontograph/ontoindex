@@ -296,6 +296,7 @@ export function extractNextjsRouteShapes(
       routePath,
       httpMethod: pages ? 'GET' : name,
       decoratorName: 'nextjs',
+      handlerSymbol: handler.childForFieldName('name')?.text ?? name,
       lineNumber: handler.startPosition.row + lineOffset,
       ...extract(handler),
     });

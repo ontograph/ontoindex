@@ -266,7 +266,7 @@ export const ONTOINDEX_FACADE_TOOLS: ToolDefinition[] = [
   {
     name: 'inspect',
     description:
-      'Inspect symbol context, evidence packs, API shapes, IPC traces, modules, or related symbols. Context inspection can opt in to sidecar enrichment metadata.',
+      'Inspect symbol context, parse diagnostics, evidence packs, API shapes, IPC traces, modules, or related symbols. Context inspection can opt in to sidecar enrichment metadata.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -277,6 +277,7 @@ export const ONTOINDEX_FACADE_TOOLS: ToolDefinition[] = [
             'evidence',
             'shape',
             'ipc',
+            'diagnostics',
             'graph_walk',
             'propose_location',
             'explore',
@@ -312,6 +313,30 @@ export const ONTOINDEX_FACADE_TOOLS: ToolDefinition[] = [
         uid: { type: 'string', description: 'Context symbol UID.' },
         file_path: { type: 'string', description: 'Context file path disambiguator.' },
         kind: { type: 'string', description: 'Context symbol kind disambiguator.' },
+        source: {
+          type: 'string',
+          enum: ['committed', 'workspace-overlay'],
+          description:
+            'For diagnostics: committed generation or current/retained workspace overlay.',
+        },
+        diagnostic_kind: {
+          type: 'string',
+          enum: ['all', 'parse-error', 'degraded'],
+          description: 'For diagnostics: evidence category to page.',
+        },
+        generation: {
+          type: 'string',
+          description: 'For diagnostics continuation: generation returned by the previous page.',
+        },
+        cursor: {
+          type: 'string',
+          description: 'For diagnostics continuation: nextCursor from the previous page.',
+        },
+        offset: {
+          type: 'integer',
+          minimum: 0,
+          description: 'For diagnostics continuation: nextOffset from the previous page.',
+        },
         include_content: {
           type: 'boolean',
           description: 'Include full symbol source content in context results.',

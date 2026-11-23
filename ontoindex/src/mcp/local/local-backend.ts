@@ -48,8 +48,15 @@ import {
   resolveActiveIndexGeneration,
   readActiveGenerationMeta,
   acquireIndexGenerationPin,
+  acquireOverlayGenerationPin,
+  readIndexGenerationMeta,
   type RegistryEntry,
 } from '../../storage/repo-manager.js';
+import {
+  decodeParserDiagnosticsCursor,
+  isValidParserDiagnosticsSummary,
+  readParserDiagnosticsPage,
+} from '../../core/ingestion/parser-diagnostics.js';
 import {
   appendIndexCapabilityWarnings,
   loadIndexCapabilityWarnings,
@@ -191,6 +198,7 @@ import type {
   MoveSymbolParams,
   DocsMcpParams,
   OverviewParams,
+  ParserDiagnosticsParams,
   PatternAuditParams,
   QueryParams,
   RenameByUidParams,
@@ -1373,6 +1381,7 @@ const KNOWN_METHODS = new Set<string>([
   'query',
   'cypher',
   'context',
+  'parser_diagnostics',
   'impact',
   'gn_diagnose',
   'detect_changes',
@@ -1492,6 +1501,8 @@ export class LocalBackend implements BackendPort {
         return formatCypherAsMarkdown(await queryCypher(repo, params as CypherParams));
       },
       context: (repo, params) => this.context(repo, params as ContextParams),
+      parser_diagnostics: (repo, params) =>
+        this.parserDiagnostics(repo, params as ParserDiagnosticsParams),
       impact: (repo, params) => {
         const impactParams = params as ImpactParams;
         return this.impact(repo, {
@@ -2146,6 +2157,168 @@ export class LocalBackend implements BackendPort {
     const record = result as Record<string, unknown>;
     const warnings = Array.isArray(record.warnings) ? record.warnings : [];
     return { ...record, warnings: [...warnings, notice] } as T;
+  }
+
+  private async parserDiagnostics(
+    repo: RepoHandle,
+    params: ParserDiagnosticsParams,
+  ): Promise<Record<string, unknown>> {
+    const cursorState = params.cursor
+      ? decodeParserDiagnosticsCursor(params.cursor, {
+          source: params.source,
+          kind: params.diagnostic_kind,
+          limit: params.limit,
+        })
+      : undefined;
+    const source = params.source ?? cursorState?.source ?? 'committed';
+    const kind = params.diagnostic_kind ?? cursorState?.kind ?? 'all';
+    const offset = cursorState?.offset ?? params.offset ?? 0;
+    const limit = cursorState?.limit ?? params.limit ?? 50;
+    let generation = params.generation ?? cursorState?.generation;
+    let generationPath: string;
+    let summary: unknown;
+    let release: (() => Promise<void>) | undefined;
+
+    const unavailable = async (reason: string): Promise<Record<string, unknown>> => {
+      await release?.().catch(() => {});
+      release = undefined;
+      return {
+        available: false,
+        complete: false,
+        source,
+        generation: generation ?? null,
+        reason,
+        total: null,
+        returned: 0,
+        truncated: null,
+        items: [],
+      };
+    };
+    if (generation !== undefined && !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(generation)) {
+      throw new Error('Invalid parser diagnostics generation id.');
+    }
+    if (
+      (source !== 'committed' && source !== 'workspace-overlay') ||
+      !Number.isSafeInteger(offset) ||
+      offset < 0 ||
+      !Number.isSafeInteger(limit) ||
+      limit < 1 ||
+      limit > 100 ||
+      (offset > 0 && !generation && !cursorState) ||
+      (cursorState !== undefined && params.offset !== undefined) ||
+      (params.generation !== undefined &&
+        cursorState &&
+        params.generation !== cursorState.generation)
+    ) {
+      throw new Error('Invalid parser diagnostics page request.');
+    }
+
+    if (source === 'committed') {
+      const generationsPath = path.join(repo.storagePath, 'generations');
+      const rootStat = await fs.lstat(generationsPath).catch(() => null);
+      if (!rootStat?.isDirectory() || rootStat.isSymbolicLink()) {
+        return unavailable('generation_storage_unavailable');
+      }
+      const canonicalRoot = await fs.realpath(generationsPath);
+      if (generation === undefined) {
+        generation = (await resolveActiveIndexGeneration(repo.storagePath))?.generationId;
+        if (!generation) return unavailable('no_published_generation');
+      }
+      generationPath = path.join(canonicalRoot, generation);
+      if (path.dirname(generationPath) !== canonicalRoot) {
+        throw new Error('Invalid parser diagnostics generation id.');
+      }
+      const generationStat = await fs.lstat(generationPath).catch(() => null);
+      if (!generationStat?.isDirectory() || generationStat.isSymbolicLink()) {
+        return unavailable('generation_not_retained');
+      }
+      try {
+        const pin = await acquireIndexGenerationPin(path.join(generationPath, 'lbug'));
+        release = pin.release;
+        const expectedDatabase = path.join(await fs.realpath(generationPath), 'lbug');
+        if (path.resolve(pin.dbPath) !== path.resolve(expectedDatabase)) {
+          await release();
+          release = undefined;
+          return unavailable('generation_changed_during_read');
+        }
+      } catch {
+        return unavailable('generation_not_retained');
+      }
+      const metaPath = path.join(generationPath, 'meta.json');
+      const metaStat = await fs.lstat(metaPath).catch(() => null);
+      if (!metaStat?.isFile() || metaStat.isSymbolicLink()) {
+        return unavailable('generation_metadata_unavailable');
+      }
+      try {
+        const meta = await readIndexGenerationMeta(generationPath);
+        if (meta?.generationId !== generation) return unavailable('generation_metadata_mismatch');
+        summary = meta.parserDiagnostics;
+      } catch {
+        return unavailable('generation_metadata_unavailable');
+      }
+    } else {
+      const overlayPath = path.join(repo.storagePath, 'overlay');
+      const overlayStat = await fs.lstat(overlayPath).catch(() => null);
+      if (!overlayStat?.isDirectory() || overlayStat.isSymbolicLink()) {
+        return unavailable('workspace_overlay_unavailable');
+      }
+      const canonicalOverlay = await fs.realpath(overlayPath);
+      if (generation === undefined) {
+        const currentPath = path.join(canonicalOverlay, 'CURRENT');
+        const currentStat = await fs.lstat(currentPath).catch(() => null);
+        if (!currentStat?.isFile() || currentStat.isSymbolicLink()) {
+          return unavailable('workspace_overlay_unavailable');
+        }
+        generation = (await fs.readFile(currentPath, 'utf8')).trim();
+      }
+      if (!generation || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(generation)) {
+        return unavailable('workspace_overlay_unavailable');
+      }
+      generationPath = path.join(canonicalOverlay, generation);
+      if (path.dirname(generationPath) !== canonicalOverlay) {
+        throw new Error('Invalid parser diagnostics generation id.');
+      }
+      const generationStat = await fs.lstat(generationPath).catch(() => null);
+      if (!generationStat?.isDirectory() || generationStat.isSymbolicLink()) {
+        return unavailable('generation_not_retained');
+      }
+      try {
+        const pin = await acquireOverlayGenerationPin(generationPath);
+        release = pin.release;
+      } catch {
+        return unavailable('generation_not_retained');
+      }
+      const basePath = path.join(generationPath, 'base.json');
+      const baseStat = await fs.lstat(basePath).catch(() => null);
+      if (!baseStat?.isFile() || baseStat.isSymbolicLink()) {
+        return unavailable('generation_metadata_unavailable');
+      }
+      try {
+        const base = JSON.parse(await fs.readFile(basePath, 'utf8')) as Record<string, unknown>;
+        summary = base.parserDiagnostics;
+      } catch {
+        return unavailable('generation_metadata_unavailable');
+      }
+    }
+
+    try {
+      if (!generation) return await unavailable('generation_not_retained');
+      if (!isValidParserDiagnosticsSummary(summary)) {
+        return unavailable('complete_diagnostics_unavailable');
+      }
+      const page = await readParserDiagnosticsPage(generationPath, generation, summary, {
+        source,
+        kind,
+        limit,
+        ...(cursorState ? { cursor: params.cursor } : { offset }),
+      });
+      return { available: true, source, ...page };
+    } catch (error) {
+      if (error instanceof Error && /offset exceeds the total/.test(error.message)) throw error;
+      return unavailable('diagnostic_data_incomplete_or_invalid');
+    } finally {
+      await release?.().catch(() => {});
+    }
   }
 
   /** Committed-graph notice for a resource read, or undefined when nothing is uncommitted. */

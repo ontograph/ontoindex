@@ -701,7 +701,7 @@ export const processCalls = async (
     const provider = getProvider(language);
     if (!provider.treeSitterQueries) continue;
 
-    await loadLanguage(language, file.path);
+    await loadLanguage(language, file.path, file.content);
     const tree = parser.parse(file.content);
     const query = new Parser.Query(parser.getLanguage(), provider.treeSitterQueries);
     const matches = query.matches(tree.rootNode);
@@ -748,7 +748,7 @@ export const extractFetchCallsFromFiles = async (
     const provider = getProvider(language);
     if (!provider.treeSitterQueries) continue;
 
-    await loadLanguage(language, file.path);
+    await loadLanguage(language, file.path, file.content);
 
     let tree = astCache.get(file.path);
     if (!tree) {

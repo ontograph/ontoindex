@@ -107,6 +107,10 @@ import {
 } from './tree-sitter/parser-identity.js';
 import type { ScopeRetentionRequest } from './ingestion/pipeline-phases/scope-retention-stage.js';
 import {
+  ParserDiagnosticsWriter,
+  type ParserDiagnosticsSummary,
+} from './ingestion/parser-diagnostics.js';
+import {
   persistScopeRetentionCandidate,
   copyScopeRetentionCandidate,
 } from './ingestion/pipeline-phases/scope-retention-candidate.js';
@@ -202,11 +206,7 @@ export interface AnalyzeOptions {
 
 export type EmbeddingLifecycleMode = 'off' | 'preserve' | 'refresh';
 export type EmbeddingLifecycleState =
-  | 'available'
-  | 'preserved'
-  | 'refreshed'
-  | 'skipped'
-  | 'absent';
+  'available' | 'preserved' | 'refreshed' | 'skipped' | 'absent';
 
 export interface EmbeddingLifecycleSummary {
   mode: EmbeddingLifecycleMode;
@@ -901,6 +901,8 @@ async function runWorkspaceAnalysis(
   const currentTempPath = path.join(overlayPath, `.CURRENT-${generationId}.tmp`);
   await fs.mkdir(generationPath);
   let capture: WorkspaceInputCapture | undefined;
+  let parserDiagnosticsWriter: ParserDiagnosticsWriter | undefined;
+  let parserDiagnosticsWriteError: unknown;
   let persistedCandidateBytes = 0;
   let published = false;
   let replayPin: Awaited<ReturnType<typeof acquireOverlayGenerationPin>> | undefined;
@@ -938,6 +940,7 @@ async function runWorkspaceAnalysis(
     const dirtyPathSet = new Set(dirtyPlan?.allDirtyPaths ?? includePaths);
     let degraded = false;
     let parseErrorCount = 0;
+    let degradedEntryCount = 0;
     const parseErrorFiles = new Set<string>();
     const overlayBase = {
       head: capture?.head ?? (getCurrentCommit(repoPath) || null),
@@ -947,6 +950,7 @@ async function runWorkspaceAnalysis(
       configurationDigest: capture?.manifest.workspaceCapture?.configurationDigest ?? null,
       parserIdentity: capture?.manifest.workspaceCapture?.parserIdentity ?? null,
       includePaths,
+      parserDiagnostics: undefined as ParserDiagnosticsSummary | undefined,
       ...(workspaceGraph
         ? {
             inventory,
@@ -1051,6 +1055,17 @@ async function runWorkspaceAnalysis(
           }
         : undefined;
     const pipelineStart = performance.now();
+    parserDiagnosticsWriter = new ParserDiagnosticsWriter(generationPath);
+    const appendParserDiagnostic = (
+      diagnostic: Parameters<ParserDiagnosticsWriter['append']>[0],
+    ) => {
+      if (parserDiagnosticsWriteError !== undefined) return;
+      try {
+        parserDiagnosticsWriter!.append(diagnostic);
+      } catch (error) {
+        parserDiagnosticsWriteError = error;
+      }
+    };
     const pipelineResult: PipelineResult =
       !workspaceGraph && includePaths.length === 0
         ? { graph: createKnowledgeGraph(), repoPath, totalFileCount: 0, usedWorkerPool: false }
@@ -1066,39 +1081,52 @@ async function runWorkspaceAnalysis(
               profile: workspaceGraph ? 'full' : 'symbols',
               ...(scopeRetention ? { scopeRetention } : {}),
               ...(scopeReplay ? { scopeReplay } : {}),
-              ...(workspaceGraph
-                ? {
-                    onTelemetry: (
-                      event: Parameters<NonNullable<PipelineOptions['onTelemetry']>>[0],
-                    ) => {
-                      if (
-                        event.event === 'phase-end' &&
-                        typeof event.phaseName === 'string' &&
-                        event.phaseName.length > 0 &&
-                        typeof event.durationMs === 'number' &&
-                        Number.isFinite(event.durationMs) &&
-                        event.durationMs >= 0 &&
-                        phases.length < 128
-                      ) {
-                        phases.push({ name: event.phaseName, durationMs: event.durationMs });
-                      }
-                      if (event.event === 'parse-error-files') {
-                        parseErrorCount += event.parseErrorCount ?? 0;
-                        for (const filePath of event.parseErrorFiles ?? []) {
-                          if (parseErrorFiles.size < 1000) parseErrorFiles.add(filePath);
-                        }
-                      }
-                      if (
-                        event.degradedFiles?.length ||
-                        event.event === 'phase-error' ||
-                        event.degradedReason ||
-                        event.slowFiles?.some((file) => file.status !== 'processed')
-                      ) {
-                        degraded = true;
-                      }
-                    },
+              onFileDiagnostic: appendParserDiagnostic,
+              onTelemetry: (event: Parameters<NonNullable<PipelineOptions['onTelemetry']>>[0]) => {
+                if (
+                  workspaceGraph &&
+                  event.event === 'phase-end' &&
+                  typeof event.phaseName === 'string' &&
+                  event.phaseName.length > 0 &&
+                  typeof event.durationMs === 'number' &&
+                  Number.isFinite(event.durationMs) &&
+                  event.durationMs >= 0 &&
+                  phases.length < 128
+                ) {
+                  phases.push({ name: event.phaseName, durationMs: event.durationMs });
+                }
+                if (event.event === 'parse-error-files') {
+                  parseErrorCount += event.parseErrorCount ?? 0;
+                  for (const filePath of event.parseErrorFiles ?? []) {
+                    if (parseErrorFiles.size < 1000) parseErrorFiles.add(filePath);
                   }
-                : { includePaths }),
+                }
+                if (event.event === 'parse-degraded-files') {
+                  degradedEntryCount += event.degradedFileCount ?? event.degradedFiles?.length ?? 0;
+                }
+                if (event.event === 'scan-degraded-files') {
+                  const files = event.degradedFiles ?? [];
+                  degradedEntryCount += event.degradedFileCount ?? files.length;
+                  for (const file of files) {
+                    appendParserDiagnostic({
+                      kind: 'degraded',
+                      filePath: file.filePath,
+                      reason: file.reason,
+                      phase: event.phaseName,
+                    });
+                  }
+                }
+                if (
+                  workspaceGraph &&
+                  (event.degradedFiles?.length ||
+                    event.event === 'phase-error' ||
+                    event.degradedReason ||
+                    event.slowFiles?.some((file) => file.status !== 'processed'))
+                ) {
+                  degraded = true;
+                }
+              },
+              ...(!workspaceGraph ? { includePaths } : {}),
               capturedWorkspace: {
                 captureRoot: capture!.captureRoot,
                 canonicalRepoPath: capture!.canonicalRepoPath,
@@ -1106,6 +1134,21 @@ async function runWorkspaceAnalysis(
             },
             dependencies.analyzeRuntime,
           );
+    if (parserDiagnosticsWriteError !== undefined) {
+      throw new Error('Could not persist complete parser diagnostics evidence.', {
+        cause: parserDiagnosticsWriteError,
+      });
+    }
+    const parserDiagnostics = await parserDiagnosticsWriter.finish();
+    if (
+      parserDiagnostics.parseErrorCount !== parseErrorCount ||
+      parserDiagnostics.degradedEntryCount !== degradedEntryCount
+    ) {
+      throw new Error(
+        'Workspace parser diagnostics evidence count did not match pipeline telemetry; refusing to publish an incomplete overlay.',
+      );
+    }
+    overlayBase.parserDiagnostics = parserDiagnostics;
     const pipelineMs = performance.now() - pipelineStart;
     const storageStart = performance.now();
     await initLbug(overlayDbPath, { maxDBSize: 2 ** 32 });
@@ -1458,9 +1501,12 @@ export async function runFullAnalysis(
   // ── Phase 1: Full Pipeline (0–60%) ────────────────────────────────
   let pipelineResult: PipelineResult;
   let stagedGeneration: IndexGenerationPaths | null = null;
+  let parserDiagnosticsWriter: ParserDiagnosticsWriter | null = null;
+  let parserDiagnostics: ParserDiagnosticsSummary | undefined;
   let persistedCandidateBytes = 0;
   const degradedFiles = new Map<string, { reason: string; phase: string; language: string }>();
   let parseErrorCount = 0;
+  let degradedEntryCount = 0;
   const parseErrorFiles = new Set<string>();
   const recordDegradedFiles = (
     files?: readonly AnalyzeDegradedFile[],
@@ -1482,11 +1528,45 @@ export async function runFullAnalysis(
   };
   try {
     const pipelineOptions: PipelineOptions = {};
+    stagedGeneration = await createIndexGeneration(
+      storagePath,
+      `${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2)}`,
+    );
+    parserDiagnosticsWriter = new ParserDiagnosticsWriter(stagedGeneration.generationPath);
+    let parserDiagnosticsWriteError: unknown;
+    const appendParserDiagnostic = (
+      diagnostic: Parameters<ParserDiagnosticsWriter['append']>[0],
+    ) => {
+      if (parserDiagnosticsWriteError !== undefined) return;
+      try {
+        parserDiagnosticsWriter!.append(diagnostic);
+      } catch (error) {
+        parserDiagnosticsWriteError = error;
+      }
+    };
+    pipelineOptions.onFileDiagnostic = (diagnostic) => {
+      appendParserDiagnostic(diagnostic);
+    };
     pipelineOptions.onTelemetry = (event) => {
       if (event.event === 'parse-error-files') {
         parseErrorCount += event.parseErrorCount ?? 0;
         for (const filePath of event.parseErrorFiles ?? []) {
           if (parseErrorFiles.size < 1000) parseErrorFiles.add(filePath.replace(/\\/g, '/'));
+        }
+      }
+      if (event.event === 'parse-degraded-files') {
+        degradedEntryCount += event.degradedFileCount ?? event.degradedFiles?.length ?? 0;
+      }
+      if (event.event === 'scan-degraded-files') {
+        const files = event.degradedFiles ?? [];
+        degradedEntryCount += event.degradedFileCount ?? files.length;
+        for (const file of files) {
+          appendParserDiagnostic({
+            kind: 'degraded',
+            filePath: file.filePath,
+            reason: file.reason,
+            phase: event.phaseName,
+          });
         }
       }
       recordDegradedFiles(event.degradedFiles, event.phaseName);
@@ -1510,11 +1590,8 @@ export async function runFullAnalysis(
     }
     if (dependencies.scopeRetention) {
       const request = dependencies.scopeRetention;
-      const generation = await createIndexGeneration(
-        storagePath,
-        `${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2)}`,
-      );
-      stagedGeneration = generation;
+      const generation = stagedGeneration;
+      if (!generation) throw new Error('Analysis generation was not staged.');
       pipelineOptions.scopeRetention = {
         ...request,
         consume: async (handle) => {
@@ -1547,6 +1624,20 @@ export async function runFullAnalysis(
       pipelineOptions,
       dependencies.analyzeRuntime,
     );
+    if (parserDiagnosticsWriteError !== undefined) {
+      throw new Error('Could not persist complete parser diagnostics evidence.', {
+        cause: parserDiagnosticsWriteError,
+      });
+    }
+    parserDiagnostics = await parserDiagnosticsWriter.finish();
+    if (
+      parserDiagnostics.parseErrorCount !== parseErrorCount ||
+      parserDiagnostics.degradedEntryCount !== degradedEntryCount
+    ) {
+      throw new Error(
+        'Parser diagnostics evidence count did not match pipeline telemetry; refusing to publish an incomplete generation.',
+      );
+    }
   } catch (err) {
     if (stagedGeneration !== null) {
       await discardIndexGeneration(stagedGeneration)
@@ -2005,6 +2096,7 @@ export async function runFullAnalysis(
         parseErrorFiles: [...parseErrorFiles].sort(),
         truncated: parseErrorCount > parseErrorFiles.size,
       },
+      parserDiagnostics,
       sourceProvenance,
       stats: {
         files: pipelineResult.totalFileCount,

@@ -69,6 +69,7 @@ import type {
   FileConstructorBindings,
 } from './workers/parse-worker.js';
 import { normalizeFetchURL, routeMatches } from './route-extractors/nextjs.js';
+import { extractFetchEvidence } from './route-extractors/fetch-evidence.js';
 import { extractTemplateComponents, extractJsxComponents } from './vue-sfc-extractor.js';
 import { extractReturnTypeName, stripNullable } from './type-extractors/shared.js';
 import type { LiteralTypeInferrer } from './type-extractors/types.js';
@@ -1530,7 +1531,7 @@ export const processCalls = async (
       continue;
     }
 
-    await loadLanguage(language, file.path);
+    await loadLanguage(language, file.path, file.content);
 
     let tree = astCache.get(file.path);
     if (!tree) {
@@ -2355,8 +2356,7 @@ const receiverKey = (scope: string, varName: string): string => `${scope}\0${var
  * Built once per file from the verified receiver map, keyed by funcName → varName.
  */
 type ReceiverTypeEntry =
-  | { readonly kind: 'resolved'; readonly value: string }
-  | { readonly kind: 'ambiguous' };
+  { readonly kind: 'resolved'; readonly value: string } | { readonly kind: 'ambiguous' };
 type ReceiverTypeIndex = Map<string, Map<string, ReceiverTypeEntry>>;
 
 /**
@@ -3781,7 +3781,7 @@ export const extractFetchCallsFromFiles = async (
     const queryStr = provider.treeSitterQueries;
     if (!queryStr) continue;
 
-    await loadLanguage(language, file.path);
+    await loadLanguage(language, file.path, file.content);
 
     let tree = astCache.get(file.path);
     if (!tree) {
@@ -3808,11 +3808,11 @@ export const extractFetchCallsFromFiles = async (
       const captureMap = buildCaptureMap(match);
 
       if (captureMap['route.fetch']) {
-        const urlNode = captureMap['route.url'] ?? captureMap['route.template_url'];
-        if (urlNode) {
+        const evidence = extractFetchEvidence(captureMap['route.fetch']);
+        if (evidence) {
           result.push({
             filePath: file.path,
-            fetchURL: urlNode.text,
+            ...evidence,
             lineNumber: captureMap['route.fetch'].startPosition.row,
           });
         }

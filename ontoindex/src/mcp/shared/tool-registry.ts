@@ -48,12 +48,7 @@ export interface McpStartupProfileToolReport {
 export type ContractStatus = 'stable' | 'experimental' | 'deprecated';
 export type ToolVisibility = 'public' | 'internal';
 export type ToolPermissionProfile =
-  | 'read_only'
-  | 'advisory'
-  | 'write_dry_run'
-  | 'write_apply'
-  | 'release'
-  | 'runtime_admin';
+  'read_only' | 'advisory' | 'write_dry_run' | 'write_apply' | 'release' | 'runtime_admin';
 export type EvidenceFreshnessBehavior =
   | 'index_freshness_checked'
   | 'docs_policy_checked'
@@ -62,9 +57,7 @@ export type EvidenceFreshnessBehavior =
   | 'runtime_current'
   | 'not_declared';
 export type EvidenceTruncationPolicy =
-  | 'bounded_mcp_response'
-  | 'caller_limited_response'
-  | 'not_applicable';
+  'bounded_mcp_response' | 'caller_limited_response' | 'not_applicable';
 export type EvidenceResponsePolicy = 'structured_response' | 'text_response';
 
 export interface EvidenceSourceContractMetadata {
@@ -873,6 +866,7 @@ const TOOL_METADATA_LIST: ToolContractMetadata[] = [
       { action: 'evidence', contractStatus: 'stable', structuredOutput: false },
       { action: 'shape', contractStatus: 'stable', structuredOutput: false },
       { action: 'ipc', contractStatus: 'stable', structuredOutput: false },
+      { action: 'diagnostics', contractStatus: 'stable', structuredOutput: true },
       { action: 'graph_walk', contractStatus: 'stable', structuredOutput: true },
       { action: 'propose_location', contractStatus: 'stable', structuredOutput: true },
       { action: 'explore', contractStatus: 'stable', structuredOutput: true },

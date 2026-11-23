@@ -17,6 +17,7 @@ vi.mock('../../src/core/tree-sitter/parser-loader.js', () => ({
 
 vi.mock('ontoindex-shared', () => ({
   getLanguageFromFilename,
+  SupportedLanguages: { PHP: 'php' },
 }));
 
 describe('ensureAndParse', () => {

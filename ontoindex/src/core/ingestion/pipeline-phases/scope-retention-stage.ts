@@ -1151,7 +1151,7 @@ export class ScopeRetentionStage implements ScopeRetentionHandle {
     }
   }
   captureFetchCalls(records: readonly ExtractedFetchCall[]): void {
-    this.captureExtractions('fetch-calls', records, ['fetchURL']);
+    this.captureExtractions('fetch-calls', records, ['fetchURL'], [], false, ['httpMethod']);
   }
   captureRoutes(records: readonly ExtractedRoute[]): void {
     this.captureExtractions(
@@ -1168,6 +1168,8 @@ export class ScopeRetentionStage implements ScopeRetentionHandle {
       records,
       ['httpMethod', 'decoratorName'],
       ['routePath'],
+      false,
+      ['handlerSymbol'],
     );
   }
   captureToolDefinitions(records: readonly ExtractedToolDef[]): void {
@@ -1176,17 +1178,23 @@ export class ScopeRetentionStage implements ScopeRetentionHandle {
   private captureExtractions(
     family: keyof ScopeRetentionStage['extractionRecords'],
     records: readonly (
-      | ExtractedFetchCall
-      | ExtractedRoute
-      | ExtractedDecoratorRoute
-      | ExtractedToolDef
+      ExtractedFetchCall | ExtractedRoute | ExtractedDecoratorRoute | ExtractedToolDef
     )[],
     strings: readonly string[],
     nullable: readonly string[] = [],
     middleware = false,
+    optionalStrings: readonly string[] = [],
   ): void {
     this.completedProducers.delete(family);
     const fields = [
+      'filePath',
+      'lineNumber',
+      ...strings,
+      ...nullable,
+      ...(middleware ? ['middleware'] : []),
+      ...optionalStrings,
+    ];
+    const requiredFields = [
       'filePath',
       'lineNumber',
       ...strings,
@@ -1216,7 +1224,7 @@ export class ScopeRetentionStage implements ScopeRetentionHandle {
       }
       const keys = Reflect.ownKeys(record);
       if (
-        !fields.every((field) => keys.includes(field)) ||
+        !requiredFields.every((field) => keys.includes(field)) ||
         !keys.every(
           (key) =>
             typeof key === 'string' &&
@@ -1248,6 +1256,9 @@ export class ScopeRetentionStage implements ScopeRetentionHandle {
         }
         return true;
       };
+      const validOptionalStrings = optionalStrings.every(
+        (field) => !Object.hasOwn(value, field) || validString(value[field]),
+      );
       let validArrays = true;
       const copiedArrays = new Map<string, string[]>();
       for (const field of [...(middleware ? ['middleware'] : []), ...optionalArrays]) {
@@ -1280,15 +1291,17 @@ export class ScopeRetentionStage implements ScopeRetentionHandle {
         !nullable.every((field) => value[field] === null || validString(value[field])) ||
         !Number.isSafeInteger(record.lineNumber) ||
         record.lineNumber < 0 ||
+        !validOptionalStrings ||
         !validArrays
       ) {
         this.issue(`${family}-${byteLimited ? 'byte-limit' : 'invalid'}`);
         continue;
       }
       const copy = Object.fromEntries(
-        [...fields, ...optionalArrays.filter((field) => Object.hasOwn(value, field))].map(
-          (field) => [field, copiedArrays.get(field) ?? value[field]],
-        ),
+        [
+          ...fields.filter((field) => Object.hasOwn(value, field)),
+          ...optionalArrays.filter((field) => Object.hasOwn(value, field)),
+        ].map((field) => [field, copiedArrays.get(field) ?? value[field]]),
       );
       const encoded = JSON.stringify(copy);
       const bytes = Buffer.byteLength(encoded, 'utf8');

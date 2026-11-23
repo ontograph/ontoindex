@@ -3,6 +3,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { HttpRouteExtractor } from '../../../src/core/group/extractors/http-route-extractor.js';
+import { routeNodeId } from '../../../src/core/ingestion/route-extractors/route-identity.js';
 import type { RepoHandle } from '../../../src/core/group/types.js';
 
 describe('HttpRouteExtractor', () => {
@@ -26,6 +27,46 @@ describe('HttpRouteExtractor', () => {
   });
 
   describe('provider extraction — graph-first (Strategy A)', () => {
+    it('reads method and exact handler from method-specific route graph evidence', async () => {
+      const dir = path.join(tmpDir, 'graph-method-route');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'src/orders.ts'), 'export function createOrder() {}');
+      const methodId = 'Method:src/orders.ts:OrderController.createOrder';
+      const routeId = routeNodeId('/api/orders', 'POST');
+      const mockDbExecutor = async (query: string) => {
+        if (query.includes('HANDLES_ROUTE')) {
+          return [
+            {
+              fileId: 'File:src/orders.ts',
+              filePath: 'src/orders.ts',
+              routePath: '/api/orders',
+              routeId,
+              handlerName: 'orders.ts',
+              handlerLabels: ['File'],
+              routeSource: 'framework-route|http-method:POST',
+            },
+            {
+              fileId: methodId,
+              filePath: 'src/orders.ts',
+              routePath: '/api/orders',
+              routeId,
+              handlerName: 'createOrder',
+              handlerLabels: ['Method'],
+              routeSource: 'framework-route|http-method:POST|resolved-handler-symbol:createOrder',
+            },
+          ];
+        }
+        throw new Error('direct handler link must not query file contents for symbols');
+      };
+
+      const contracts = await extractor.extract(mockDbExecutor, dir, makeRepo(dir));
+      const providers = contracts.filter((contract) => contract.role === 'provider');
+      expect(providers).toHaveLength(1);
+      expect(providers[0].contractId).toBe('http::POST::/api/orders');
+      expect(providers[0].symbolUid).toBe(methodId);
+      expect(providers[0].symbolName).toBe('createOrder');
+    });
+
     it('extracts routes from Route/HANDLES_ROUTE graph + source scan for method', async () => {
       const dir = path.join(tmpDir, 'graph-first');
       fs.mkdirSync(path.join(dir, 'src/controller'), { recursive: true });
@@ -515,6 +556,29 @@ Route::delete('/users/{id}', [UserController::class, 'destroy']);
       expect(providers.find((c) => c.contractId === 'http::POST::/users')).toBeDefined();
       expect(providers.find((c) => c.contractId === 'http::DELETE::/users/{param}')).toBeDefined();
     });
+
+    it('keeps route scans working for mixed HTML/PHP and tagless PHP files', async () => {
+      const dir = path.join(tmpDir, 'laravel-php-dialects');
+      fs.mkdirSync(path.join(dir, 'routes'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'routes/mixed.php'),
+        `<main>before</main><?php Route::get('/mixed', [PageController::class, 'show']); ?><footer>after</footer>`,
+      );
+      fs.writeFileSync(
+        path.join(dir, 'routes/tagless.php'),
+        `Route::post('/tagless', [PageController::class, 'store']);`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const providers = contracts.filter((contract) => contract.role === 'provider');
+
+      expect(
+        providers.find((contract) => contract.contractId === 'http::GET::/mixed'),
+      ).toBeDefined();
+      expect(
+        providers.find((contract) => contract.contractId === 'http::POST::/tagless'),
+      ).toBeDefined();
+    });
   });
 
   describe('consumer extraction — PHP', () => {
@@ -640,7 +704,7 @@ async def create_user(user: UserCreate):
               filePath: 'src/api.ts',
               routePath: '/api/users',
               routeId: 'route-uid-users',
-              fetchReason: 'fetch-url-match',
+              fetchReason: 'fetch-url-match|request-method:GET',
             },
           ];
         }

@@ -24,6 +24,7 @@ const { getLanguageFromFilename } = vi.hoisted(() => ({
 
 vi.mock('ontoindex-shared', () => ({
   getLanguageFromFilename,
+  SupportedLanguages: { PHP: 'php' },
 }));
 
 import { chunkNode } from '../../src/core/embeddings/chunker.js';

@@ -45,6 +45,13 @@ import {
 } from './pipeline-phases/index.js';
 
 export interface PipelineOptions {
+  /** Complete per-file parse/degradation evidence sink; unlike telemetry, this is never sampled. */
+  onFileDiagnostic?: (diagnostic: {
+    kind: 'parse-error' | 'degraded';
+    filePath: string;
+    reason: string;
+    phase: string;
+  }) => void;
   /** Replay an explicitly admitted candidate during a full parse, preserving it before graph commit. */
   scopeReplay?: {
     candidate: Awaited<
@@ -130,12 +137,10 @@ export interface PipelineOptions {
     lastFilePath?: string;
     parseErrorCount?: number;
     parseErrorFiles?: string[];
+    degradedFileCount?: number;
     degradedReason?: string;
     degradedAction?:
-      | 'quarantine-files'
-      | 'skip-remaining'
-      | 'large-file-cap'
-      | 'lightweight-fallback';
+      'quarantine-files' | 'skip-remaining' | 'large-file-cap' | 'lightweight-fallback';
     degradedFiles?: {
       filePath: string;
       reason: string;

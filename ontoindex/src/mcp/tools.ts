@@ -634,6 +634,35 @@ OUTPUT: ranked findings with file, line, pattern type, enclosing symbol callerCo
     },
   },
   {
+    name: 'parser_diagnostics',
+    description:
+      'Page complete parse-error and degraded-file evidence from an immutable index or workspace-overlay generation. Older generations without diagnostic chunks report unavailable.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        repo: { type: 'string', description: 'Repository name or path.' },
+        source: {
+          type: 'string',
+          enum: ['committed', 'workspace-overlay'],
+          description: 'Committed generation or workspace overlay generation.',
+        },
+        diagnostic_kind: {
+          type: 'string',
+          enum: ['all', 'parse-error', 'degraded'],
+          description: 'Evidence category to page.',
+        },
+        generation: {
+          type: 'string',
+          description: 'Generation returned by a prior page; required for stable continuation.',
+        },
+        cursor: { type: 'string', description: 'Next-page cursor returned by a prior page.' },
+        offset: { type: 'integer', description: 'Next offset returned by a prior page.' },
+        limit: { type: 'integer', description: 'Page size, 1–100; defaults to 50.' },
+      },
+      required: [],
+    },
+  },
+  {
     name: 'rename',
     description: `Preview rename candidates across files using the knowledge graph + text search. Rename apply is unavailable; use dry_run: true to review candidates, then edit files directly.
 Finds references via graph (high confidence) and regex text search (lower confidence).

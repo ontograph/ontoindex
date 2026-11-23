@@ -64,6 +64,7 @@ import {
   type McpResponseMode,
 } from '../shared/response-limits.js';
 import type { RouteDataAuditRecord } from '../../core/ingestion/enrichment/route-data-audit.js';
+import { httpMethodFromRouteId } from '../../core/ingestion/route-extractors/route-identity.js';
 import { MEMORIES_DIR, loadMemoryCollection } from '../memory-parser.js';
 import { getCurrentCommit } from '../../storage/git.js';
 import { listRegisteredRepos } from '../../storage/repo-manager.js';
@@ -943,7 +944,9 @@ function routeRowToAuditRecord(row: RouteQueryRow): RouteDataAuditRecord {
   const routePath = rowValue(row, 'path', 0);
   const sourceFile = rowValue(row, 'sourceFile', 1);
   const handler = rowValue(row, 'handler', 2);
+  const method = handler ? httpMethodFromRouteId(handler) : undefined;
   return {
+    ...(method ? { method } : {}),
     ...(routePath ? { path: routePath } : {}),
     ...(sourceFile ? { sourceFile, handler: sourceFile } : handler ? { handler } : {}),
     source: 'route-node',

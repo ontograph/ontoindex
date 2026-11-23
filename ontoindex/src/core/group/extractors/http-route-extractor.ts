@@ -6,6 +6,7 @@ import type { ExtractedContract, RepoHandle } from '../types.js';
 import { capScanFiles, readSafe } from './fs-utils.js';
 import { getPluginForFile, HTTP_SCAN_GLOB, type HttpDetection } from './http-patterns/index.js';
 import { toTreeSitterLanguage } from './tree-sitter-scanner.js';
+import { httpMethodFromRouteId } from '../../ingestion/route-extractors/route-identity.js';
 
 /**
  * Language-agnostic orchestrator for HTTP route (provider + consumer)
@@ -32,9 +33,10 @@ import { toTreeSitterLanguage } from './tree-sitter-scanner.js';
 // ─── Graph-assisted queries ──────────────────────────────────────────
 
 const HANDLES_ROUTE_QUERY = `
-MATCH (handlerFile:File)-[r:CodeRelation {type: 'HANDLES_ROUTE'}]->(route:Route)
-RETURN handlerFile.id AS fileId, handlerFile.filePath AS filePath,
+MATCH (handler)-[r:CodeRelation {type: 'HANDLES_ROUTE'}]->(route:Route)
+RETURN handler.id AS fileId, handler.filePath AS filePath,
        route.name AS routePath, route.id AS routeId,
+       handler.name AS handlerName, labels(handler) AS handlerLabels,
        route.responseKeys AS responseKeys,
        r.reason AS routeSource`;
 
@@ -98,10 +100,32 @@ function contractIdFor(method: string, pathNorm: string): string {
   return `http::${method.toUpperCase()}::${pathNorm}`;
 }
 
+function mergeGraphAndSource(
+  graphContracts: ExtractedContract[],
+  sourceContracts: ExtractedContract[],
+): ExtractedContract[] {
+  const seen = new Set(
+    graphContracts.map(
+      (contract) => `${contract.role}|${contract.contractId}|${contract.symbolRef.filePath}`,
+    ),
+  );
+  return [
+    ...graphContracts,
+    ...sourceContracts.filter((contract) => {
+      const key = `${contract.role}|${contract.contractId}|${contract.symbolRef.filePath}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    }),
+  ];
+}
+
 // ─── Graph row helpers ───────────────────────────────────────────────
 
 function methodFromRouteReason(reason: string): string | null {
   const r = reason || '';
+  const evidence = r.match(/(?:^|\|)http-method:([A-Za-z]+)/i)?.[1];
+  if (evidence) return evidence.toUpperCase();
   if (/GetMapping|decorator-Get/i.test(r)) return 'GET';
   if (/PostMapping|decorator-Post/i.test(r)) return 'POST';
   if (/PutMapping|decorator-Put/i.test(r)) return 'PUT';
@@ -171,7 +195,9 @@ export class HttpRouteExtractor implements ContractExtractor {
         return [];
       }
       try {
-        parser.setLanguage(toTreeSitterLanguage(plugin.language));
+        parser.setLanguage(
+          toTreeSitterLanguage(plugin.languageForContent?.(content) ?? plugin.language),
+        );
         const tree = parser.parse(content);
         const detections = plugin.scan(tree);
         cachedDetections.set(rel, detections);
@@ -193,17 +219,17 @@ export class HttpRouteExtractor implements ContractExtractor {
 
     const graphProviders =
       dbExecutor != null ? await this.extractProvidersGraph(dbExecutor, getDetections) : [];
-    const providers =
-      graphProviders.length > 0
-        ? graphProviders
-        : this.extractProvidersSourceScan(await getScannedFiles(), getDetections);
+    const providers = mergeGraphAndSource(
+      graphProviders,
+      this.extractProvidersSourceScan(await getScannedFiles(), getDetections),
+    );
 
     const graphConsumers =
       dbExecutor != null ? await this.extractConsumersGraph(dbExecutor, getDetections) : [];
-    const consumers =
-      graphConsumers.length > 0
-        ? graphConsumers
-        : this.extractConsumersSourceScan(await getScannedFiles(), getDetections);
+    const consumers = mergeGraphAndSource(
+      graphConsumers,
+      this.extractConsumersSourceScan(await getScannedFiles(), getDetections),
+    );
 
     return [...providers, ...consumers];
   }
@@ -231,60 +257,62 @@ export class HttpRouteExtractor implements ContractExtractor {
       return [];
     }
 
+    const directlyResolvedRouteIds = new Set(
+      rows
+        .filter((row) => /Method|Function/.test(JSON.stringify(row.handlerLabels ?? row[5] ?? [])))
+        .map((row) => String(row.routeId ?? row[3] ?? ''))
+        .filter(Boolean),
+    );
+
     for (const row of rows) {
       const filePath = String(row.filePath ?? '');
       const routePath = String(row.routePath ?? '');
-      const routeSource = String(row.routeSource ?? row.routeReason ?? '');
-      let method = methodFromRouteReason(routeSource);
+      const routeId = String(row.routeId ?? row[3] ?? '');
+      const directSymbol = /Method|Function/.test(
+        JSON.stringify(row.handlerLabels ?? row[5] ?? []),
+      );
+      if (!directSymbol && directlyResolvedRouteIds.has(routeId)) continue;
+      const routeSource = String(row.routeSource ?? row.routeReason ?? row[7] ?? '');
+      let method = httpMethodFromRouteId(routeId) ?? methodFromRouteReason(routeSource);
 
-      // Look up handler name (and backfill method if missing) from the
-      // plugin's scan of the handler file. This replaces the old
-      // regex-based `inferMethodFromFileScan` and `pickJavaHandlerName`
-      // helpers — tree-sitter gives both pieces of information
-      // structurally. Always run the lookup: even when method is set by
-      // `methodFromRouteReason`, we still need the handler name.
+      // A route ID or relation reason supplies method evidence. Source
+      // scanning can fill a missing method only when one route matches.
       const detections = filePath ? getDetections(filePath) : [];
       const providerDetections = detections.filter((d) => d.role === 'provider');
-      let handlerName: string | null = null;
+      let handlerName: string | null =
+        directSymbol && typeof row.handlerName === 'string' ? row.handlerName : null;
       const normalizedRoute = normalizeHttpPath(routePath);
-      // Candidates share the same normalized path. When multiple
-      // detections at the same path exist (e.g. GET + POST /api/orders
-      // in one router), a blind `.find()` silently returned the first
-      // verb — attaching the wrong handler and, when method was not
-      // already pinned by the route reason, the wrong method too.
-      // Disambiguate by method when we know it; refuse to guess when
-      // we don't.
+      // Multiple methods at one path are common. Keep only the candidate
+      // whose method matches explicit route evidence, or infer from one
+      // unique candidate when the graph has no method.
       const candidates = providerDetections.filter(
         (d) => normalizeHttpPath(d.path) === normalizedRoute,
       );
       let match: (typeof candidates)[number] | undefined;
-      const ambiguousCandidates = !method && candidates.length > 1;
+      const methodCandidates = method ? candidates.filter((d) => d.method === method) : candidates;
+      const ambiguousCandidates = methodCandidates.length > 1 && !directSymbol;
       if (method) {
-        match = candidates.find((d) => d.method === method);
-      } else if (candidates.length === 1) {
-        match = candidates[0];
+        if (methodCandidates.length === 1) match = methodCandidates[0];
+      } else if (methodCandidates.length === 1) {
+        match = methodCandidates[0];
+      } else {
+        continue;
       }
-      // else: multiple candidates + unknown method → leave match
-      // undefined so handlerName stays null and skip symbol
-      // enrichment below, keeping the file-basename fallback instead
-      // of letting pickSymbolUid silently pick the first Function /
-      // Method in the file (which reintroduces the mis-attribution
-      // we were trying to avoid). Method stays at the conservative
-      // 'GET' default set below.
       if (match) {
         if (!method) method = match.method;
-        handlerName = match.name;
+        if (!handlerName) handlerName = match.name;
       }
-      if (!method) method = 'GET';
+      if (!method) continue;
 
       const pathNorm = normalizeHttpPath(routePath);
       const cid = contractIdFor(method, pathNorm);
 
-      let symbolUid = '';
+      let symbolUid = directSymbol ? String(row.fileId ?? row[0] ?? '') : '';
       let symbolName = path.basename(filePath) || 'handler';
       let symPath = filePath;
       const fileId = row.fileId ?? row[0];
-      if (fileId && !ambiguousCandidates) {
+      if (handlerName && directSymbol) symbolName = handlerName;
+      if (fileId && !directSymbol && handlerName && !ambiguousCandidates) {
         try {
           const syms = await db(CONTAINS_QUERY, { fileId });
           if (syms.length > 0) {
@@ -305,7 +333,7 @@ export class HttpRouteExtractor implements ContractExtractor {
         symbolUid,
         symbolRef: { filePath: symPath, name: symbolName },
         symbolName,
-        confidence: 0.9,
+        confidence: directSymbol ? 0.95 : ambiguousCandidates ? 0.65 : 0.9,
         meta: {
           method,
           path: pathNorm,
@@ -368,23 +396,18 @@ export class HttpRouteExtractor implements ContractExtractor {
       const filePath = String(row.filePath ?? '');
       const routePath = String(row.routePath ?? '');
       const pathNorm = normalizeHttpPath(routePath);
-      let method = 'GET';
+      const fetchReason = String(row.fetchReason ?? '');
+      let method = fetchReason.match(/(?:^|\|)request-method:([A-Za-z]+)/)?.[1]?.toUpperCase();
       // Prefer the plugin's detected method if we can find a matching
       // fetch/axios call in the same file.
       const detections = filePath ? getDetections(filePath) : [];
-      // Symmetric to the provider path: if multiple consumer calls in
-      // the same file share the same normalized path (e.g. a GET
-      // fetch AND a POST fetch to `/api/orders`), `.find()` silently
-      // picked the first verb and keyed the contract id on the wrong
-      // method. With no upstream method signal here, refuse to guess
-      // when candidates are ambiguous — leave `method` at its
-      // conservative 'GET' default.
+      // Symmetric to the provider path: infer a method only from explicit
+      // graph evidence or one unique source-scan match.
       const consumerCandidates = detections.filter(
         (d) => d.role === 'consumer' && normalizeConsumerPath(d.path) === pathNorm,
       );
-      if (consumerCandidates.length === 1) {
-        method = consumerCandidates[0].method;
-      }
+      if (!method && consumerCandidates.length === 1) method = consumerCandidates[0].method;
+      if (!method) continue;
 
       const cid = contractIdFor(method, pathNorm);
       let symbolUid = '';
@@ -411,12 +434,19 @@ export class HttpRouteExtractor implements ContractExtractor {
         symbolUid,
         symbolRef: { filePath: symPath, name: symbolName },
         symbolName,
-        confidence: 0.9,
+        confidence: /(?:^|\|)(?:method-unknown|dynamic-url|path-only-route)(?:\||$)/.test(
+          fetchReason,
+        )
+          ? 0.65
+          : 0.9,
         meta: {
           method,
           path: pathNorm,
           extractionStrategy: 'graph_assisted',
-          fetchReason: String(row.fetchReason ?? ''),
+          fetchReason,
+          methodEvidence: fetchReason.includes('request-method:')
+            ? 'graph-request-method'
+            : 'source-scan',
         },
       });
     }

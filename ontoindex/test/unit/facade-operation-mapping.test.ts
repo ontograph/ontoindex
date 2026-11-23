@@ -146,6 +146,31 @@ describe('verification facade read ownership', () => {
 });
 
 describe('facade graph read preparation', () => {
+  it('maps inspect diagnostics to the parser diagnostics backend with paging args intact', async () => {
+    const backend = {
+      callTool: vi.fn().mockResolvedValue({ available: true, complete: true }),
+    };
+    const args = {
+      repo: 'fixture',
+      source: 'committed',
+      diagnostic_kind: 'degraded',
+      limit: 25,
+      cursor: 'opaque-page-cursor',
+    };
+    await expect(
+      dispatchFacade('inspect', 'diagnostics', args, backend as unknown as LocalBackend),
+    ).resolves.toMatchObject({ available: true });
+    expect(backend.callTool).toHaveBeenCalledExactlyOnceWith('parser_diagnostics', args);
+    const registeredAction = getPublicToolRegistry({ includeFacades: true })
+      .find((tool) => tool.name === 'inspect')
+      ?.actions.find((action) => action.action === 'diagnostics');
+    expect(registeredAction).toEqual({
+      action: 'diagnostics',
+      contractStatus: 'stable',
+      structuredOutput: true,
+    });
+  });
+
   it.each([
     { automatic: '1', committed: false, notice: false },
     { automatic: '0', committed: false, notice: true },

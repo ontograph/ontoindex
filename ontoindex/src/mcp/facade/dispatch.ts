@@ -14,14 +14,7 @@ import {
 const CANONICAL_NODE_ID_RE = /^[A-Z]\w+:/;
 
 export type FacadeTool =
-  | 'discover'
-  | 'search'
-  | 'inspect'
-  | 'impact'
-  | 'audit'
-  | 'refactor'
-  | 'manage'
-  | 'docs';
+  'discover' | 'search' | 'inspect' | 'impact' | 'audit' | 'refactor' | 'manage' | 'docs';
 
 /**
  * Dispatch layer for M-1 facade tools.
@@ -406,6 +399,8 @@ export function getInternalMethod(tool: FacadeTool, action: string): string {
           return 'shape_check';
         case 'ipc':
           return 'ipc_trace';
+        case 'diagnostics':
+          return 'parser_diagnostics';
         default:
           break;
       }

@@ -226,7 +226,7 @@ export const processHeritage = async (
     if (!queryStr) continue;
 
     // 2. Load the language
-    await loadLanguage(language, file.path);
+    await loadLanguage(language, file.path, file.content);
 
     // 3. Get AST
     let tree = astCache.get(file.path);
@@ -426,7 +426,7 @@ export async function extractExtractedHeritageFromFiles(
       continue;
     }
 
-    await loadLanguage(language, file.path);
+    await loadLanguage(language, file.path, file.content);
 
     let tree = astCache.get(file.path);
     if (!tree) {

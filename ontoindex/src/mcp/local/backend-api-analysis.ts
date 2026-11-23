@@ -31,7 +31,9 @@ interface ApiImpactMismatch {
 
 interface ApiImpactRouteResult {
   route: string;
+  method?: string;
   handler: string;
+  coverageWarning: string;
   responseShape: {
     success: string[];
     error: string[];
@@ -45,7 +47,7 @@ interface ApiImpactRouteResult {
   impactSummary: {
     directConsumers: number;
     affectedFlows: number;
-    riskLevel: 'LOW' | 'MEDIUM' | 'HIGH';
+    riskLevel: 'LOW' | 'MEDIUM' | 'HIGH' | 'UNKNOWN';
     warning?: string;
   };
   activeModelPacks?: EntryPointModelPackSummary[];
@@ -159,9 +161,16 @@ export async function apiImpact(
       name: c.name,
       file: c.filePath,
       accesses: c.accessedKeys ?? [],
-      ...(c.fetchCount && c.fetchCount > 1
+      ...(c.attributionNote || (c.fetchCount && c.fetchCount > 1)
         ? {
-            attributionNote: `This file fetches ${c.fetchCount} routes — accessed keys may belong to a different route.`,
+            attributionNote: [
+              c.attributionNote,
+              c.fetchCount && c.fetchCount > 1
+                ? `This file fetches ${c.fetchCount} routes — accessed keys may belong to a different route.`
+                : undefined,
+            ]
+              .filter(Boolean)
+              .join(' '),
           }
         : {}),
     }));
@@ -169,7 +178,7 @@ export async function apiImpact(
     if (allKnownKeys.size > 0) {
       for (const consumer of r.consumers) {
         if (!consumer.accessedKeys) continue;
-        const isMultiFetch = (consumer.fetchCount ?? 1) > 1;
+        const isMultiFetch = (consumer.fetchCount ?? 1) > 1 || !!consumer.attributionNote;
         for (const key of consumer.accessedKeys) {
           if (!allKnownKeys.has(key)) {
             mismatches.push({
@@ -184,10 +193,16 @@ export async function apiImpact(
     }
     const flows = flowMap.get(r.id) || [];
     const consumerCount = r.consumers.length;
-    let riskLevel: 'LOW' | 'MEDIUM' | 'HIGH' =
-      consumerCount >= 10 ? 'HIGH' : consumerCount >= 4 ? 'MEDIUM' : 'LOW';
+    let riskLevel: 'LOW' | 'MEDIUM' | 'HIGH' | 'UNKNOWN' =
+      consumerCount >= 10
+        ? 'HIGH'
+        : consumerCount >= 4
+          ? 'MEDIUM'
+          : consumerCount > 0
+            ? 'LOW'
+            : 'UNKNOWN';
     if (mismatches.length > 0) {
-      riskLevel = riskLevel === 'LOW' ? 'MEDIUM' : 'HIGH';
+      riskLevel = riskLevel === 'LOW' || riskLevel === 'UNKNOWN' ? 'MEDIUM' : 'HIGH';
     }
     const middleware = r.middleware || [];
     const middlewarePartial =
@@ -195,7 +210,10 @@ export async function apiImpact(
 
     return {
       route: r.name,
+      ...(r.method ? { method: r.method } : {}),
       handler: r.filePath,
+      coverageWarning:
+        'Static analysis is partial: routes, consumers, middleware, and response shapes may be missing. No detected consumers does not establish low risk.',
       responseShape: {
         success: responseKeys,
         error: errorKeys,

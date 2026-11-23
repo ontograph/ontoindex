@@ -1,5 +1,6 @@
 import type { ContractType, CrossLink, GroupManifestLink, StoredContract } from '../types.js';
 import type { CypherExecutor } from '../contract-extractor.js';
+import { routeNodeId } from '../../ingestion/route-extractors/route-identity.js';
 
 interface ManifestExtractResult {
   contracts: StoredContract[];
@@ -62,10 +63,9 @@ function normalizeRoutePath(raw: string): string {
  * in the graph. This helper extracts the path portion so the Cypher
  * lookup uses the canonical route name.
  *
- * The method prefix regex mirrors `buildContractId` (line ~251) for
- * symmetry: case-insensitive `[A-Za-z]+` followed by `::`. The captured
- * method is upper-cased for downstream use; method-constrained matching
- * against `HANDLES_ROUTE` is a future enhancement (not yet wired).
+ * The method prefix regex mirrors `buildContractId`: case-insensitive
+ * `[A-Za-z]+` followed by `::`. The captured method is upper-cased and
+ * constrains lookup to method-specific route IDs when available.
  *
  * Edge cases:
  *  - `"::/api/orders"` — empty method portion, no alpha prefix match, so
@@ -225,19 +225,25 @@ export class ManifestExtractor {
         // The contract may also use the explicit-method form "GET::/api/orders"
         // recommended by buildContractId. Strip the METHOD:: prefix before
         // normalizing — otherwise `normalizeRoutePath('GET::/api/orders')`
-        // returns `/GET::/api/orders` and never matches Route.name. The
-        // captured method is not yet used to constrain the Cypher query
-        // (method-aware HANDLES_ROUTE matching is a future enhancement).
+        // returns `/GET::/api/orders` and never matches Route.name.
         const parsed = parseHttpContract(link.contract);
         const normalized = normalizeRoutePath(parsed.path);
-        rows = await executor(
-          `MATCH (handler)-[r:CodeRelation {type: 'HANDLES_ROUTE'}]->(route:Route)
-           WHERE route.name = $normalized
-           RETURN handler.id AS uid, handler.name AS name, handler.filePath AS filePath
-           ORDER BY handler.filePath ASC
-           LIMIT 1`,
-          { normalized },
-        );
+        const query = (routeId?: string) =>
+          executor(
+            `MATCH (handler)-[r:CodeRelation {type: 'HANDLES_ROUTE'}]->(route:Route)
+             WHERE route.name = $normalized ${routeId ? 'AND route.id = $routeId' : ''}
+             RETURN handler.id AS uid, handler.name AS name, handler.filePath AS filePath
+             ORDER BY handler.filePath ASC
+             LIMIT 1`,
+            {
+              normalized,
+              ...(routeId ? { routeId } : {}),
+            },
+          );
+        rows = await query(parsed.method ? routeNodeId(normalized, parsed.method) : undefined);
+        // Older graphs used path-only route IDs. Preserve this lookup when a
+        // method-specific contract targets an index built before method IDs.
+        if (rows.length === 0 && parsed.method) rows = await query(routeNodeId(normalized));
       } else if (link.type === 'topic') {
         // Topic names aren't a first-class NodeLabel in the graph —
         // topics are referenced by function/method symbols (Kafka

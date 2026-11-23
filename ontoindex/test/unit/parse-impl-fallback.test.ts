@@ -16,6 +16,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
+import Parser from 'tree-sitter';
 import type { processParsing } from '../../src/core/ingestion/parsing-processor.js';
 
 import { SupportedLanguages } from 'ontoindex-shared';
@@ -237,6 +238,64 @@ describe('parse-impl sequential fallback cleanup (U6)', () => {
         { scope: '', varName: 'x', typeName: 'number' },
       ]),
     ).toThrow();
+  });
+
+  it('records sequential preparation failures with their fallback reason', async () => {
+    vi.spyOn(Parser.prototype, 'parse').mockImplementationOnce(() => {
+      throw new Error('sequential-parse-sentinel');
+    });
+    const diagnostics: unknown[] = [];
+    const telemetry: any[] = [];
+
+    await runChunkedParseAndResolve(
+      createKnowledgeGraph(),
+      scanned(repoPath, ['a.ts']),
+      ['a.ts'],
+      1,
+      repoPath,
+      Date.now(),
+      () => {},
+      {
+        skipWorkers: true,
+        onFileDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+        onTelemetry: (event) => telemetry.push(event),
+      },
+    );
+
+    expect(diagnostics).toContainEqual(
+      expect.objectContaining({
+        kind: 'degraded',
+        filePath: 'a.ts',
+        reason: expect.stringContaining('sequential-parse-sentinel'),
+      }),
+    );
+    expect(
+      telemetry
+        .filter((event) => event.event === 'parse-degraded-files')
+        .map((event) => event.degradedFileCount),
+    ).toContain(1);
+  });
+
+  it('records files skipped by the scan size limit', async () => {
+    const diagnostics: unknown[] = [];
+    await runChunkedParseAndResolve(
+      createKnowledgeGraph(),
+      [],
+      ['large.ts'],
+      1,
+      repoPath,
+      Date.now(),
+      () => {},
+      { skipWorkers: true, onFileDiagnostic: (diagnostic) => diagnostics.push(diagnostic) },
+      [{ path: 'large.ts', size: 12345 }],
+    );
+    expect(diagnostics).toContainEqual(
+      expect.objectContaining({
+        kind: 'degraded',
+        filePath: 'large.ts',
+        reason: expect.stringContaining('12345 bytes'),
+      }),
+    );
   });
 
   it('does not cap oversized parseable files by default', async () => {
@@ -700,6 +759,75 @@ describe('parse-impl stage I/O lifetime', () => {
     expect(outcome).toEqual({ failed: true, reason: primary });
     expect(rm).toHaveBeenCalledOnce();
     expect(spies.astCacheClearCalls).toBeGreaterThan(clearsAtAppend);
+  });
+});
+
+describe('parse-impl worker diagnostic timing reconciliation', () => {
+  let repoPath = '';
+
+  beforeEach(() => {
+    failureConfig.readFileContentsFailAfter = Infinity;
+    failureConfig.readFileContentsCalls = 0;
+    failureConfig.processCalls = false;
+    lifetimeConfig.workerData = {
+      imports: [],
+      calls: [],
+      assignments: [],
+      heritage: [],
+      routes: [],
+      fetchCalls: [],
+      decoratorRoutes: [],
+      toolDefs: [],
+      ormQueries: [],
+      constructorBindings: [],
+      fileScopeBindings: [],
+      fileTimings: [
+        { filePath: 'a.ts', durationMs: 1, status: 'processed' },
+        { filePath: 'a.ts', durationMs: 0, status: 'skipped', reason: 'duplicate fallback row' },
+        { filePath: 'b.ts', durationMs: 0, status: 'error', reason: 'group parse failed' },
+      ],
+      parseErrorPaths: [],
+      extractorTimings: [],
+    };
+    repoPath = makeTempRepo({ 'a.ts': 'export const a = 1;\n', 'b.ts': 'export const b = 2;\n' });
+  });
+
+  afterEach(() => {
+    lifetimeConfig.workerData = null;
+    lifetimeConfig.recoveryFiles = null;
+    if (repoPath) fs.rmSync(repoPath, { recursive: true, force: true });
+  });
+
+  it('does not diagnose a processed path as skipped when worker results repeat it', async () => {
+    const diagnostics: unknown[] = [];
+    const telemetry: any[] = [];
+    await runChunkedParseAndResolve(
+      createKnowledgeGraph(),
+      scanned(repoPath, ['a.ts', 'b.ts']),
+      ['a.ts', 'b.ts'],
+      2,
+      repoPath,
+      Date.now(),
+      () => {},
+      {
+        workerThresholdsForTest: { minFiles: 1, minBytes: 0 },
+        onFileDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+        onTelemetry: (event) => telemetry.push(event),
+      },
+    );
+
+    expect(diagnostics).toEqual([
+      expect.objectContaining({
+        kind: 'degraded',
+        filePath: 'b.ts',
+        reason: 'group parse failed',
+      }),
+    ]);
+    expect(
+      telemetry
+        .filter((event) => event.event === 'parse-degraded-files')
+        .map((event) => event.degradedFileCount),
+    ).toEqual([1]);
   });
 });
 

@@ -287,16 +287,29 @@ describe('persisted parse extraction phase replay', () => {
             label: 'Route',
             properties: expect.objectContaining({
               name: '/api/items',
+              httpMethod: 'GET',
               responseKeys: ['items', 'count'],
+            }),
+          }),
+          expect.objectContaining({
+            label: 'Route',
+            properties: expect.objectContaining({
+              name: '/api/items',
+              httpMethod: 'POST',
               errorKeys: ['failure'],
             }),
           }),
         ]),
       );
-      const routeKeys = (name: string) =>
-        routeGraph.nodes.find((node) => node.label === 'Route' && node.properties.name === name)
-          ?.properties;
-      expect(routeKeys('/express-only')?.responseKeys).toEqual(['expressOnly', 'posted']);
+      const routeKeys = (name: string, method = 'GET') =>
+        routeGraph.nodes.find(
+          (node) =>
+            node.label === 'Route' &&
+            node.properties.name === name &&
+            node.properties.httpMethod === method,
+        )?.properties;
+      expect(routeKeys('/express-only')?.responseKeys).toEqual(['expressOnly']);
+      expect(routeKeys('/express-only', 'POST')?.responseKeys).toEqual(['posted']);
       expect(routeKeys('/separate')?.responseKeys).toBeUndefined();
       expect(routeKeys('/separate')?.errorKeys).toEqual(['missing']);
       expect(routeKeys('/unknown')?.responseKeys).toBeUndefined();
@@ -305,9 +318,9 @@ describe('persisted parse extraction phase replay', () => {
           expect.objectContaining({
             type: 'FETCHES',
             sourceId: 'File:src/client.ts',
-            targetId: 'Route:/api/items',
+            targetId: 'Route:GET /api/items',
             confidence: 0.9,
-            reason: 'fetch-url-match',
+            reason: 'fetch-url-match|request-method:GET',
           }),
         ]),
       );

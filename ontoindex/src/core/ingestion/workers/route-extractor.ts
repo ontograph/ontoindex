@@ -95,11 +95,17 @@ export function captureRouteOrDecorator(
       const httpMethod = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'].includes(method)
         ? method
         : 'GET';
+      const handlerNode =
+        decoratorNode.parent?.type === 'method_definition'
+          ? decoratorNode.parent
+          : decoratorNode.nextNamedSibling;
+      const handlerSymbol = handlerNode?.childForFieldName('name')?.text;
       result.decoratorRoutes.push({
         filePath,
         routePath,
         httpMethod,
         decoratorName,
+        ...(handlerSymbol ? { handlerSymbol } : {}),
         lineNumber: decoratorNode.startPosition.row + lineOffset,
         ...extractShape?.(
           decoratorNode.parent?.type === 'method_definition'
@@ -171,12 +177,26 @@ export function captureRouteOrDecorator(
       }
 
       const httpMethod =
-        method === 'all' || method === 'use' || method === 'route' ? 'GET' : method.toUpperCase();
+        method === 'all'
+          ? 'ANY'
+          : method === 'use' || method === 'route'
+            ? 'UNKNOWN'
+            : method.toUpperCase();
+      const args =
+        callNode
+          .childForFieldName('arguments')
+          ?.namedChildren.filter((child) => child.type !== 'comment') ?? [];
+      const handlerNode = args[1];
+      const handlerSymbol =
+        handlerNode?.type === 'identifier' || handlerNode?.type === 'member_expression'
+          ? handlerNode.text
+          : handlerNode?.childForFieldName('name')?.text;
       result.decoratorRoutes.push({
         filePath,
         routePath,
         httpMethod,
         decoratorName: `express.${method}`,
+        ...(handlerSymbol ? { handlerSymbol } : {}),
         lineNumber: captureMap['express_route'].startPosition.row + lineOffset,
         ...extractShape?.(
           callNode

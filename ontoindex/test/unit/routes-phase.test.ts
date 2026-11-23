@@ -4,6 +4,7 @@ import path from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import { generateId } from '../../src/lib/utils.js';
+import { routeNodeId } from '../../src/core/ingestion/route-extractors/route-identity.js';
 import { routesPhase } from '../../src/core/ingestion/pipeline-phases/routes.js';
 import type { ParseOutput } from '../../src/core/ingestion/pipeline-phases/parse.js';
 
@@ -15,6 +16,33 @@ describe('routesPhase', () => {
       await fs.rm(repoDir, { recursive: true, force: true });
       repoDir = '';
     }
+  });
+
+  it('retains response and middleware evidence for file-based routes', async () => {
+    repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-file-route-'));
+    await fs.mkdir(path.join(repoDir, 'api'), { recursive: true });
+    await fs.writeFile(
+      path.join(repoDir, 'api/users.php'),
+      "<?php echo json_encode(['users' => []]);",
+    );
+    await fs.mkdir(path.join(repoDir, 'app/api/items'), { recursive: true });
+    await fs.writeFile(
+      path.join(repoDir, 'app/api/items/route.ts'),
+      'export const GET = withAuth(handler);',
+    );
+    const graph = createKnowledgeGraph();
+    const parseOutput = {
+      allPaths: ['api/users.php', 'app/api/items/route.ts'],
+      allFetchCalls: [],
+      allExtractedRoutes: [],
+      allDecoratorRoutes: [],
+    } as unknown as ParseOutput;
+    await routesPhase.execute(
+      { repoPath: repoDir, graph, onProgress: () => {}, pipelineStart: Date.now() },
+      new Map([['parse', { phaseName: 'parse', output: parseOutput, durationMs: 0 }]]),
+    );
+    expect(graph.getNode(routeNodeId('/api/users'))?.properties.responseKeys).toEqual(['users']);
+    expect(graph.getNode(routeNodeId('/api/items'))?.properties.middleware).toEqual(['withAuth']);
   });
 
   it('chooses duplicate route handlers deterministically across parse order', async () => {
@@ -56,7 +84,7 @@ describe('routesPhase', () => {
       );
       return {
         nodes: ['/framework', '/decorator'].map(
-          (url) => graph.getNode(generateId('Route', url))?.properties,
+          (url) => graph.getNode(routeNodeId(url, 'GET'))?.properties,
         ),
         edges: graph.relationships.filter((rel) => rel.type === 'HANDLES_ROUTE'),
       };
@@ -71,6 +99,62 @@ describe('routesPhase', () => {
     }
     expect(forward.edges).toHaveLength(2);
     expect(forward.edges.every((edge) => edge.sourceId === generateId('File', 'a.ts'))).toBe(true);
+  });
+
+  it('keeps same-path methods separate and links only unique handler symbols', async () => {
+    repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-route-methods-'));
+    await fs.writeFile(path.join(repoDir, 'server.ts'), 'export function getUser() {}\n');
+    const graph = createKnowledgeGraph();
+    graph.addNode({
+      id: 'Function:server.ts:getUser',
+      label: 'Function',
+      properties: { name: 'getUser', filePath: 'server.ts' },
+    });
+    graph.addNode({
+      id: 'Function:server.ts:createUser',
+      label: 'Function',
+      properties: { name: 'createUser', filePath: 'server.ts' },
+    });
+    const parseOutput = {
+      allPaths: [],
+      allFetchCalls: [],
+      allExtractedRoutes: [],
+      allDecoratorRoutes: [
+        {
+          filePath: 'server.ts',
+          routePath: '/users',
+          httpMethod: 'GET',
+          decoratorName: 'route.get',
+          handlerSymbol: 'getUser',
+          lineNumber: 0,
+        },
+        {
+          filePath: 'server.ts',
+          routePath: '/users',
+          httpMethod: 'POST',
+          decoratorName: 'route.post',
+          handlerSymbol: 'createUser',
+          lineNumber: 1,
+        },
+      ],
+    } as unknown as ParseOutput;
+
+    const output = await routesPhase.execute(
+      { repoPath: repoDir, graph, onProgress: () => {}, pipelineStart: Date.now() },
+      new Map([['parse', { phaseName: 'parse', output: parseOutput, durationMs: 0 }]]),
+    );
+    expect([...output.routeRegistry.keys()].sort()).toEqual(['GET /users', 'POST /users']);
+    expect(graph.getNode(routeNodeId('/users', 'GET'))?.properties.httpMethod).toBe('GET');
+    expect(graph.getNode(routeNodeId('/users', 'POST'))?.properties.httpMethod).toBe('POST');
+    expect(
+      graph.relationships
+        .filter((rel) => rel.type === 'HANDLES_ROUTE' && rel.sourceId.startsWith('Function:'))
+        .map((rel) => [rel.sourceId, rel.targetId])
+        .sort(),
+    ).toEqual([
+      ['Function:server.ts:createUser', routeNodeId('/users', 'POST')],
+      ['Function:server.ts:getUser', routeNodeId('/users', 'GET')],
+    ]);
   });
 
   it('annotates route nodes and HANDLES_ROUTE edges with active route model packs', async () => {
@@ -146,7 +230,7 @@ describe('routesPhase', () => {
       new Map([['parse', { phaseName: 'parse', output: parseOutput, durationMs: 0 }]]),
     );
 
-    const routeNode = graph.getNode(generateId('Route', '/api/users'));
+    const routeNode = graph.getNode(routeNodeId('/api/users', 'GET'));
     expect(routeNode?.properties.modelPacks).toEqual(['core.framework-models']);
     expect(routeNode?.properties.responseKeys).toEqual(['users']);
 
@@ -205,11 +289,13 @@ describe('routesPhase', () => {
       { repoPath: repoDir, graph, onProgress: () => {}, pipelineStart: Date.now() },
       new Map([['parse', { phaseName: 'parse', output: parseOutput, durationMs: 0 }]]),
     );
-    expect(graph.getNode(generateId('Route', '/one'))?.properties.responseKeys).toEqual([
-      'first',
+    expect(graph.getNode(routeNodeId('/one', 'GET'))?.properties.responseKeys).toEqual(['first']);
+    expect(graph.getNode(routeNodeId('/one', 'GET'))?.properties.errorKeys).toBeUndefined();
+    expect(graph.getNode(routeNodeId('/one', 'POST'))?.properties.responseKeys).toEqual([
       'second',
+      'first',
     ]);
-    expect(graph.getNode(generateId('Route', '/one'))?.properties.errorKeys).toEqual(['invalid']);
-    expect(graph.getNode(generateId('Route', '/unknown'))?.properties.responseKeys).toBeUndefined();
+    expect(graph.getNode(routeNodeId('/one', 'POST'))?.properties.errorKeys).toEqual(['invalid']);
+    expect(graph.getNode(routeNodeId('/unknown', 'GET'))?.properties.responseKeys).toBeUndefined();
   });
 });

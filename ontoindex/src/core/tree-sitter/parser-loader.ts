@@ -12,6 +12,7 @@ import PHP from 'tree-sitter-php';
 import Ruby from 'tree-sitter-ruby';
 import { createRequire } from 'node:module';
 import { SupportedLanguages } from 'ontoindex-shared';
+import { getPhpGrammar } from './php-grammar.js';
 
 const _require = createRequire(import.meta.url);
 
@@ -67,7 +68,9 @@ export const resolveLanguageKey = (language: SupportedLanguages, filePath?: stri
 export const getLanguageGrammar = (
   language: SupportedLanguages,
   filePath?: string,
+  source?: string,
 ): TreeSitterGrammar => {
+  if (language === SupportedLanguages.PHP) return asTreeSitterGrammar(getPhpGrammar(source));
   const key = resolveLanguageKey(language, filePath);
   const lang = languageMap[key];
   if (!lang) {
@@ -85,16 +88,18 @@ export const loadParser = async (): Promise<Parser> => {
 export const loadLanguage = async (
   language: SupportedLanguages,
   filePath?: string,
+  source?: string,
 ): Promise<void> => {
   if (!parser) await loadParser();
-  parser!.setLanguage(getLanguageGrammar(language, filePath));
+  parser!.setLanguage(getLanguageGrammar(language, filePath, source));
 };
 
 export const createParserForLanguage = async (
   language: SupportedLanguages,
   filePath?: string,
+  source?: string,
 ): Promise<Parser> => {
   const freshParser = new Parser();
-  freshParser.setLanguage(getLanguageGrammar(language, filePath));
+  freshParser.setLanguage(getLanguageGrammar(language, filePath, source));
   return freshParser;
 };

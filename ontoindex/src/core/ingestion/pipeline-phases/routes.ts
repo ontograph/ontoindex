@@ -15,6 +15,11 @@ import type { PipelinePhase, PipelineContext, PhaseResult } from './types.js';
 import { getPhaseOutput } from './types.js';
 import type { ParseOutput } from './parse.js';
 import { nextjsFileToRouteURL, normalizeFetchURL } from '../route-extractors/nextjs.js';
+import {
+  normalizeHttpMethod,
+  routeIdentity,
+  routeNodeId,
+} from '../route-extractors/route-identity.js';
 import { expoFileToRouteURL } from '../route-extractors/expo.js';
 import { phpFileToRouteURL } from '../route-extractors/php.js';
 import { extractPHPResponseShapes } from '../route-extractors/response-shapes.js';
@@ -36,14 +41,20 @@ const EXPO_NAV_PATTERNS = [
   /<Link\s+[^>]*href=\s*['"`]([^'"`]+)['"`]/g,
 ];
 
-interface RouteEntry {
+export interface RouteEntry {
   filePath: string;
   source: string;
+  routePath: string;
+  httpMethod?: string;
+  handlerSymbol?: string;
+  middleware?: string[];
   responseKeys?: string[];
   errorKeys?: string[];
 }
 
 const compareStrings = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+const handlerLeafName = (value: string): string =>
+  value.match(/(?:^|[.$:>])([A-Za-z_$][\w$]*)$/)?.[1] ?? value;
 const compareRoutes = (
   a: ExtractedRoute | ExtractedDecoratorRoute,
   b: ExtractedRoute | ExtractedDecoratorRoute,
@@ -54,6 +65,7 @@ const compareRoutes = (
   compareStrings(a.httpMethod, b.httpMethod);
 
 export interface RoutesOutput {
+  /** Keyed by `METHOD /path` when method evidence exists, otherwise by `/path`. */
   routeRegistry: Map<string, RouteEntry>;
 }
 
@@ -109,37 +121,51 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
       if (expoAppPaths.has(p)) {
         const expoURL = expoFileToRouteURL(p);
         if (expoURL && !routeRegistry.has(expoURL)) {
-          routeRegistry.set(expoURL, { filePath: p, source: 'expo-filesystem-route' });
+          routeRegistry.set(expoURL, {
+            filePath: p,
+            routePath: expoURL,
+            source: 'expo-filesystem-route',
+          });
           continue;
         }
       }
       const nextjsURL = nextjsFileToRouteURL(p);
       if (nextjsURL && !routeRegistry.has(nextjsURL)) {
-        routeRegistry.set(nextjsURL, { filePath: p, source: 'nextjs-filesystem-route' });
+        routeRegistry.set(nextjsURL, {
+          filePath: p,
+          routePath: nextjsURL,
+          source: 'nextjs-filesystem-route',
+        });
         continue;
       }
       if (p.endsWith('.php')) {
         const phpURL = phpFileToRouteURL(p);
         if (phpURL && !routeRegistry.has(phpURL)) {
-          routeRegistry.set(phpURL, { filePath: p, source: 'php-file-route' });
+          routeRegistry.set(phpURL, { filePath: p, routePath: phpURL, source: 'php-file-route' });
         }
       }
     }
 
     const ensureSlash = (path: string) => (path.startsWith('/') ? path : '/' + path);
     let duplicateRoutes = 0;
-    const addRoute = (url: string, entry: RouteEntry) => {
-      const existing = routeRegistry.get(url);
+    const addRoute = (url: string, entry: Omit<RouteEntry, 'routePath'>) => {
+      const routePath = ensureSlash(url);
+      const httpMethod = normalizeHttpMethod(entry.httpMethod);
+      const identity = routeIdentity(routePath, httpMethod);
+      const existing = routeRegistry.get(identity);
       if (existing) {
         duplicateRoutes++;
         for (const field of ['responseKeys', 'errorKeys'] as const) {
           if (entry[field]?.length)
             existing[field] = [...new Set([...(existing[field] ?? []), ...entry[field]])];
         }
+        if (existing.handlerSymbol !== entry.handlerSymbol) existing.handlerSymbol = undefined;
         return;
       }
-      routeRegistry.set(url, {
+      routeRegistry.set(identity, {
         ...entry,
+        routePath,
+        ...(httpMethod ? { httpMethod } : {}),
         ...(entry.responseKeys ? { responseKeys: [...entry.responseKeys] } : {}),
         ...(entry.errorKeys ? { errorKeys: [...entry.errorKeys] } : {}),
       });
@@ -149,6 +175,11 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
       addRoute(ensureSlash(route.routePath), {
         filePath: route.filePath,
         source: 'framework-route',
+        httpMethod: route.httpMethod,
+        ...(route.controllerName && route.methodName
+          ? { handlerSymbol: `${route.controllerName}.${route.methodName}` }
+          : {}),
+        middleware: route.middleware,
         responseKeys: route.responseKeys,
         errorKeys: route.errorKeys,
       });
@@ -160,34 +191,72 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
       addRoute(ensureSlash(dr.routePath), {
         filePath: dr.filePath,
         source: `decorator-${dr.decoratorName}`,
+        httpMethod: dr.httpMethod,
+        ...(dr.handlerSymbol ? { handlerSymbol: dr.handlerSymbol } : {}),
         responseKeys: dr.responseKeys,
         errorKeys: dr.errorKeys,
       });
     }
+
+    // Method-specific evidence supersedes a path-only filesystem candidate
+    // for that path. Keeping both creates duplicate provider contracts.
+    const methodSpecificPaths = new Set(
+      [...routeRegistry.values()]
+        .filter((entry) => entry.httpMethod)
+        .map((entry) => `${entry.filePath}\0${entry.routePath}`),
+    );
+    for (const [identity, entry] of routeRegistry) {
+      if (!entry.httpMethod && methodSpecificPaths.has(`${entry.filePath}\0${entry.routePath}`))
+        routeRegistry.delete(identity);
+    }
+
     parseOutput.releaseRouteExtractionData?.();
 
     let handlerContents: Map<string, string> | undefined;
     if (routeRegistry.size > 0) {
       const handlerPaths = [...new Set([...routeRegistry.values()].map((e) => e.filePath))];
       handlerContents = await readFileContents(ctx.repoPath, handlerPaths);
+      const symbolNodesByFile = new Map<string, { id: string; label: string; name: string }[]>();
+      ctx.graph.forEachNode((node) => {
+        if (
+          (node.label !== 'Method' && node.label !== 'Function') ||
+          typeof node.properties.filePath !== 'string' ||
+          typeof node.properties.name !== 'string'
+        )
+          return;
+        let nodes = symbolNodesByFile.get(node.properties.filePath);
+        if (!nodes) {
+          nodes = [];
+          symbolNodesByFile.set(node.properties.filePath, nodes);
+        }
+        nodes.push({ id: node.id, label: node.label, name: node.properties.name });
+      });
 
-      for (const [routeURL, entry] of routeRegistry) {
+      for (const [, entry] of routeRegistry) {
         const { filePath: handlerPath, source: routeSource } = entry;
         const content = handlerContents.get(handlerPath);
-
-        const { responseKeys, errorKeys } =
-          content && handlerPath.endsWith('.php') ? extractPHPResponseShapes(content) : entry;
-
-        const mwResult = content ? extractMiddlewareChain(content) : undefined;
-        const middleware = mwResult?.chain;
-
-        const routeNodeId = generateId('Route', routeURL);
+        // File-based routes have no separate handler symbol, so file-level evidence applies.
+        const fileBased =
+          routeSource.endsWith('filesystem-route') || routeSource === 'php-file-route';
+        const phpShapes =
+          fileBased && content && handlerPath.endsWith('.php')
+            ? extractPHPResponseShapes(content)
+            : undefined;
+        const responseKeys = entry.responseKeys ?? phpShapes?.responseKeys;
+        const errorKeys = entry.errorKeys ?? phpShapes?.errorKeys;
+        const middleware = entry.middleware?.length
+          ? entry.middleware
+          : fileBased && content
+            ? extractMiddlewareChain(content)?.chain
+            : undefined;
+        const routeNodeIdValue = routeNodeId(entry.routePath, entry.httpMethod);
         ctx.graph.addNode({
-          id: routeNodeId,
+          id: routeNodeIdValue,
           label: 'Route',
           properties: {
-            name: routeURL,
+            name: entry.routePath,
             filePath: handlerPath,
+            ...(entry.httpMethod ? { httpMethod: entry.httpMethod } : {}),
             ...(responseKeys ? { responseKeys } : {}),
             ...(errorKeys ? { errorKeys } : {}),
             ...(middleware && middleware.length > 0 ? { middleware } : {}),
@@ -196,17 +265,38 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
         });
 
         const handlerFileId = generateId('File', handlerPath);
+        const routeEvidence = [
+          routeSource,
+          entry.httpMethod ? `http-method:${entry.httpMethod}` : 'coverage:path-only',
+          ...(entry.handlerSymbol ? [`handler-symbol:${entry.handlerSymbol}`] : []),
+          ...(routeModelPackIds.length > 0 ? [`model-packs:${routeModelPackIds.join(',')}`] : []),
+        ].join('|');
         ctx.graph.addRelationship({
-          id: generateId('HANDLES_ROUTE', `${handlerFileId}->${routeNodeId}`),
+          id: generateId('HANDLES_ROUTE', `${handlerFileId}->${routeNodeIdValue}`),
           sourceId: handlerFileId,
-          targetId: routeNodeId,
+          targetId: routeNodeIdValue,
           type: 'HANDLES_ROUTE',
           confidence: 1.0,
-          reason:
-            routeModelPackIds.length > 0
-              ? `${routeSource}|model-packs:${routeModelPackIds.join(',')}`
-              : routeSource,
+          reason: routeEvidence,
         });
+
+        if (entry.handlerSymbol && /^[A-Za-z_$][\w$]*$/.test(entry.handlerSymbol)) {
+          const leafName = handlerLeafName(entry.handlerSymbol);
+          const localCandidates = (symbolNodesByFile.get(handlerPath) ?? []).filter(
+            (node) => node.name === leafName,
+          );
+          if (localCandidates.length === 1) {
+            const handler = localCandidates[0]!;
+            ctx.graph.addRelationship({
+              id: generateId('HANDLES_ROUTE', `${handler.id}->${routeNodeIdValue}`),
+              sourceId: handler.id,
+              targetId: routeNodeIdValue,
+              type: 'HANDLES_ROUTE',
+              confidence: 0.95,
+              reason: `resolved-handler-symbol:${entry.handlerSymbol}|${routeEvidence}`,
+            });
+          }
+        }
       }
 
       if (isDev) {
@@ -242,14 +332,13 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
             .filter((m): m is NonNullable<typeof m> => m !== null);
 
           let linkedCount = 0;
-          for (const [routeURL] of routeRegistry) {
+          for (const entry of routeRegistry.values()) {
             const matches =
               compiled.length === 0 ||
-              compiled.some((cm) => compiledMatcherMatchesRoute(cm, routeURL));
+              compiled.some((cm) => compiledMatcherMatchesRoute(cm, entry.routePath));
             if (!matches) continue;
 
-            const routeNodeId = generateId('Route', routeURL);
-            const existing = ctx.graph.getNode(routeNodeId);
+            const existing = ctx.graph.getNode(routeNodeId(entry.routePath, entry.httpMethod));
             if (!existing) continue;
 
             const currentMw = existing.properties.middleware ?? [];
@@ -318,13 +407,10 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
     }
 
     if (routeRegistry.size > 0 && allFetchCalls.length > 0) {
-      const routeURLToFile = new Map<string, string>();
-      for (const [url, entry] of routeRegistry) routeURLToFile.set(url, entry.filePath);
-
       const consumerPaths = [...new Set(allFetchCalls.map((c) => c.filePath))];
       const consumerContents = await readFileContents(ctx.repoPath, consumerPaths);
 
-      processNextjsFetchRoutes(ctx.graph, allFetchCalls, routeURLToFile, consumerContents);
+      processNextjsFetchRoutes(ctx.graph, allFetchCalls, routeRegistry, consumerContents);
       if (isDev) {
         console.log(
           `🔗 Processed ${allFetchCalls.length} fetch() calls against ${routeRegistry.size} routes`,

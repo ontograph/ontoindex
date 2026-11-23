@@ -25,6 +25,8 @@ import {
   getParseMaxAstNodes,
   getTreeSitterBufferSize,
 } from '../constants.js';
+import { hasPhpOpenTag } from '../../tree-sitter/php-grammar.js';
+import { extractFetchEvidence } from '../route-extractors/fetch-evidence.js';
 import type { SymbolTableReader } from '../model/symbol-table.js';
 import {
   createEmptyResult,
@@ -207,12 +209,16 @@ const isLanguageAvailable = (language: SupportedLanguages, filePath: string): bo
   return key in languageMap && languageMap[key] != null;
 };
 
-const setLanguage = (language: SupportedLanguages, filePath: string): void => {
+const setLanguage = (
+  language: SupportedLanguages,
+  filePath: string,
+  grammarOverride?: TreeSitterLanguage,
+): void => {
   const key =
     language === SupportedLanguages.TypeScript && filePath.endsWith('.tsx')
       ? `${language}:tsx`
       : language;
-  const lang = languageMap[key];
+  const lang = grammarOverride ?? languageMap[key];
   if (!lang) throw new Error(`Unsupported language: ${language}`);
   parser.setLanguage(lang);
 };
@@ -872,6 +878,21 @@ const processBatch = async (
     skippedLanguages: {},
     fileCount: 0,
   };
+  const recordSkippedTimings = (filesToSkip: HydratedParseWorkerInput[], reason: string): void => {
+    const timedPaths = new Set(result.fileTimings.map((timing) => timing.filePath));
+    for (const file of filesToSkip) {
+      if (timedPaths.has(file.path)) continue;
+      result.fileTimings.push({
+        filePath: file.path,
+        language:
+          getLanguageFromFilename(file.path) ?? getLanguageFromShebang(file.content) ?? undefined,
+        durationMs: 0,
+        status: 'skipped',
+        reason,
+      });
+      timedPaths.add(file.path);
+    }
+  };
 
   // Group by language to minimize setLanguage calls
   const byLanguage = new Map<SupportedLanguages, HydratedParseWorkerInput[]>();
@@ -908,7 +929,10 @@ const processBatch = async (
   for (const [language, langFiles] of byLanguage) {
     const provider = getProvider(language);
     const queryString = provider.treeSitterQueries;
-    if (!queryString) continue;
+    if (!queryString) {
+      recordSkippedTimings(langFiles, `Tree-sitter queries for ${language} are unavailable`);
+      continue;
+    }
 
     // Track if we need to handle tsx separately
     const tsxFiles: HydratedParseWorkerInput[] = [];
@@ -928,35 +952,44 @@ const processBatch = async (
       for (const f of langFiles) regularFiles.push(f);
     }
 
-    // Process regular files for this language
-    if (regularFiles.length > 0) {
-      if (isLanguageAvailable(language, regularFiles[0].path)) {
+    const processRegularGroup = (
+      files: HydratedParseWorkerInput[],
+      grammarOverride?: TreeSitterLanguage,
+    ) => {
+      if (files.length === 0) return;
+      if (isLanguageAvailable(language, files[0].path)) {
         try {
-          setLanguage(language, regularFiles[0].path);
-          processFileGroup(
-            regularFiles,
-            language,
-            queryString,
-            result,
-            onFileProcessed,
-            onFileStart,
-          );
+          setLanguage(language, files[0].path, grammarOverride);
+          processFileGroup(files, language, queryString, result, onFileProcessed, onFileStart);
         } catch (err) {
-          // parser unavailable — skip this language group
+          const reason = `Worker language group failed: ${err instanceof Error ? err.message : String(err)}`;
+          recordSkippedTimings(files, reason);
           emitWorkerWarning(
             `Skipping ${language} files after worker parse error: ${err instanceof Error ? err.message : String(err)}`,
             {
               phase: 'language-group',
-              currentFilePath: regularFiles[0]?.path,
-              firstFilePath: regularFiles[0]?.path,
-              lastFilePath: regularFiles[regularFiles.length - 1]?.path,
+              currentFilePath: files[0]?.path,
+              firstFilePath: files[0]?.path,
+              lastFilePath: files[files.length - 1]?.path,
             },
           );
         }
       } else {
-        result.skippedLanguages[language] =
-          (result.skippedLanguages[language] || 0) + regularFiles.length;
+        result.skippedLanguages[language] = (result.skippedLanguages[language] || 0) + files.length;
+        recordSkippedTimings(files, `Parser for ${language} is unavailable in the worker`);
       }
+    };
+
+    if (language === SupportedLanguages.PHP) {
+      const taggedFiles: HydratedParseWorkerInput[] = [];
+      const taglessFiles: HydratedParseWorkerInput[] = [];
+      for (const file of regularFiles) {
+        (hasPhpOpenTag(file.content) ? taggedFiles : taglessFiles).push(file);
+      }
+      processRegularGroup(taglessFiles, asTreeSitterLanguage(PHP.php_only));
+      processRegularGroup(taggedFiles, asTreeSitterLanguage(PHP.php));
+    } else {
+      processRegularGroup(regularFiles);
     }
 
     // Process tsx files separately (different grammar)
@@ -967,6 +1000,8 @@ const processBatch = async (
           processFileGroup(tsxFiles, language, queryString, result, onFileProcessed, onFileStart);
         } catch (err) {
           // parser unavailable — skip this language group
+          const reason = `Worker TSX group failed: ${err instanceof Error ? err.message : String(err)}`;
+          recordSkippedTimings(tsxFiles, reason);
           emitWorkerWarning(
             `Skipping ${language} TSX files after worker parse error: ${err instanceof Error ? err.message : String(err)}`,
             {
@@ -980,9 +1015,26 @@ const processBatch = async (
       } else {
         result.skippedLanguages[language] =
           (result.skippedLanguages[language] || 0) + tsxFiles.length;
+        recordSkippedTimings(
+          tsxFiles,
+          `Parser for ${language} TSX files is unavailable in the worker`,
+        );
       }
     }
   }
+
+  // Keep one terminal timing for every hydrated source, including files with an
+  // unknown language or any future path that exits a group without a result.
+  recordSkippedTimings(hydratedFiles, 'Worker did not produce a per-file parse result');
+  const timingPriority = { skipped: 0, error: 1, processed: 2 } as const;
+  const timingByPath = new Map<string, ParseFileTiming>();
+  for (const timing of result.fileTimings) {
+    const previous = timingByPath.get(timing.filePath);
+    if (!previous || timingPriority[timing.status] > timingPriority[previous.status]) {
+      timingByPath.set(timing.filePath, timing);
+    }
+  }
+  result.fileTimings = [...timingByPath.values()];
 
   return result;
 };
@@ -1372,11 +1424,12 @@ const processFileMatches = (state: FileProcessingState, result: ParseWorkerResul
 
     // Extract HTTP consumer URLs: fetch(), axios.get(), $.get(), requests.get(), etc.
     if (captureMap['route.fetch']) {
-      const urlNode = captureMap['route.url'] ?? captureMap['route.template_url'];
-      if (urlNode) {
+      const evidence = extractFetchEvidence(captureMap['route.fetch']);
+      if (evidence) {
         result.fetchCalls.push({
           filePath: file.path,
-          fetchURL: urlNode.text,
+          fetchURL: evidence.fetchURL,
+          ...(evidence.httpMethod ? { httpMethod: evidence.httpMethod } : {}),
           lineNumber: captureMap['route.fetch'].startPosition.row + lineOffset,
         });
       }
@@ -1393,6 +1446,7 @@ const processFileMatches = (state: FileProcessingState, result: ParseWorkerResul
         result.fetchCalls.push({
           filePath: file.path,
           fetchURL: url,
+          ...(['head', 'options'].includes(method) ? { httpMethod: method.toUpperCase() } : {}),
           lineNumber: captureMap['http_client'].startPosition.row + lineOffset,
         });
       }
@@ -2058,6 +2112,8 @@ const processPreparedWorkerFile = (
 ): void => {
   const started = Date.now();
   let status: ParseFileTiming['status'] = 'skipped';
+  let reason: string | undefined;
+  let fallback: ParseFileTiming['fallback'];
   const timeFamily = <T>(family: string, fn: () => T, count?: number): T => {
     const familyStarted = Date.now();
     try {
@@ -2084,6 +2140,8 @@ const processPreparedWorkerFile = (
       console.warn(
         `[worker] Using ${native ? 'native' : 'lightweight'} fallback for ${file.path} (full AST extraction unavailable; see preparation diagnostic)`,
       );
+      reason = 'Full AST extraction unavailable; used lightweight fallback';
+      fallback = 'lightweight';
       const lightweightResult = extractImports(file.path, file.content, language);
       mergeParseWorkerResult(result, lightweightResult);
       return;
@@ -2116,6 +2174,7 @@ const processPreparedWorkerFile = (
     status = 'processed';
   } catch (err) {
     status = 'error';
+    reason = err instanceof Error ? err.message : String(err);
     throw err;
   } finally {
     result.fileTimings.push({
@@ -2123,6 +2182,8 @@ const processPreparedWorkerFile = (
       language,
       durationMs: Date.now() - started,
       status,
+      ...(reason ? { reason } : {}),
+      ...(fallback ? { fallback } : {}),
     });
   }
 };
@@ -2142,6 +2203,18 @@ const processFileGroup = (
   } catch (err) {
     const message = `Query compilation failed for ${language}: ${err instanceof Error ? err.message : String(err)}`;
     emitWorkerWarning(message);
+    const timedPaths = new Set(result.fileTimings.map((timing) => timing.filePath));
+    for (const file of files) {
+      if (timedPaths.has(file.path)) continue;
+      result.fileTimings.push({
+        filePath: file.path,
+        language,
+        durationMs: 0,
+        status: 'skipped',
+        reason: message,
+      });
+      timedPaths.add(file.path);
+    }
     return;
   }
 

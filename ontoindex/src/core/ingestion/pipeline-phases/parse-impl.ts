@@ -68,6 +68,7 @@ import type {
   ExtractedRoute,
   ExtractedToolDef,
   FileConstructorBindings,
+  ParseFileTiming,
 } from '../workers/parse-worker.js';
 import type { ExtractedHeritage } from '../model/heritage-map.js';
 import type { KnowledgeGraph } from '../../graph/types.js';
@@ -185,6 +186,21 @@ function getSlowTimings<T extends { durationMs: number }>(slowTimings: readonly 
   return [...slowTimings].sort((a, b) => b.durationMs - a.durationMs).slice(0, 10);
 }
 
+const canonicalizeFileTimings = (timings: readonly ParseFileTiming[]): ParseFileTiming[] => {
+  const priority = { skipped: 0, error: 1, processed: 2 } as const;
+  const byPath = new Map<string, ParseFileTiming>();
+  for (const timing of timings) {
+    const previous = byPath.get(timing.filePath);
+    if (!previous || priority[timing.status] > priority[previous.status]) {
+      byPath.set(timing.filePath, timing);
+    }
+  }
+  return [...byPath.values()];
+};
+
+const isLightweightFallbackTiming = (timing: ParseFileTiming): boolean =>
+  timing.fallback === 'lightweight' || (timing.status === 'skipped' && !timing.reason);
+
 async function settleStageOperations<T extends readonly unknown[] | []>(
   operations: T,
 ): Promise<{ -readonly [P in keyof T]: Awaited<T[P]> }> {
@@ -240,12 +256,10 @@ function emitParseTelemetry(
     lastFilePath?: string;
     parseErrorCount?: number;
     parseErrorFiles?: string[];
+    degradedFileCount?: number;
     degradedReason?: string;
     degradedAction?:
-      | 'quarantine-files'
-      | 'skip-remaining'
-      | 'large-file-cap'
-      | 'lightweight-fallback';
+      'quarantine-files' | 'skip-remaining' | 'large-file-cap' | 'lightweight-fallback';
     degradedFiles?: {
       filePath: string;
       reason: string;
@@ -351,10 +365,18 @@ export async function runChunkedParseAndResolve(
 
   // Warn about files skipped due to unavailable parsers
   const skippedByLang = new Map<string, number>();
+  const unavailableParserTimings: ParseFileTiming[] = [];
   for (const f of scannedFiles) {
     const lang = effectiveScannedLanguage(f);
     if (lang && !isLanguageAvailable(lang)) {
       skippedByLang.set(lang, (skippedByLang.get(lang) || 0) + 1);
+      unavailableParserTimings.push({
+        filePath: f.path,
+        language: lang,
+        durationMs: 0,
+        status: 'skipped',
+        reason: `Parser for ${lang} is unavailable in this runtime`,
+      });
     }
   }
   for (const [lang, count] of skippedByLang) {
@@ -536,8 +558,7 @@ export async function runChunkedParseAndResolve(
     ] as const)
       scopeRetention?.markProducerIncomplete(family);
   };
-  const reportLightweightFallback = (paths: string[], chunkIndex: number) => {
-    if (paths.length === 0) return;
+  const markFileParseProducersIncomplete = () => {
     markExtractionProducersIncomplete();
     for (const family of [
       'calls',
@@ -552,18 +573,52 @@ export async function runChunkedParseAndResolve(
       'graph-relationships',
     ] as const)
       scopeRetention?.markProducerIncomplete(family);
+  };
+  const reportParserDegradedFiles = (
+    timings: ParseFileTiming[],
+    chunkIndex: number,
+    lightweightFallback = false,
+  ) => {
+    if (timings.length === 0) return;
+    const degradedFiles = timings.map((timing) => ({
+      filePath: timing.filePath,
+      reason:
+        timing.reason ??
+        (lightweightFallback
+          ? 'Full AST extraction unavailable; used lightweight fallback'
+          : `Parser did not process this file (${timing.status})`),
+    }));
+    for (const file of degradedFiles) {
+      options?.onFileDiagnostic?.({
+        kind: 'degraded',
+        filePath: file.filePath,
+        reason: file.reason,
+        phase: 'parse',
+      });
+    }
+    markFileParseProducersIncomplete();
     emitParseTelemetry(options, graph, pipelineStart, 'parse-degraded-files', {
       chunkIndex,
       chunkCount: numChunks,
-      chunkFiles: paths.length,
-      degradedReason: 'parser-lightweight-fallback',
-      degradedAction: 'lightweight-fallback',
-      degradedFiles: paths.slice(0, 100).map((filePath) => ({
-        filePath,
-        reason: 'full AST extraction unavailable; using lightweight fallback',
-      })),
+      chunkFiles: degradedFiles.length,
+      degradedReason: lightweightFallback ? 'parser-lightweight-fallback' : 'parser-skipped-files',
+      ...(lightweightFallback ? { degradedAction: 'lightweight-fallback' as const } : {}),
+      degradedFileCount: degradedFiles.length,
+      degradedFiles: degradedFiles.slice(0, 100),
     });
   };
+  const reportLightweightFallback = (timings: ParseFileTiming[], chunkIndex: number) =>
+    reportParserDegradedFiles(timings, chunkIndex, true);
+  reportParserDegradedFiles(unavailableParserTimings, 0);
+  reportParserDegradedFiles(
+    skippedLargeFiles.map((file) => ({
+      filePath: file.path,
+      durationMs: 0,
+      status: 'skipped' as const,
+      reason: `File exceeds the scan size limit (${file.size} bytes)`,
+    })),
+    0,
+  );
   if (
     skippedLargeFiles.length ||
     skippedByLang.size ||
@@ -645,6 +700,12 @@ export async function runChunkedParseAndResolve(
         if (skipRemainingParseChunksReason) {
           markExtractionProducersIncomplete();
           for (const filePath of chunkPaths) {
+            options?.onFileDiagnostic?.({
+              kind: 'degraded',
+              filePath,
+              reason: skipRemainingParseChunksReason,
+              phase: 'parse',
+            });
             trackSlowTiming(slowFileTimings, {
               filePath,
               language: getLanguageFromFilename(filePath) ?? undefined,
@@ -667,6 +728,7 @@ export async function runChunkedParseAndResolve(
             parseWorkerRecoveryWindowSize: PARSE_WORKER_RECOVERY_WINDOW_SIZE,
             degradedReason: skipRemainingParseChunksReason,
             degradedAction: 'skip-remaining',
+            degradedFileCount: chunkPaths.length,
             degradedFiles: chunkPaths.slice(0, 25).map((filePath) => ({
               filePath,
               reason: skipRemainingParseChunksReason,
@@ -765,6 +827,14 @@ export async function runChunkedParseAndResolve(
           workerFailureMode,
           (paths) => {
             if (paths.length === 0) return;
+            for (const filePath of paths) {
+              options?.onFileDiagnostic?.({
+                kind: 'parse-error',
+                filePath,
+                reason: 'tree-sitter parse error',
+                phase: 'parse',
+              });
+            }
             emitParseTelemetry(options, graph, pipelineStart, 'parse-error-files', {
               chunkIndex: chunkIdx + 1,
               chunkCount: numChunks,
@@ -779,13 +849,29 @@ export async function runChunkedParseAndResolve(
               toolDefStage.append(extractions.toolDefs),
             ]);
           },
-          (paths) => reportLightweightFallback(paths, chunkIdx + 1),
+          (timings) => {
+            reportLightweightFallback(timings.filter(isLightweightFallbackTiming), chunkIdx + 1);
+            reportParserDegradedFiles(
+              timings.filter(
+                (timing) => timing.status !== 'processed' && !isLightweightFallbackTiming(timing),
+              ),
+              chunkIdx + 1,
+            );
+          },
         );
+        if (chunkWorkerData) {
+          chunkWorkerData.fileTimings = canonicalizeFileTimings(chunkWorkerData.fileTimings);
+        }
         if (chunkWorkerData && !chunkWorkerData.degraded) {
+          const nonProcessedTimings = chunkWorkerData.fileTimings.filter(
+            (timing) => timing.status !== 'processed',
+          );
           reportLightweightFallback(
-            chunkWorkerData.fileTimings
-              .filter((timing) => timing.status === 'skipped')
-              .map((timing) => timing.filePath),
+            nonProcessedTimings.filter(isLightweightFallbackTiming),
+            chunkIdx + 1,
+          );
+          reportParserDegradedFiles(
+            nonProcessedTimings.filter((timing) => !isLightweightFallbackTiming(timing)),
             chunkIdx + 1,
           );
         }
@@ -819,7 +905,7 @@ export async function runChunkedParseAndResolve(
             !Array.isArray(chunkWorkerData.ormQueries) ||
             chunkWorkerData.degraded ||
             chunkWorkerData.parseErrorPaths.length ||
-            chunkWorkerData.fileTimings.some((timing) => timing.status === 'skipped')
+            chunkWorkerData.fileTimings.some((timing) => timing.status !== 'processed')
           ) {
             markExtractionProducersIncomplete();
           }
@@ -834,6 +920,14 @@ export async function runChunkedParseAndResolve(
           );
         }
         if (chunkWorkerData?.parseErrorPaths.length) {
+          for (const filePath of chunkWorkerData.parseErrorPaths) {
+            options?.onFileDiagnostic?.({
+              kind: 'parse-error',
+              filePath,
+              reason: 'tree-sitter parse error',
+              phase: 'parse',
+            });
+          }
           emitParseTelemetry(options, graph, pipelineStart, 'parse-error-files', {
             chunkIndex: chunkIdx + 1,
             chunkCount: numChunks,
@@ -852,13 +946,20 @@ export async function runChunkedParseAndResolve(
               ? `Parse chunk ${chunkIdx + 1}/${numChunks} degraded: skipped ${chunkWorkerData.degraded.filesSkipped} files. Remaining parse chunks will be skipped with the same reason.`
               : `Parse chunk ${chunkIdx + 1}/${numChunks} degraded: quarantined ${chunkWorkerData.degraded.filesSkipped} file(s); continuing with remaining parse chunks.`,
           );
-          const degradedFiles = chunkWorkerData.fileTimings
-            .filter((timing) => timing.status === 'skipped')
-            .slice(0, 25)
+          const allDegradedFiles = chunkWorkerData.fileTimings
+            .filter((timing) => timing.status !== 'processed')
             .map((timing) => ({
               filePath: timing.filePath,
-              reason: chunkWorkerData.degraded!.reason,
+              reason: timing.reason ?? chunkWorkerData.degraded!.reason,
             }));
+          for (const file of allDegradedFiles) {
+            options?.onFileDiagnostic?.({
+              kind: 'degraded',
+              filePath: file.filePath,
+              reason: file.reason,
+              phase: 'parse',
+            });
+          }
           emitParseTelemetry(options, graph, pipelineStart, 'parse-degraded-files', {
             chunkIndex: chunkIdx + 1,
             chunkCount: numChunks,
@@ -869,9 +970,10 @@ export async function runChunkedParseAndResolve(
             usedWorkerPool: false,
             degradedReason: chunkWorkerData.degraded.reason,
             degradedAction: chunkWorkerData.degraded.action,
+            degradedFileCount: allDegradedFiles.length,
             parseWorkerRetryPolicy: chunkWorkerData.degraded.policy,
             parseWorkerRecoveryWindowSize: chunkWorkerData.degraded.recoveryWindowSize,
-            degradedFiles,
+            degradedFiles: allDegradedFiles.slice(0, 25),
           });
         }
 

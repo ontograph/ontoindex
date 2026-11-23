@@ -4,7 +4,7 @@
  * used by both chunker.ts and structural-extractor.ts.
  */
 
-import { getLanguageFromFilename } from 'ontoindex-shared';
+import { getLanguageFromFilename, SupportedLanguages } from 'ontoindex-shared';
 import type Parser from 'tree-sitter';
 import type { SyntaxNode } from '../ingestion/utils/ast-helpers.js';
 import {
@@ -12,6 +12,7 @@ import {
   isLanguageAvailable,
   resolveLanguageKey,
 } from '../tree-sitter/parser-loader.js';
+import { hasPhpOpenTag } from '../tree-sitter/php-grammar.js';
 
 const parserCache = new Map<string, Parser>();
 
@@ -27,10 +28,13 @@ export const ensureAndParse = async (
   if (!language) return null;
   if (!isLanguageAvailable(language)) return null;
 
-  const parserKey = resolveLanguageKey(language, filePath);
+  const parserKey =
+    language === SupportedLanguages.PHP
+      ? `${language}:${hasPhpOpenTag(content) ? 'mixed' : 'tagless'}`
+      : resolveLanguageKey(language, filePath);
   let parserInstance = parserCache.get(parserKey);
   if (!parserInstance) {
-    parserInstance = await createParserForLanguage(language, filePath);
+    parserInstance = await createParserForLanguage(language, filePath, content);
     parserCache.set(parserKey, parserInstance);
   }
 

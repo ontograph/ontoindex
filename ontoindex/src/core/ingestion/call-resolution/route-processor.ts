@@ -3,7 +3,9 @@ import { ResolutionContext, TIER_CONFIDENCE } from '../model/resolution-context.
 import { generateId } from '../../../lib/utils.js';
 import { yieldToEventLoop } from '../utils/event-loop.js';
 import { ExtractedRoute, ExtractedFetchCall } from '../workers/parse-worker.js';
-import { normalizeFetchURL, routeMatches } from '../route-extractors/nextjs.js';
+import { fetchURLMatchesRoute, normalizeFetchURL } from '../route-extractors/nextjs.js';
+import { routeNodeId } from '../route-extractors/route-identity.js';
+import type { RouteEntry } from '../pipeline-phases/routes.js';
 
 /** Common method names on response/data objects that are NOT property accesses */
 const RESPONSE_ACCESS_BLOCKLIST = new Set([
@@ -179,56 +181,117 @@ export const processRoutesFromExtracted = async (
 export const processNextjsFetchRoutes = (
   graph: KnowledgeGraph,
   fetchCalls: ExtractedFetchCall[],
-  routeRegistry: Map<string, string>, // routeURL → handlerFilePath
+  routeRegistry: ReadonlyMap<string, Pick<RouteEntry, 'filePath' | 'routePath' | 'httpMethod'>>,
   consumerContents?: Map<string, string>, // filePath → file content
 ) => {
   const routeCountByFile = new Map<string, number>();
+  const matchingRoutes = (call: ExtractedFetchCall) => {
+    const normalized = normalizeFetchURL(call.fetchURL);
+    if (!normalized) return [];
+    const matches = [...routeRegistry.values()].filter((route) =>
+      fetchURLMatchesRoute(normalized, route.routePath),
+    );
+    const method = call.httpMethod?.toUpperCase();
+    const explicitMethods = matches.filter((route) => route.httpMethod);
+    const pathOnly = matches.filter((route) => !route.httpMethod);
+    const explicitMethodMatches = explicitMethods.filter(
+      (route) => route.httpMethod?.toUpperCase() === method,
+    );
+    if (method) return [...explicitMethodMatches, ...pathOnly];
+    if (explicitMethods.length === 1) return [...explicitMethods, ...pathOnly];
+    return pathOnly;
+  };
+  for (const call of fetchCalls) {
+    if (matchingRoutes(call).length > 0)
+      routeCountByFile.set(call.filePath, (routeCountByFile.get(call.filePath) ?? 0) + 1);
+  }
+
+  const edgeEvidence = new Map<
+    string,
+    {
+      sourceId: string;
+      targetId: string;
+      filePath: string;
+      confidence: number;
+      methodUnknown: boolean;
+      knownMethodMatch: boolean;
+      pathOnly: boolean;
+      dynamicURL: boolean;
+      accessedKeys: string[];
+      requestMethods: Set<string>;
+    }
+  >();
   for (const call of fetchCalls) {
     const normalized = normalizeFetchURL(call.fetchURL);
     if (!normalized) continue;
-    for (const [routeURL] of routeRegistry) {
-      if (routeMatches(normalized, routeURL)) {
-        routeCountByFile.set(call.filePath, (routeCountByFile.get(call.filePath) ?? 0) + 1);
-        break;
+    const sourceId = generateId('File', call.filePath);
+    const accessedKeys = consumerContents?.get(call.filePath)
+      ? extractConsumerAccessedKeys(consumerContents.get(call.filePath)!)
+      : [];
+    const dynamicURL = normalized.includes('[param]');
+    for (const route of matchingRoutes(call)) {
+      const targetId = routeNodeId(route.routePath, route.httpMethod);
+      const id = generateId('FETCHES', `${sourceId}->${targetId}`);
+      const methodUnknown = Boolean(route.httpMethod && !call.httpMethod);
+      const pathOnly = !route.httpMethod;
+      let confidence = 0.9;
+      if (methodUnknown) confidence = Math.min(confidence, 0.5);
+      if (pathOnly) confidence = Math.min(confidence, 0.65);
+      if (dynamicURL) confidence = Math.min(confidence, 0.65);
+      const existing = edgeEvidence.get(id);
+      if (existing) {
+        existing.confidence = Math.max(existing.confidence, confidence);
+        existing.methodUnknown ||= methodUnknown;
+        existing.knownMethodMatch ||= Boolean(
+          call.httpMethod && call.httpMethod.toUpperCase() === route.httpMethod?.toUpperCase(),
+        );
+        existing.pathOnly ||= pathOnly;
+        existing.dynamicURL ||= dynamicURL;
+        if (call.httpMethod) existing.requestMethods.add(call.httpMethod.toUpperCase());
+        for (const key of accessedKeys) {
+          if (!existing.accessedKeys.includes(key)) existing.accessedKeys.push(key);
+        }
+      } else {
+        edgeEvidence.set(id, {
+          sourceId,
+          targetId,
+          filePath: call.filePath,
+          confidence,
+          methodUnknown,
+          knownMethodMatch: Boolean(
+            call.httpMethod && call.httpMethod.toUpperCase() === route.httpMethod?.toUpperCase(),
+          ),
+          pathOnly,
+          dynamicURL,
+          accessedKeys: [...accessedKeys],
+          requestMethods: new Set(call.httpMethod ? [call.httpMethod.toUpperCase()] : []),
+        });
       }
     }
   }
 
-  for (const call of fetchCalls) {
-    const normalized = normalizeFetchURL(call.fetchURL);
-    if (!normalized) continue;
-
-    for (const [routeURL] of routeRegistry) {
-      if (routeMatches(normalized, routeURL)) {
-        const sourceId = generateId('File', call.filePath);
-        const routeNodeId = generateId('Route', routeURL);
-
-        let reason = 'fetch-url-match';
-        if (consumerContents) {
-          const content = consumerContents.get(call.filePath);
-          if (content) {
-            const accessedKeys = extractConsumerAccessedKeys(content);
-            if (accessedKeys.length > 0) {
-              reason = `fetch-url-match|keys:${accessedKeys.join(',')}`;
-            }
-          }
-        }
-
-        const fetchCount = routeCountByFile.get(call.filePath) ?? 1;
-        if (fetchCount > 1) {
-          reason = `${reason}|fetches:${fetchCount}`;
-        }
-
-        graph.addRelationship({
-          id: generateId('FETCHES', `${sourceId}->${routeNodeId}`),
-          sourceId,
-          targetId: routeNodeId,
-          type: 'FETCHES',
-          confidence: 0.9,
-          reason,
-        });
-        break;
-      }
-    }
+  for (const [id, evidence] of edgeEvidence) {
+    const fetchCount = routeCountByFile.get(evidence.filePath) ?? 0;
+    const reason = [
+      'fetch-url-match',
+      ...(evidence.requestMethods.size === 1
+        ? [`request-method:${[...evidence.requestMethods][0]}`]
+        : evidence.requestMethods.size > 1
+          ? [`request-methods:${[...evidence.requestMethods].sort().join(',')}`]
+          : []),
+      ...(evidence.methodUnknown && !evidence.knownMethodMatch ? ['method-unknown'] : []),
+      ...(evidence.pathOnly ? ['path-only-route'] : []),
+      ...(evidence.dynamicURL ? ['dynamic-url'] : []),
+      ...(evidence.accessedKeys.length > 0 ? [`keys:${evidence.accessedKeys.join(',')}`] : []),
+      ...(fetchCount > 1 ? [`fetches:${fetchCount}`] : []),
+    ].join('|');
+    graph.addRelationship({
+      id,
+      sourceId: evidence.sourceId,
+      targetId: evidence.targetId,
+      type: 'FETCHES',
+      confidence: evidence.confidence,
+      reason,
+    });
   }
 };

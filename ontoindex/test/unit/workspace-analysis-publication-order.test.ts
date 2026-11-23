@@ -253,12 +253,19 @@ describe('workspace analysis publication ordering', () => {
         graphRelationships: 0,
         degradedReason: 'parser-lightweight-fallback',
         degradedAction: 'lightweight-fallback',
+        degradedFileCount: 1,
         degradedFiles: [
           {
             filePath: 'source.ts',
             reason: 'full AST extraction unavailable; using lightweight fallback',
           },
         ],
+      });
+      options?.onFileDiagnostic?.({
+        kind: 'degraded',
+        filePath: 'source.ts',
+        reason: 'full AST extraction unavailable; using lightweight fallback',
+        phase: 'parse',
       });
       return analyze(...args);
     });

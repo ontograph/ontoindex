@@ -93,8 +93,7 @@ type WorkerResultCallback = (event: WorkerResultEvent) => void;
 export const PARSE_WORKER_RETRY_POLICY_SEQUENTIAL = 'sequential';
 export const PARSE_WORKER_RETRY_POLICY_QUARANTINE = 'quarantine';
 export type ParseWorkerRetryPolicy =
-  | typeof PARSE_WORKER_RETRY_POLICY_SEQUENTIAL
-  | typeof PARSE_WORKER_RETRY_POLICY_QUARANTINE;
+  typeof PARSE_WORKER_RETRY_POLICY_SEQUENTIAL | typeof PARSE_WORKER_RETRY_POLICY_QUARANTINE;
 
 const parsePositiveIntEnv = (name: string, fallback: number): number => {
   const parsed = Number.parseInt(process.env[name] ?? '', 10);
@@ -407,6 +406,7 @@ const createSkippedWorkerExtractedData = (
     language: getLanguageFromFilename(file.path) ?? undefined,
     durationMs: 0,
     status: 'skipped',
+    reason,
   })),
   degraded: {
     reason,
@@ -960,19 +960,24 @@ const prepareSequentialFile = async (
   astCache: ASTCache,
   skippedLanguages: Map<string, number>,
   parseErrorPaths: string[],
+  onSkipped: (reason: string) => void,
 ): Promise<PreparedSequentialFile | null> => {
+  const skip = (reason: string): null => {
+    onSkipped(reason);
+    return null;
+  };
   // Extension/basename wins; extensionless scripts fall back to the bounded
   // first-line shebang so sequential parsing matches parent/worker decisions.
   const language = getLanguageFromFilename(file.path) ?? getLanguageFromShebang(file.content);
   if (!language) {
     console.warn(`Skipping ${file.path}: language could not be detected`);
-    return null;
+    return skip('Language could not be detected');
   }
 
   if (!isLanguageAvailable(language)) {
     skippedLanguages.set(language, (skippedLanguages.get(language) || 0) + 1);
     console.warn(`Skipping ${file.path}: parser for ${language} is unavailable`);
-    return null;
+    return skip(`Parser for ${language} is unavailable`);
   }
 
   let parseContent = file.content;
@@ -982,7 +987,7 @@ const prepareSequentialFile = async (
     const extracted = extractVueScript(file.content);
     if (!extracted) {
       console.warn(`Skipping ${file.path}: no parseable Vue script`);
-      return null;
+      return skip('No parseable Vue script');
     }
     parseContent = extracted.scriptContent;
     lineOffset = extracted.lineOffset;
@@ -990,10 +995,12 @@ const prepareSequentialFile = async (
   }
 
   try {
-    await loadLanguage(language, file.path);
+    await loadLanguage(language, file.path, parseContent);
   } catch (languageError) {
     console.warn(`Skipping ${file.path}: failed to load ${language} parser:`, languageError);
-    return null;
+    return skip(
+      `Failed to load ${language} parser: ${languageError instanceof Error ? languageError.message : String(languageError)}`,
+    );
   }
 
   let tree;
@@ -1003,7 +1010,9 @@ const prepareSequentialFile = async (
     });
   } catch (parseError) {
     console.warn(`Skipping unparseable file: ${file.path}:`, parseError);
-    return null;
+    return skip(
+      `Tree-sitter parse failed: ${parseError instanceof Error ? parseError.message : String(parseError)}`,
+    );
   }
 
   if (tree.rootNode.hasError) parseErrorPaths.push(file.path);
@@ -1015,14 +1024,14 @@ const prepareSequentialFile = async (
       console.warn(
         `Skipping ${file.path}: AST node count ${astNodeCount} exceeds configured ceiling ${maxAstNodes}`,
       );
-      return null;
+      return skip(`AST node count ${astNodeCount} exceeds configured ceiling ${maxAstNodes}`);
     }
   }
 
   const maxAstDepth = getParseMaxAstDepth();
   if (maxAstDepth !== null && exceedsParseMaxAstDepth(tree.rootNode, maxAstDepth)) {
     console.warn(`Skipping ${file.path}: AST depth exceeds configured ceiling ${maxAstDepth}`);
-    return null;
+    return skip(`AST depth exceeds configured ceiling ${maxAstDepth}`);
   }
 
   astCache.set(file.path, tree);
@@ -1030,7 +1039,7 @@ const prepareSequentialFile = async (
   const provider = getProvider(language);
   if (!provider.treeSitterQueries) {
     console.warn(`Skipping ${file.path}: queries for ${language} are unavailable`);
-    return null;
+    return skip(`Tree-sitter queries for ${language} are unavailable`);
   }
 
   try {
@@ -1056,7 +1065,9 @@ const prepareSequentialFile = async (
     };
   } catch (queryError) {
     console.warn(`Query or type environment preparation failed for ${file.path}:`, queryError);
-    return null;
+    return skip(
+      `Query or type environment preparation failed: ${queryError instanceof Error ? queryError.message : String(queryError)}`,
+    );
   }
 };
 
@@ -1619,23 +1630,30 @@ const processSequentialFiles = async (
     if (i % 20 === 0) await yieldToEventLoop();
 
     const started = Date.now();
+    let skipReason = 'Parser preparation skipped this file';
     const preparedFile = await prepareSequentialFile(
       parser,
       file,
       astCache,
       skippedLanguages,
       combinedData.parseErrorPaths,
+      (reason) => {
+        skipReason = reason;
+      },
     );
     if (!preparedFile) {
       // Lightweight fallback for oversized or unparseable files
       const language = getLanguageFromFilename(file.path) ?? getLanguageFromShebang(file.content);
-      if (language && isLanguageAvailable(language)) {
-        combinedData.fileTimings.push({
-          filePath: file.path,
-          language,
-          durationMs: Date.now() - started,
-          status: 'skipped',
-        });
+      const canUseLightweightFallback = Boolean(language && isLanguageAvailable(language));
+      combinedData.fileTimings.push({
+        filePath: file.path,
+        ...(language ? { language } : {}),
+        durationMs: Date.now() - started,
+        status: 'skipped',
+        reason: canUseLightweightFallback ? `${skipReason}; used lightweight fallback` : skipReason,
+        ...(canUseLightweightFallback ? { fallback: 'lightweight' as const } : {}),
+      });
+      if (language && canUseLightweightFallback) {
         const lightweightResult = extractLightweight(file.path, file.content, language);
         appendWorkerExtractedData(
           combinedData,
@@ -1710,7 +1728,7 @@ export const processParsing = async (
   onSequentialParseErrors?: (paths: string[]) => void,
   /** Transfers supplemental extraction arrays after sequential parsing. */
   onSequentialExtractions?: (extractions: RouteToolExtractions) => void | Promise<void>,
-  onSequentialSkippedFiles?: (paths: string[]) => void,
+  onSequentialSkippedFiles?: (timings: ParseFileTiming[]) => void,
 ): Promise<WorkerExtractedData | null> => {
   const legacySignature = typeof repoPathOrSymbolTable !== 'string';
   const repoPath = legacySignature ? '' : repoPathOrSymbolTable;
@@ -1778,9 +1796,7 @@ export const processParsing = async (
   );
   onSequentialParseErrors?.(sequentialData.parseErrorPaths);
   onSequentialSkippedFiles?.(
-    sequentialData.fileTimings
-      .filter((timing) => timing.status === 'skipped')
-      .map((timing) => timing.filePath),
+    sequentialData.fileTimings.filter((timing) => timing.status !== 'processed'),
   );
   await onSequentialExtractions?.({
     routes: sequentialData.routes,

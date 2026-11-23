@@ -182,6 +182,11 @@ export const TYPESCRIPT_QUERIES = `
     [(string (string_fragment) @route.url)
      (template_string) @route.template_url])) @route.fetch
 
+(call_expression
+  function: (identifier) @_fetch_concat_fn (#eq? @_fetch_concat_fn "fetch")
+  arguments: (arguments
+    (binary_expression) @route.dynamic_url)) @route.fetch
+
 ; axios.get/post/put/delete/patch('/path'), $.get/post/ajax({url:'/path'})
 (call_expression
   function: (member_expression
@@ -328,6 +333,11 @@ export const JAVASCRIPT_QUERIES = `
   arguments: (arguments
     [(string (string_fragment) @route.url)
      (template_string) @route.template_url])) @route.fetch
+
+(call_expression
+  function: (identifier) @_fetch_concat_fn (#eq? @_fetch_concat_fn "fetch")
+  arguments: (arguments
+    (binary_expression) @route.dynamic_url)) @route.fetch
 
 ; axios.get/post, $.get/post/ajax
 (call_expression

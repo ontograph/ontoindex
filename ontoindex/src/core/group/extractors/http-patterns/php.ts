@@ -1,4 +1,5 @@
 import PHP from 'tree-sitter-php';
+import { hasPhpOpenTag } from '../../../tree-sitter/php-grammar.js';
 import {
   compilePatterns,
   runCompiledPatterns,
@@ -20,9 +21,7 @@ import type { HttpDetection, HttpLanguagePlugin } from './types.js';
  *   - Guzzle / generic object method: `$client->get/post/...($url)`
  *   - `file_get_contents($url)`
  *
- * The pipeline already uses `PHP.php_only` for ingesting plain `.php`
- * files (see `core/tree-sitter/parser-loader.ts`), and we do the same
- * here so Laravel route files are parsed with the right grammar dialect.
+ * Select the mixed grammar for templates and `php_only` for tagless source.
  *
  * Scope notes: consumer patterns match string literals only. URLs built
  * via binary concatenation (`$base . '/path'`), `sprintf`, or config
@@ -76,19 +75,24 @@ interface PhpPatternBundle {
   fileGetContents: CompiledPatterns<Record<string, never>>;
 }
 
-const mk = (spec: PatternSpec<Record<string, never>>, suffix: string) =>
+const mk = (spec: PatternSpec<Record<string, never>>, suffix: string, language: unknown) =>
   compilePatterns({
     name: `php-${suffix}`,
-    language: PHP.php_only,
+    language,
     patterns: [spec],
   } satisfies LanguagePatterns<Record<string, never>>);
 
-const PHP_PATTERNS: PhpPatternBundle = {
-  laravelRoute: mk(LARAVEL_ROUTE_SPEC, 'laravel-route'),
-  httpFacade: mk(HTTP_FACADE_SPEC, 'http-facade'),
-  guzzleMember: mk(GUZZLE_MEMBER_SPEC, 'guzzle-member'),
-  fileGetContents: mk(FILE_GET_CONTENTS_SPEC, 'file-get-contents'),
-};
+const createPHPPatterns = (language: unknown): PhpPatternBundle => ({
+  laravelRoute: mk(LARAVEL_ROUTE_SPEC, 'laravel-route', language),
+  httpFacade: mk(HTTP_FACADE_SPEC, 'http-facade', language),
+  guzzleMember: mk(GUZZLE_MEMBER_SPEC, 'guzzle-member', language),
+  fileGetContents: mk(FILE_GET_CONTENTS_SPEC, 'file-get-contents', language),
+});
+const PHP_PATTERNS = createPHPPatterns(PHP.php_only);
+const PHP_MIXED_PATTERNS = createPHPPatterns(PHP.php);
+
+const patternsForTree = (tree: import('tree-sitter').Tree): PhpPatternBundle =>
+  hasPhpOpenTag(tree.rootNode.text) ? PHP_MIXED_PATTERNS : PHP_PATTERNS;
 
 /**
  * Extract the inner text of a PHP `string` node. The tree-sitter-php
@@ -130,10 +134,12 @@ function isHttpUrlLiteral(path: string): boolean {
 export const PHP_HTTP_PLUGIN: HttpLanguagePlugin = {
   name: 'php-http',
   language: PHP.php_only,
+  languageForContent: (source) => (hasPhpOpenTag(source) ? PHP.php : PHP.php_only),
   scan(tree) {
     const out: HttpDetection[] = [];
+    const patterns = patternsForTree(tree);
 
-    for (const match of runCompiledPatterns(PHP_PATTERNS.laravelRoute, tree)) {
+    for (const match of runCompiledPatterns(patterns.laravelRoute, tree)) {
       const methodNode = match.captures.method;
       const pathNode = match.captures.path;
       if (!methodNode || !pathNode) continue;
@@ -149,7 +155,7 @@ export const PHP_HTTP_PLUGIN: HttpLanguagePlugin = {
       });
     }
 
-    for (const match of runCompiledPatterns(PHP_PATTERNS.httpFacade, tree)) {
+    for (const match of runCompiledPatterns(patterns.httpFacade, tree)) {
       const methodNode = match.captures.method;
       const pathNode = match.captures.path;
       if (!methodNode || !pathNode) continue;
@@ -165,7 +171,7 @@ export const PHP_HTTP_PLUGIN: HttpLanguagePlugin = {
       });
     }
 
-    for (const match of runCompiledPatterns(PHP_PATTERNS.guzzleMember, tree)) {
+    for (const match of runCompiledPatterns(patterns.guzzleMember, tree)) {
       const methodNode = match.captures.method;
       const pathNode = match.captures.path;
       if (!methodNode || !pathNode) continue;
@@ -181,7 +187,7 @@ export const PHP_HTTP_PLUGIN: HttpLanguagePlugin = {
       });
     }
 
-    for (const match of runCompiledPatterns(PHP_PATTERNS.fileGetContents, tree)) {
+    for (const match of runCompiledPatterns(patterns.fileGetContents, tree)) {
       const pathNode = match.captures.path;
       if (!pathNode) continue;
       const path = phpStringText(pathNode);

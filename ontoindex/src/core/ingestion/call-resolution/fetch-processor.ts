@@ -3,6 +3,7 @@ import { KnowledgeGraph } from '../../graph/types.js';
 import { generateId } from '../../../lib/utils.js';
 import { ExtractedFetchCall } from '../workers/parse-worker.js';
 import { normalizeFetchURL, routeMatches } from '../route-extractors/nextjs.js';
+import { extractFetchEvidence } from '../route-extractors/fetch-evidence.js';
 import { ASTCache } from '../ast-cache.js';
 import { getLanguageFromFilename } from 'ontoindex-shared';
 import { isLanguageAvailable, loadParser, loadLanguage } from '../../tree-sitter/parser-loader.js';
@@ -103,7 +104,7 @@ export const extractFetchCallsFromFiles = async (
     const provider = getProvider(language);
     if (!provider.treeSitterQueries) continue;
 
-    await loadLanguage(language, file.path);
+    await loadLanguage(language, file.path, file.content);
 
     let tree = astCache.get(file.path);
     if (!tree) {
@@ -130,11 +131,12 @@ export const extractFetchCallsFromFiles = async (
       const captureMap = buildCaptureMap(match);
 
       if (captureMap['route.fetch']) {
-        const urlNode = captureMap['route.url'] ?? captureMap['route.template_url'];
-        if (urlNode) {
+        const evidence = extractFetchEvidence(captureMap['route.fetch']);
+        if (evidence) {
           result.push({
             filePath: file.path,
-            fetchURL: urlNode.text,
+            fetchURL: evidence.fetchURL,
+            ...(evidence.httpMethod ? { httpMethod: evidence.httpMethod } : {}),
             lineNumber: captureMap['route.fetch'].startPosition.row,
           });
         }
@@ -146,6 +148,7 @@ export const extractFetchCallsFromFiles = async (
           result.push({
             filePath: file.path,
             fetchURL: url,
+            ...(['head', 'options'].includes(method) ? { httpMethod: method.toUpperCase() } : {}),
             lineNumber: captureMap['http_client'].startPosition.row,
           });
         }

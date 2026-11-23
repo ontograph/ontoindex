@@ -59,6 +59,8 @@ export function normalizeFetchURL(rawURL: string): string | null {
 export function routeMatches(fetchURL: string, routeURL: string): boolean {
   const fetchParts = fetchURL.split('/').filter(Boolean);
   const routeParts = routeURL.split('/').filter(Boolean);
+  const isDynamicPart = (part: string): boolean =>
+    part.startsWith('[') || /^\{[^{}]+\}$/.test(part) || /^:[A-Za-z_][\w-]*$/.test(part);
 
   // Check for catch-all route: [...param] or optional catch-all [[...param]]
   const lastRoutePart = routeParts[routeParts.length - 1];
@@ -66,7 +68,7 @@ export function routeMatches(fetchURL: string, routeURL: string): boolean {
     // Catch-all: match if fetch has at least as many segments as route (minus catch-all)
     if (fetchParts.length < routeParts.length - 1) return false;
     return routeParts.slice(0, -1).every((part, i) => {
-      if (part.startsWith('[') || fetchParts[i].startsWith('[')) return true;
+      if (isDynamicPart(part) || isDynamicPart(fetchParts[i]!)) return true;
       return part === fetchParts[i];
     });
   }
@@ -74,7 +76,30 @@ export function routeMatches(fetchURL: string, routeURL: string): boolean {
   if (fetchParts.length !== routeParts.length) return false;
 
   return fetchParts.every((part, i) => {
-    if (part.startsWith('[') || routeParts[i].startsWith('[')) return true;
+    if (isDynamicPart(part) || isDynamicPart(routeParts[i]!)) return true;
     return part === routeParts[i];
+  });
+}
+
+/**
+ * Match a fetch URL to a provider route without treating an unknown client
+ * segment as evidence for every static route under the same prefix.
+ */
+export function fetchURLMatchesRoute(fetchURL: string, routeURL: string): boolean {
+  const fetchParts = fetchURL.split('/').filter(Boolean);
+  const routeParts = routeURL.split('/').filter(Boolean);
+  const isDynamicPart = (part: string): boolean =>
+    part.startsWith('[') || /^\{[^{}]+\}$/.test(part) || /^:[A-Za-z_][\w-]*$/.test(part);
+  const routeCatchAll =
+    routeParts.at(-1)?.startsWith('[...') || routeParts.at(-1)?.startsWith('[[...');
+  if (!routeCatchAll && fetchParts.length !== routeParts.length) return false;
+  if (routeCatchAll && fetchParts.length < routeParts.length - 1) return false;
+
+  const comparedParts = routeCatchAll ? routeParts.slice(0, -1) : routeParts;
+  return comparedParts.every((routePart, index) => {
+    const fetchPart = fetchParts[index];
+    if (fetchPart === undefined) return false;
+    if (isDynamicPart(fetchPart)) return isDynamicPart(routePart);
+    return isDynamicPart(routePart) || routePart === fetchPart;
   });
 }

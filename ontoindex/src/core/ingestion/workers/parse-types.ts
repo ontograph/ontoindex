@@ -159,6 +159,8 @@ export interface ExtractedFetchCall {
   filePath: string;
   fetchURL: string;
   lineNumber: number;
+  /** Omitted when the options object did not provide a statically known method. */
+  httpMethod?: string | null;
 }
 
 export interface ExtractedDecoratorRoute {
@@ -166,6 +168,7 @@ export interface ExtractedDecoratorRoute {
   routePath: string | null;
   httpMethod: string;
   decoratorName: string;
+  handlerSymbol?: string;
   lineNumber: number;
   responseKeys?: string[];
   errorKeys?: string[];
@@ -205,6 +208,8 @@ export interface ParseFileTiming {
   language?: SupportedLanguages;
   durationMs: number;
   status: 'processed' | 'skipped' | 'error';
+  reason?: string;
+  fallback?: 'lightweight';
 }
 
 export interface ParseExtractorTiming {

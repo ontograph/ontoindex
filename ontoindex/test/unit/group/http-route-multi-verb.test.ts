@@ -194,13 +194,7 @@ describe('HttpRouteExtractor — graph-assisted multi-verb disambiguation', () =
       name: 'r',
       url: 'r',
     } as never);
-    expect(out).toHaveLength(1);
-    // CRITICAL: must NOT silently inherit POST from createOrder via .find()
-    expect(out[0].meta.method).toBe('GET'); // conservative default
-    // CRITICAL: must NOT silently attach createOrder as handler
-    expect(out[0].symbolName).not.toBe('createOrder');
-    // With no CONTAINS rows, handlerName stays null and file-basename fallback wins.
-    expect(out[0].symbolName).toBe('routes.ts');
+    expect(out).toHaveLength(0);
   });
 
   // ── Provider: multi-verb + CONTAINS rows → must still refuse to guess ──
@@ -234,13 +228,7 @@ describe('HttpRouteExtractor — graph-assisted multi-verb disambiguation', () =
       name: 'r',
       url: 'r',
     } as never);
-    expect(out).toHaveLength(1);
-    // Ambiguous → do not attribute to any real handler in the file.
-    expect(out[0].symbolName).not.toBe('listOrders');
-    expect(out[0].symbolName).not.toBe('createOrder');
-    expect(out[0].symbolUid).toBe('');
-    expect(out[0].symbolName).toBe('routes.ts');
-    expect(out[0].meta.method).toBe('GET');
+    expect(out).toHaveLength(0);
     // CONTAINS query must have been skipped entirely under ambiguity.
     const calls = db.mock.calls.map(([q]) => q as string);
     expect(calls.some((q) => q.includes('CONTAINS'))).toBe(false);
@@ -300,8 +288,7 @@ describe('HttpRouteExtractor — graph-assisted multi-verb disambiguation', () =
       name: 'r',
       url: 'r',
     } as never);
-    expect(out[0].meta.method).toBe('GET');
-    expect(out[0].symbolName).not.toBe('createUser');
+    expect(out).toHaveLength(0);
   });
 
   // ── Integration: one row, two detections, one out.push ─────────────
@@ -362,7 +349,7 @@ describe('HttpRouteExtractor — graph-assisted multi-verb disambiguation', () =
   });
 
   // ── Consumer: multi-verb skips backfill ────────────────────────────
-  it('consumer: multi-verb at same path skips backfill (conservative GET)', async () => {
+  it('consumer: multi-verb at same path skips backfill when method evidence is missing', async () => {
     FILE_DETECTIONS.set('client.ts', [
       detection('consumer', 'GET', '/api/orders', null),
       detection('consumer', 'POST', '/api/orders', null),
@@ -386,9 +373,6 @@ describe('HttpRouteExtractor — graph-assisted multi-verb disambiguation', () =
       name: 'r',
       url: 'r',
     } as never);
-    expect(out).toHaveLength(1);
-    // CRITICAL: must NOT silently pick POST (first/last via .find)
-    expect(out[0].meta.method).toBe('GET'); // conservative default
-    expect(out[0].contractId).toBe('http::GET::/api/orders');
+    expect(out).toHaveLength(0);
   });
 });

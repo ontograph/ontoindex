@@ -12,9 +12,10 @@
 import type { PipelinePhase, PipelineContext, PhaseResult } from './types.js';
 import { getPhaseOutput } from './types.js';
 import type { CommunitiesOutput } from './communities.js';
-import type { RoutesOutput } from './routes.js';
+import type { RouteEntry, RoutesOutput } from './routes.js';
 import type { ToolsOutput } from './tools.js';
 import type { StructureOutput } from './structure.js';
+import { routeNodeId } from '../route-extractors/route-identity.js';
 import { processProcesses, type ProcessDetectionResult } from '../process-processor.js';
 import { generateId } from '../../../lib/utils.js';
 import { isDev } from '../utils/env.js';
@@ -103,14 +104,14 @@ export const processesPhase: PipelinePhase<ProcessesOutput> = {
 
     // Link Route and Tool nodes to Processes
     if (routeRegistry.size > 0 || toolDefs.length > 0) {
-      const routesByFile = new Map<string, string[]>();
-      for (const [url, entry] of routeRegistry) {
+      const routesByFile = new Map<string, RouteEntry[]>();
+      for (const entry of routeRegistry.values()) {
         let list = routesByFile.get(entry.filePath);
         if (!list) {
           list = [];
           routesByFile.set(entry.filePath, list);
         }
-        list.push(url);
+        list.push(entry);
       }
       const toolsByFile = new Map<string, string[]>();
       for (const td of toolDefs) {
@@ -132,11 +133,11 @@ export const processesPhase: PipelinePhase<ProcessesOutput> = {
 
         const routeURLs = routesByFile.get(entryFile);
         if (routeURLs) {
-          for (const routeURL of routeURLs) {
-            const routeNodeId = generateId('Route', routeURL);
+          for (const route of routeURLs) {
+            const routeNodeIdValue = routeNodeId(route.routePath, route.httpMethod);
             ctx.graph.addRelationship({
-              id: generateId('ENTRY_POINT_OF', `${routeNodeId}->${proc.id}`),
-              sourceId: routeNodeId,
+              id: generateId('ENTRY_POINT_OF', `${routeNodeIdValue}->${proc.id}`),
+              sourceId: routeNodeIdValue,
               targetId: proc.id,
               type: 'ENTRY_POINT_OF',
               confidence: 0.85,

@@ -60,6 +60,7 @@ import {
   type NormalizedRouteCandidate,
 } from '../core/ingestion/enrichment/markdown-route-candidates.js';
 import type { RouteDataAuditRecord } from '../core/ingestion/enrichment/route-data-audit.js';
+import { httpMethodFromRouteId } from '../core/ingestion/route-extractors/route-identity.js';
 import { LbugGraphIdentityProvider } from '../core/ingestion/enrichment/markdown-graph-identity-provider.js';
 import { verifyAnswer } from '../core/ingestion/enrichment/markdown-answer-verify.js';
 import type { MarkdownDocResolutionRecord } from '../core/ingestion/enrichment/markdown-doc-resolver.js';
@@ -566,7 +567,9 @@ function routeRowToAuditRecord(row: RouteQueryRow): RouteDataAuditRecord {
   const routePath = rowValue(row, 'path', 0);
   const sourceFile = rowValue(row, 'sourceFile', 1);
   const handler = rowValue(row, 'handler', 2);
+  const method = handler ? httpMethodFromRouteId(handler) : undefined;
   return {
+    ...(method ? { method } : {}),
     ...(routePath ? { path: routePath } : {}),
     ...(sourceFile ? { sourceFile, handler: sourceFile } : handler ? { handler } : {}),
     source: 'route-node',
@@ -580,8 +583,7 @@ function rowValue(row: RouteQueryRow, key: string, index: number): string | unde
 
 function emitRequirementTraceText(payload: DocsReportEnvelope<RequirementTraceItem>): void {
   const summary = payload.summary.requirements as
-    | { emitted?: number; matched?: number; byStatus?: Record<string, number> }
-    | undefined;
+    { emitted?: number; matched?: number; byStatus?: Record<string, number> } | undefined;
   console.log(`Status: ${payload.sidecar.status}`);
   console.log(
     `Requirements: ${summary?.emitted ?? payload.items.length}/${summary?.matched ?? payload.items.length}`,
@@ -593,8 +595,7 @@ function emitRequirementTraceText(payload: DocsReportEnvelope<RequirementTraceIt
 
 function emitApiDriftText(payload: DocsReportEnvelope<ApiDriftItem>): void {
   const summary = payload.summary.api as
-    | { emitted?: number; matched?: number; byStatus?: Record<string, number> }
-    | undefined;
+    { emitted?: number; matched?: number; byStatus?: Record<string, number> } | undefined;
   console.log(`Status: ${payload.sidecar.status}`);
   console.log(`API drift: ${summary?.emitted ?? payload.items.length}/${summary?.matched ?? 0}`);
   for (const item of payload.items) {

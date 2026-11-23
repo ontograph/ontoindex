@@ -15,6 +15,7 @@ import { getInferredRepoName } from './git.js';
 import { CURRENT_CONTRACT } from '../core/contract/versions.js';
 import type { RelationshipDistributions } from '../core/graph/fact-provenance.js';
 import type { IndexSourceManifest } from '../core/indexing/source-manifest.js';
+import type { ParserDiagnosticsSummary } from '../core/ingestion/parser-diagnostics.js';
 
 export interface DegradedFileEntry {
   filePath: string;
@@ -63,6 +64,8 @@ export interface RepoMeta {
     parseErrorFiles: string[];
     truncated: boolean;
   };
+  /** Complete generation-owned parse-error/degradation chunks; absent on legacy indexes. */
+  parserDiagnostics?: ParserDiagnosticsSummary;
   sourceProvenance?: {
     kind: 'commit' | 'working-tree' | 'unknown';
     head: string | null;

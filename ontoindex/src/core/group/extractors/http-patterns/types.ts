@@ -56,6 +56,8 @@ export interface HttpLanguagePlugin {
   name: string;
   /** tree-sitter grammar object (passed to the shared parser). */
   language: unknown;
+  /** Select a grammar for files whose language has multiple source dialects. */
+  languageForContent?: (source: string) => unknown;
   /**
    * Scan a parsed tree and return zero or more HTTP detections. Plugins
    * must not throw — they should swallow per-match errors so a single

@@ -345,7 +345,7 @@ const processImportsForFile = async (
   const queryStr = provider.treeSitterQueries;
   if (!queryStr) return 0;
 
-  await loadLanguage(language, file.path);
+  await loadLanguage(language, file.path, file.content);
 
   let tree = astCache.get(file.path);
   let wasReparsed = false;

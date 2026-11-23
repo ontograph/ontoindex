@@ -254,6 +254,31 @@ describe('tree-sitter queries', () => {
   });
 
   describe('PHP queries', () => {
+    it.each([
+      ['tagless PHP', 'class Foo { public function bar() {} }'],
+      [
+        'tagless PHP with a tag inside a string',
+        `class Foo { public function bar() { return '<?php'; } }`,
+      ],
+      [
+        'mixed HTML/PHP',
+        '<p>before</p><?php class Foo { public function bar() {} } ?><p>after</p>',
+      ],
+    ])('extracts declarations from %s', async (_label, source) => {
+      const parser = await createParserForLanguage(SupportedLanguages.PHP, 'fixture.php', source);
+      const query = new Parser.Query(
+        getLanguageGrammar(SupportedLanguages.PHP, 'fixture.php', source),
+        PHP_QUERIES,
+      );
+      const tree = parser.parse(source);
+      expect(tree.rootNode.hasError).toBe(false);
+      const names = query
+        .captures(tree.rootNode)
+        .map(({ name, node }) => ({ name, text: node.text }));
+      expect(names).toContainEqual({ name: 'name', text: 'Foo' });
+      expect(names).toContainEqual({ name: 'name', text: 'bar' });
+    });
+
     it('captures class, interface, trait, enum', () => {
       expect(PHP_QUERIES).toContain('@definition.class');
       expect(PHP_QUERIES).toContain('@definition.interface');

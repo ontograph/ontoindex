@@ -24,6 +24,7 @@ vi.mock('../../src/core/tree-sitter/parser-loader.js', () => ({
 
 vi.mock('ontoindex-shared', () => ({
   getLanguageFromFilename,
+  SupportedLanguages: { PHP: 'php' },
 }));
 
 import { chunkNode } from '../../src/core/embeddings/chunker.js';

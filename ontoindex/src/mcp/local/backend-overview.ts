@@ -2,6 +2,7 @@ import { executeParameterized } from '../../core/lbug/pool-adapter.js';
 import { RepoHandle } from 'ontoindex-shared';
 import { getActiveModelPacks } from '../../analysis-packs/execution.js';
 import { normalizeLimit } from './tool-utils.js';
+import { httpMethodFromRouteId } from '../../core/ingestion/route-extractors/route-identity.js';
 import {
   queryClusters as queryClustersImpl,
   queryProcesses as queryProcessesImpl,
@@ -17,11 +18,13 @@ interface EntryPointConsumer {
   filePath: string;
   accessedKeys?: string[];
   fetchCount?: number;
+  attributionNote?: string;
 }
 
 interface EntryPointRoute {
   id: string;
   name: string;
+  method?: string;
   filePath: string;
   responseKeys: string[] | null;
   errorKeys: string[] | null;
@@ -33,6 +36,7 @@ interface RouteMapResult {
   repo: string;
   routes: Array<{
     route: string;
+    method?: string;
     handler: string;
     middleware: string[];
     consumers: EntryPointConsumer[];
@@ -65,6 +69,7 @@ interface ShapeCheckConsumerResult {
 
 interface ShapeCheckRouteResult {
   route: string;
+  method?: string;
   handler: string;
   responseKeys?: string[];
   errorKeys?: string[];
@@ -150,6 +155,7 @@ export async function fetchRoutesWithConsumers(
       routeMap.set(id, {
         id,
         name,
+        ...(httpMethodFromRouteId(id) ? { method: httpMethodFromRouteId(id) } : {}),
         filePath,
         responseKeys,
         errorKeys,
@@ -168,6 +174,11 @@ export async function fetchRoutesWithConsumers(
         filePath: consumerFile,
         ...(accessedKeys && accessedKeys.length > 0 ? { accessedKeys } : {}),
         ...(fetchCount && fetchCount > 1 ? { fetchCount } : {}),
+        ...(fetchReason?.includes('method-unknown') ||
+        fetchReason?.includes('path-only-route') ||
+        fetchReason?.includes('dynamic-url')
+          ? { attributionNote: 'Possible consumer: URL or HTTP method evidence is incomplete.' }
+          : {}),
       });
     }
   }
@@ -270,6 +281,7 @@ export async function routeMap(
     repo: repo.name,
     routes: routes.map((r) => ({
       route: r.name,
+      ...(r.method ? { method: r.method } : {}),
       handler: r.filePath,
       middleware: r.middleware || [],
       consumers: r.consumers,
@@ -308,13 +320,18 @@ export async function shapeCheck(
       const responseKeySet = new Set(responseKeys);
       const consumers: ShapeCheckConsumerResult[] = r.consumers.map((c) => {
         if (!c.accessedKeys || c.accessedKeys.length === 0) {
-          return { name: c.name, filePath: c.filePath };
+          return {
+            name: c.name,
+            filePath: c.filePath,
+            ...(c.attributionNote ? { attributionNote: c.attributionNote } : {}),
+          };
         }
         const mismatched = c.accessedKeys.filter((k) => !allKnownKeys.has(k));
         const errorPathKeys = c.accessedKeys.filter(
           (k) => allKnownKeys.has(k) && !responseKeySet.has(k),
         );
         const isMultiFetch = (c.fetchCount ?? 1) > 1;
+        const uncertain = isMultiFetch || !!c.attributionNote;
         return {
           name: c.name,
           filePath: c.filePath,
@@ -322,13 +339,20 @@ export async function shapeCheck(
           ...(mismatched.length > 0
             ? {
                 mismatched,
-                mismatchConfidence: isMultiFetch ? ('low' as const) : ('high' as const),
+                mismatchConfidence: uncertain ? ('low' as const) : ('high' as const),
               }
             : {}),
           ...(errorPathKeys.length > 0 ? { errorPathKeys } : {}),
-          ...(isMultiFetch
+          ...(uncertain
             ? {
-                attributionNote: `This file fetches ${c.fetchCount} routes — accessed keys may belong to a different route.`,
+                attributionNote: [
+                  c.attributionNote,
+                  isMultiFetch
+                    ? `This file fetches ${c.fetchCount} routes — accessed keys may belong to a different route.`
+                    : undefined,
+                ]
+                  .filter(Boolean)
+                  .join(' '),
               }
             : {}),
         };
@@ -336,6 +360,7 @@ export async function shapeCheck(
       const hasMismatches = consumers.some((c) => c.mismatched && c.mismatched.length > 0);
       return {
         route: r.name,
+        ...(r.method ? { method: r.method } : {}),
         handler: r.filePath,
         ...(responseKeys.length > 0 ? { responseKeys } : {}),
         ...(errorKeys.length > 0 ? { errorKeys } : {}),

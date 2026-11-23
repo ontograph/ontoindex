@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { ManifestExtractor } from '../../../src/core/group/extractors/manifest-extractor.js';
 import type { GroupManifestLink } from '../../../src/core/group/types.js';
+import { routeNodeId } from '../../../src/core/ingestion/route-extractors/route-identity.js';
 
 describe('ManifestExtractor', () => {
   const extractor = new ManifestExtractor();
@@ -348,6 +349,7 @@ describe('ManifestExtractor', () => {
     ];
 
     let seenParam: string | undefined;
+    let seenRouteId: string | undefined;
     const dbExecutors = new Map<
       string,
       (cypher: string, params?: Record<string, unknown>) => Promise<Record<string, unknown>[]>
@@ -356,6 +358,7 @@ describe('ManifestExtractor', () => {
         'orders-svc',
         async (_cypher, params) => {
           seenParam = params?.normalized as string;
+          seenRouteId = params?.routeId as string;
           if (seenParam === '/api/orders') {
             return [
               {
@@ -375,6 +378,7 @@ describe('ManifestExtractor', () => {
 
     // The key assertion: $normalized must be the path only, NOT "/GET::/api/orders".
     expect(seenParam).toBe('/api/orders');
+    expect(seenRouteId).toBe(routeNodeId('/api/orders', 'GET'));
 
     const provider = result.contracts.find((c) => c.role === 'provider');
     expect(provider?.symbolUid).toBe('uid-orders-list');

@@ -4,6 +4,7 @@ import path from 'path';
 import os from 'os';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import type { PipelineOptions } from '../../src/core/ingestion/pipeline.js';
+import { readParserDiagnosticsPage } from '../../src/core/ingestion/parser-diagnostics.js';
 import {
   ScopeRetentionStage,
   type ScopeRetentionRequest,
@@ -1090,6 +1091,14 @@ describe('runFullAnalysis snapshot persistence', () => {
       runPipelineMock.mockImplementation(
         async (_repoPath: string, _onProgress: unknown, options?: PipelineOptions) => {
           const files = Array.from({ length: count }, (_, i) => `src/bad${i}.ts`);
+          for (const filePath of files) {
+            options?.onFileDiagnostic?.({
+              kind: 'parse-error',
+              filePath,
+              reason: 'tree-sitter parse error',
+              phase: 'parse',
+            });
+          }
           options?.onTelemetry?.({
             event: 'parse-error-files',
             phaseName: 'parsing',
@@ -1111,6 +1120,20 @@ describe('runFullAnalysis snapshot persistence', () => {
         ).sort(),
         truncated: count > 1000,
       });
+      expect(meta.parserDiagnostics).toMatchObject({
+        complete: true,
+        parseErrorCount: count,
+        degradedEntryCount: 0,
+      });
+      const generationPath = path.join(repoDir, '.ontoindex', 'generations', meta.generationId);
+      const diagnosticsPage = await readParserDiagnosticsPage(
+        generationPath,
+        meta.generationId,
+        meta.parserDiagnostics,
+        { kind: 'parse-error', limit: 100 },
+      );
+      expect(diagnosticsPage).toMatchObject({ total: count, returned: Math.min(count, 100) });
+      expect(diagnosticsPage.items[0]?.filePath).toBe(count > 0 ? 'src/bad0.ts' : undefined);
     } finally {
       await fs.rm(repoDir, { recursive: true, force: true });
     }
@@ -1306,12 +1329,19 @@ describe('runFullAnalysis snapshot persistence', () => {
             graphRelationships: 0,
             degradedReason: 'parser-lightweight-fallback',
             degradedAction: 'lightweight-fallback',
+            degradedFileCount: 1,
             degradedFiles: [
               {
                 filePath: 'source.ts',
                 reason: 'full AST extraction unavailable; using lightweight fallback',
               },
             ],
+          });
+          options?.onFileDiagnostic?.({
+            kind: 'degraded',
+            filePath: 'source.ts',
+            reason: 'full AST extraction unavailable; using lightweight fallback',
+            phase: 'parse',
           });
           return {
             graph: createKnowledgeGraph(),
@@ -1605,7 +1635,14 @@ describe('runFullAnalysis snapshot persistence', () => {
             graphNodes: 0,
             graphRelationships: 0,
             degradedReason: 'parse-quarantine',
+            degradedFileCount: 1,
             degradedFiles: [{ filePath: 'src/file0.py', reason: 'parse quarantine' }],
+          });
+          options?.onFileDiagnostic?.({
+            kind: 'degraded',
+            filePath: 'src/file0.py',
+            reason: 'parse quarantine',
+            phase: 'parse',
           });
           return {
             graph,
@@ -1917,7 +1954,7 @@ describe('runFullAnalysis snapshot persistence', () => {
         async (_repoPath: string, _onProgress: unknown, pipelineOptions?: PipelineOptions) => {
           if (outcome === 'opt-out') {
             expect(pipelineOptions?.scopeRetention).toBeUndefined();
-            expect(createIndexGeneration).not.toHaveBeenCalled();
+            expect(createIndexGeneration).toHaveBeenCalledTimes(1);
           } else {
             expect(createIndexGeneration).toHaveBeenCalledTimes(1);
             const retention = pipelineOptions!.scopeRetention!;

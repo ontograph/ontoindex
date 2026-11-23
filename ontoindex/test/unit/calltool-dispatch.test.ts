@@ -1729,6 +1729,27 @@ describe('LocalBackend.callTool', () => {
   });
 
   // api_impact tool
+  it('marks uncertain consumers as low-confidence in shape_check', async () => {
+    (executeParameterized as any).mockResolvedValue([
+      {
+        routeId: 'Route:GET /api/data',
+        routeName: '/api/data',
+        handlerFile: 'api/data.ts',
+        responseKeys: ['items'],
+        errorKeys: null,
+        middleware: null,
+        consumerName: 'DataView',
+        consumerFile: 'src/DataView.tsx',
+        fetchReason: 'fetch-url-match|method-unknown|keys:missing',
+      },
+    ]);
+    const result = (await backend.callTool('shape_check', { route: '/api/data' })) as any;
+    expect(result.routes[0].consumers[0]).toMatchObject({
+      mismatchConfidence: 'low',
+      attributionNote: expect.stringContaining('Possible consumer'),
+    });
+  });
+
   it('dispatches api_impact tool with route param', async () => {
     (executeParameterized as any).mockResolvedValue([
       {
@@ -1822,7 +1843,8 @@ describe('LocalBackend.callTool', () => {
     >;
     expect(result.route).toBe('/api/users');
     expect(result.impactSummary.directConsumers).toBe(0);
-    expect(result.impactSummary.riskLevel).toBe('LOW');
+    expect(result.impactSummary.riskLevel).toBe('UNKNOWN');
+    expect(result.coverageWarning).toContain('does not establish low risk');
   });
 
   it('api_impact reports active model packs when manifests are present', async () => {
