@@ -1035,7 +1035,8 @@ export const ONTOINDEX_FACADE_TOOLS: ToolDefinition[] = [
         },
         symbol: {
           type: 'string',
-          description: 'For safe_refactor: preferred canonical nodeId or fuzzy symbol name.',
+          description:
+            'Symbol selector for safe_refactor; also accepted for rename and mapped to symbol_name or symbol_uid. Use target as a legacy alias.',
         },
         params: {
           type: 'object',

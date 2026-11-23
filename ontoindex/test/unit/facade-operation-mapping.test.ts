@@ -101,6 +101,7 @@ describe('safe refactor facade mapping', () => {
       preChecks: { type: 'boolean' },
       force: { type: 'boolean' },
     });
+    expect(schema.properties.symbol.description).toContain('also accepted for rename');
     for (const field of ['intent', 'params', 'dryRun', 'confirm', 'preChecks', 'force']) {
       expect(schema.properties[field]).not.toHaveProperty('default');
     }

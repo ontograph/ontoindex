@@ -294,12 +294,41 @@ function normalizeFacadeArgs(
     if (action === 'route' && target && !normalized.route) normalized.route = target;
   }
 
-  if (tool === 'refactor' && target) {
-    if (action === 'rename' && !normalized.symbol_name && !normalized.symbol_uid) {
+  if (tool === 'refactor' && action === 'rename') {
+    const symbol =
+      typeof normalized.symbol === 'string' && normalized.symbol ? normalized.symbol : undefined;
+    if (symbol) {
+      const aliases = [
+        ['symbol_name', normalized.symbol_name],
+        ['symbol_uid', normalized.symbol_uid],
+        ['target', target],
+      ] as const;
+      for (const [field, value] of aliases) {
+        if (
+          typeof value === 'string' &&
+          value &&
+          value !== symbol
+        ) {
+          throw new Error(
+            `refactor(action: "rename") received conflicting symbol and ${field} selectors; pass matching values or only one selector.`,
+          );
+        }
+      }
+    }
+    if (symbol) {
+      if (!normalized.symbol_uid && CANONICAL_NODE_ID_RE.test(symbol)) {
+        normalized.symbol_uid = symbol;
+      } else if (!normalized.symbol_name && !normalized.symbol_uid) {
+        normalized.symbol_name = symbol;
+      }
+    } else if (!normalized.symbol_name && !normalized.symbol_uid && target) {
       if (CANONICAL_NODE_ID_RE.test(target)) normalized.symbol_uid = target;
       else normalized.symbol_name = target;
     }
-    if (action === 'replace' && !normalized.uid) normalized.uid = target;
+  }
+
+  if (tool === 'refactor' && action === 'replace' && target) {
+    if (!normalized.uid) normalized.uid = target;
   }
 
   if (

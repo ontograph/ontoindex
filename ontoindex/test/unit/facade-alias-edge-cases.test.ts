@@ -265,6 +265,86 @@ describe.each(selectors)('$tool/$action: $field selector', (selector) => {
 });
 
 describe('guarded aliases and typed query selector', () => {
+  it.each([
+    ['a name', 'parseToken', { symbol_name: 'parseToken' }],
+    [
+      'a canonical UID',
+      'Function:src/auth/token.ts:parseToken',
+      { symbol_uid: 'Function:src/auth/token.ts:parseToken' },
+    ],
+  ])(
+    'maps the refactor symbol selector to rename %s',
+    async (_label, symbol, selector) => {
+      const backend = createBackend();
+      const args = { symbol, new_name: 'validateToken' };
+      await dispatchFacade('refactor', 'rename', args, backend as unknown as LocalBackend);
+      expect(backend.callTool).toHaveBeenCalledExactlyOnceWith('rename', {
+        ...args,
+        ...selector,
+      });
+    },
+  );
+
+  it.each([
+    ['symbol_name', { symbol_name: 'otherToken' }],
+    ['symbol_uid', { symbol_uid: 'Function:src/auth/token.ts:otherToken' }],
+    ['target', { target: 'otherToken' }],
+  ])('rejects a conflicting refactor %s selector for rename', async (field, selector) => {
+    const backend = createBackend();
+    await expect(
+      dispatchFacade(
+        'refactor',
+        'rename',
+        { symbol: 'parseToken', new_name: 'validateToken', ...selector },
+        backend as unknown as LocalBackend,
+      ),
+    ).rejects.toThrow(
+      `refactor(action: "rename") received conflicting symbol and ${field} selectors; pass matching values or only one selector.`,
+    );
+    expect(backend.callTool).not.toHaveBeenCalled();
+  });
+
+  it('preserves the existing name and UID combination when symbol is omitted', async () => {
+    const backend = createBackend();
+    const args = {
+      symbol_name: 'method',
+      symbol_uid: 'Method:src/X.php:Class.method#0',
+      new_name: 'validateToken',
+    };
+    await dispatchFacade('refactor', 'rename', args, backend as unknown as LocalBackend);
+    expect(backend.callTool).toHaveBeenCalledExactlyOnceWith('rename', args);
+  });
+
+  it('rejects a name and decorated method UID when both are supplied through aliases', async () => {
+    const backend = createBackend();
+    await expect(
+      dispatchFacade(
+        'refactor',
+        'rename',
+        {
+          symbol: 'method',
+          symbol_uid: 'Method:src/X.php:Class.method#0',
+          new_name: 'renamedMethod',
+        },
+        backend as unknown as LocalBackend,
+      ),
+    ).rejects.toThrow(
+      'refactor(action: "rename") received conflicting symbol and symbol_uid selectors; pass matching values or only one selector.',
+    );
+    expect(backend.callTool).not.toHaveBeenCalled();
+  });
+
+  it('accepts the same canonical symbol selector and UID', async () => {
+    const backend = createBackend();
+    const args = {
+      symbol: 'Function:src/auth/token.ts:parseToken',
+      symbol_uid: 'Function:src/auth/token.ts:parseToken',
+      new_name: 'validateToken',
+    };
+    await dispatchFacade('refactor', 'rename', args, backend as unknown as LocalBackend);
+    expect(backend.callTool).toHaveBeenCalledExactlyOnceWith('rename', args);
+  });
+
   it.each(['context', 'rename'])(
     'characterizes: %s sibling identifier blocks alias replacement of an empty name',
     async (action) => {
@@ -273,7 +353,11 @@ describe('guarded aliases and typed query selector', () => {
       const args =
         action === 'context'
           ? { target: 'alias', name: '', uid: 'preferred' }
-          : { target: 'alias', symbol_name: '', symbol_uid: 'Function:preferred' };
+          : {
+              target: 'alias',
+              symbol_name: '',
+              symbol_uid: 'Function:preferred',
+            };
       await dispatchFacade(
         action === 'context' ? 'inspect' : 'refactor',
         action,
