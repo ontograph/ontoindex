@@ -30,6 +30,7 @@ interface EntryPointRoute {
   errorKeys: string[] | null;
   middleware: string[] | null;
   consumers: EntryPointConsumer[];
+  handlerNodes?: Array<{ id: string; name: string; filePath: string }>;
 }
 
 interface RouteMapResult {
@@ -38,6 +39,7 @@ interface RouteMapResult {
     route: string;
     method?: string;
     handler: string;
+    handlerNodes?: Array<{ id: string; name: string; filePath: string }>;
     middleware: string[];
     consumers: EntryPointConsumer[];
     flows: string[];
@@ -183,6 +185,24 @@ export async function fetchRoutesWithConsumers(
     }
   }
 
+  if (routeMap.size > 0) {
+    const handlerRows = await executeParameterized(repoId, `
+      MATCH (handler:Method)-[rel:CodeRelation]->(route:Route)
+      WHERE rel.type = 'HANDLES_ROUTE' AND list_contains($routeIds, route.id)
+      RETURN route.id AS routeId, handler.id AS handlerId,
+             handler.name AS handlerName, handler.filePath AS handlerFile
+    `, { routeIds: [...routeMap.keys()] });
+    for (const row of handlerRows as QueryRow[]) {
+      const routeId = rowValue<string>(row, 'routeId', 0);
+      const id = rowValue<string>(row, 'handlerId', 1);
+      const name = rowValue<string>(row, 'handlerName', 2);
+      const filePath = rowValue<string>(row, 'handlerFile', 3);
+      const route = routeId && routeMap.get(routeId);
+      if (!route || !id || !name || !filePath) continue;
+      const handlers = route.handlerNodes ??= [];
+      if (!handlers.some((handler) => handler.id === id)) handlers.push({ id, name, filePath });
+    }
+  }
   return [...routeMap.values()];
 }
 
@@ -283,6 +303,7 @@ export async function routeMap(
       route: r.name,
       ...(r.method ? { method: r.method } : {}),
       handler: r.filePath,
+      ...(r.handlerNodes?.length ? { handlerNodes: r.handlerNodes } : {}),
       middleware: r.middleware || [],
       consumers: r.consumers,
       flows: flowMap.get(r.id) || [],
