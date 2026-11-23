@@ -179,6 +179,7 @@ ontoindex mcp --project /path/to/target/repo
 ## Environment Variables
 
 - `ONTOINDEX_ROUTE_PROVIDER` is an optional absolute path to a trusted local ES module exporting a default route provider with `apiVersion: 1`, `id`, and an async `collect` function. The module runs with the indexer's permissions. Loading or validation errors fail indexing.
+- `ONTOINDEX_EMBEDDING_REVISION` selects a model revision for both indexing and MCP queries. Keep it consistent with `ONTOINDEX_EMBEDDING_MODEL_HASH` and the existing index.
 - `ONTOINDEX_ANALYSIS_TIMEOUT_MS` sets the managed analysis job deadline in milliseconds. The default is `1800000` (30 minutes); values must be positive integers no greater than `2147483647`. Invalid values use the default.
 - `ONTOINDEX_MAX_INTERNAL_ROWS` raises the ceiling for internal query results from `50000` to at most `200000`. Raising it can increase memory use. Embedding cache and hash limits are configured separately with `ONTOINDEX_MAX_CACHED_EMBEDDINGS` and `ONTOINDEX_MAX_EXISTING_EMBEDDING_HASHES`; each remains below the internal row ceiling.
 - `ONTOINDEX_PRESERVE_FORCE_EMBEDDINGS=1` opts into caching existing embeddings during a forced rebuild. Existing model compatibility and cache size checks still apply. By default, forced rebuilds do not reuse embeddings.

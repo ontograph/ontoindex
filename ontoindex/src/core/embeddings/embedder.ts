@@ -46,6 +46,7 @@ type FeatureExtractionPipelineFactory = (
   options: {
     device: 'dml' | 'cuda' | 'cpu' | 'wasm';
     dtype: 'fp32';
+    revision?: string;
     progress_callback?: (data: unknown) => void;
     session_options: { logSeverityLevel: number };
   },
@@ -196,6 +197,7 @@ export const initEmbedder = async (
             {
               device: device,
               dtype: 'fp32',
+              ...(process.env.ONTOINDEX_EMBEDDING_REVISION ? { revision: process.env.ONTOINDEX_EMBEDDING_REVISION } : {}),
               progress_callback: progressCallback,
               session_options: { logSeverityLevel: 3 },
             },
