@@ -35,6 +35,7 @@ import { readFileContents } from '../filesystem-walker.js';
 import { isDev } from '../utils/env.js';
 import { getActiveModelPacks } from '../../../analysis-packs/execution.js';
 import type { ExtractedRoute, ExtractedDecoratorRoute } from '../workers/parse-types.js';
+import { loadRouteProvider } from '../route-provider.js';
 
 const EXPO_NAV_PATTERNS = [
   /router\.(push|replace|navigate)\(\s*['"`]([^'"`]+)['"`]/g,
@@ -198,6 +199,23 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
       });
     }
 
+    const provider = await loadRouteProvider();
+    const provided = provider && await provider.collect({
+      repoPath: ctx.repoPath, allPaths, graph: ctx.graph,
+      readFiles: (paths) => readFileContents(ctx.repoPath, paths),
+    });
+    if (provided) {
+      if (!Array.isArray(provided.routes)) throw new Error(`Route provider ${provider!.id} returned invalid routes`);
+      for (const warning of provided.warnings ?? []) console.error(`[route-provider:${provider!.id}] ${warning}`);
+      for (const route of provided.routes) {
+        if (!route.routePath?.startsWith('/') || !allPaths.includes(route.filePath)) {
+          throw new Error(`Route provider ${provider!.id} returned an invalid route`);
+        }
+        addRoute(route.routePath, route);
+      }
+      allFetchCalls.push(...(provided.consumers ?? []));
+    }
+
     // Method-specific evidence supersedes a path-only filesystem candidate
     // for that path. Keeping both creates duplicate provider contracts.
     const methodSpecificPaths = new Set(
@@ -297,6 +315,16 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
             });
           }
         }
+      }
+
+      for (const route of provided?.routes ?? []) {
+        if (!route.handlerNodeId) continue;
+        const handler = ctx.graph.getNode(route.handlerNodeId);
+        const targetId = routeNodeId(route.routePath, route.httpMethod);
+        if (!handler || !ctx.graph.getNode(targetId)) throw new Error(`Route provider ${provider!.id} returned an invalid handler link`);
+        ctx.graph.addRelationship({ id: generateId('HANDLES_ROUTE', `${handler.id}->${targetId}`),
+          sourceId: handler.id, targetId, type: 'HANDLES_ROUTE', confidence: 1,
+          reason: `route-provider:${provider!.id}` });
       }
 
       if (isDev) {

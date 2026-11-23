@@ -12,10 +12,41 @@ describe('routesPhase', () => {
   let repoDir = '';
 
   afterEach(async () => {
+    delete process.env.ONTOINDEX_ROUTE_PROVIDER;
     if (repoDir) {
       await fs.rm(repoDir, { recursive: true, force: true });
       repoDir = '';
     }
+  });
+
+  it('loads an explicit provider and links its handler and consumer evidence', async () => {
+    repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-provider-'));
+    await fs.writeFile(path.join(repoDir, 'server.php'), '<?php');
+    await fs.writeFile(path.join(repoDir, 'client.js'), "fetch('/custom')");
+    const modulePath = path.join(repoDir, 'provider.mjs');
+    await fs.writeFile(modulePath, `export default { apiVersion: 1, id: 'fixture', async collect(ctx) {
+      if (!(await ctx.readFiles(['server.php'])).has('server.php')) throw Error('missing file');
+      return { routes: [{ routePath: '/custom', filePath: 'server.php', source: 'fixture', httpMethod: 'GET', handlerNodeId: 'Method:server.php:handler' }],
+        consumers: [{ filePath: 'client.js', fetchURL: '/custom', lineNumber: 0, httpMethod: 'GET' }] };
+    }};`);
+    process.env.ONTOINDEX_ROUTE_PROVIDER = modulePath;
+    const graph = createKnowledgeGraph();
+    graph.addNode({ id: 'Method:server.php:handler', label: 'Method', properties: { name: 'handler', filePath: 'server.php' } });
+    const parseOutput = { allPaths: ['server.php', 'client.js'], allFetchCalls: [], allExtractedRoutes: [], allDecoratorRoutes: [] } as unknown as ParseOutput;
+    await routesPhase.execute({ repoPath: repoDir, graph, onProgress: () => {}, pipelineStart: Date.now() },
+      new Map([['parse', { phaseName: 'parse', output: parseOutput, durationMs: 0 }]]));
+    const id = routeNodeId('/custom', 'GET');
+    expect(graph.getNode(id)).toBeDefined();
+    expect(graph.relationships.some((r) => r.sourceId === 'Method:server.php:handler' && r.targetId === id)).toBe(true);
+    expect(graph.relationships.some((r) => r.type === 'FETCHES' && r.targetId === id)).toBe(true);
+  });
+
+  it('fails the analysis when a configured provider cannot be loaded', async () => {
+    process.env.ONTOINDEX_ROUTE_PROVIDER = 'relative.mjs';
+    const graph = createKnowledgeGraph();
+    const output = { allPaths: [], allFetchCalls: [], allExtractedRoutes: [], allDecoratorRoutes: [] } as unknown as ParseOutput;
+    await expect(routesPhase.execute({ repoPath: '/tmp', graph, onProgress: () => {}, pipelineStart: Date.now() },
+      new Map([['parse', { phaseName: 'parse', output, durationMs: 0 }]]))).rejects.toThrow('absolute path');
   });
 
   it('retains response and middleware evidence for file-based routes', async () => {
