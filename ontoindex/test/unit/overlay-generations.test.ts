@@ -140,14 +140,15 @@ describe('immutable overlay generations (real LadybugDB)', () => {
       markPhase(`build ${name}: assertions`);
       expect(analyzeRepo).toHaveBeenCalledWith(
         expect.objectContaining({
-          options: {
+          repoPath: root,
+          options: expect.objectContaining({
             profile: 'symbols',
             includePaths: ['source.ts'],
-            capturedWorkspace: {
+            capturedWorkspace: expect.objectContaining({
               captureRoot: expect.stringContaining('workspace-inputs'),
               canonicalRepoPath: expect.any(String),
-            },
-          },
+            }),
+          }),
         }),
       );
       expect(result.stats.embeddings).toBe(0);

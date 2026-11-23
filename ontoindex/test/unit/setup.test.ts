@@ -574,22 +574,35 @@ describe('setupClaudeCode', () => {
     await fs.mkdir(path.join(tempHome, '.ontocode'), { recursive: true });
     await fs.writeFile(
       path.join(tempHome, '.codex', 'AGENTS.md'),
-      '# Global Agent Instructions\n\n@LEAN-CTX.md\n',
+      '# User header\n\n@LEAN-CTX.md\n\nKeep Codex footer\n',
       'utf-8',
     );
     await fs.writeFile(
       path.join(tempHome, '.ontocode', 'AGENTS.md'),
-      '# Global Agent Instructions\n\n@LEAN-CTX.md\n',
+      '# User header\n\n@LEAN-CTX.md\n\nKeep Ontocode footer\n',
       'utf-8',
     );
+    const claudeUserInstructions = '# Claude user header\n\n@ONTOINDEX.md\n\nKeep Claude footer\n';
     await fs.writeFile(
       path.join(tempHome, '.claude', 'CLAUDE.md'),
-      '# Global Agent Instructions\n',
+      claudeUserInstructions,
       'utf-8',
     );
 
     const { setupCommand } = await import('../../src/cli/setup.js');
     await setupCommand();
+    const setupOutput = vi
+      .mocked(console.log)
+      .mock.calls.map(([line]) => String(line))
+      .join('\n');
+    expect(setupOutput).toContain(
+      'manage({action: "ensure_fresh", repo: "<absolute exact current worktree root>", autoAnalyze: true})',
+    );
+    expect(setupOutput).toContain(
+      'manage({action: "analyze_job", repo: "<absolute exact current worktree root>", jobId: "<returned jobId>"})',
+    );
+    expect(setupOutput).toContain('until complete with exitCode 0, then recheck freshness');
+    expect(setupOutput).not.toContain('Run: ontoindex analyze');
     const firstGuidance = await Promise.all(
       ['.claude', '.codex', '.ontocode'].map((dirName) =>
         fs.readFile(path.join(tempHome, dirName, 'ONTOINDEX.md'), 'utf-8'),
@@ -601,10 +614,38 @@ describe('setupClaudeCode', () => {
       const guidance = await fs.readFile(path.join(tempHome, dirName, 'ONTOINDEX.md'), 'utf-8');
       expect(guidance).toBe(firstGuidance[index]);
       expect(guidance).toContain('Never claim OntoIndex was used');
-      expect(guidance).toContain('inspect({action: "explore", query: "concept"})');
-      expect(guidance).toContain('impact({action: "diff_impact"})');
+      expect(guidance).toContain(
+        'manage({action: "ensure_fresh", repo: "<absolute exact current worktree root>", autoAnalyze: true})',
+      );
+      expect(guidance).toContain(
+        'manage({action: "analyze_job", repo: "<absolute exact current worktree root>", jobId: "<returned jobId>"})',
+      );
+      expect(guidance).toContain(
+        'inspect({action: "context", repo: "<absolute exact current worktree root>", target: "<symbol>"})',
+      );
+      expect(guidance).toContain('job.status === "complete"');
+      expect(guidance).toContain('job.exitCode === 0');
+      expect(guidance).toContain('isStale === false');
+      expect(guidance).toContain(
+        'After polling, block if final `analysisSubmission.status` is blocked/failed/queued/reused',
+      );
+      expect(guidance).toContain('Stale graph output is never evidence');
+      expect(guidance).toContain('Run installed `ontoindex analyze` only for an explicitly requested');
+      expect(guidance).not.toContain('repo: "ontoindex"');
+      expect(guidance).toContain(
+        'impact({repo: "<absolute exact current worktree root>", action: "symbol", target: "symbol"})',
+      );
       expect(guidance).toContain('audit({action: "review_diff"})');
-      expect(guidance).toContain('audit({action: "verify_diff"})');
+      expect(guidance).toContain(
+        'audit({action: "verify_diff", repo: "<absolute exact current worktree root>", scope: "branch"})',
+      );
+      const freshnessGate = guidance.slice(
+        guidance.indexOf('## Freshness gate'),
+        guidance.indexOf('## Explicit CLI maintenance'),
+      );
+      expect(freshnessGate).toContain('Do not use local wrappers or `ontoindex analyze` as a freshness gate');
+      expect(freshnessGate).toContain('Check uncommitted changes against source and diff.');
+      expect(freshnessGate).not.toContain('projectName');
       const coreTools = new Set([
         'gn_help',
         'gn_tool_contract',
@@ -626,12 +667,7 @@ describe('setupClaudeCode', () => {
       expect(inspect).toBeGreaterThan(explore);
       expect(impact).toBeGreaterThan(inspect);
       expect(verify).toBeGreaterThan(impact);
-      // Commit-based index + forbid silent dirty-worktree assumptions.
-      expect(guidance).toContain('The graph index is commit-based');
-      expect(guidance).toContain('current HEAD differs from the indexed');
-      expect(guidance).toContain(
-        'silently assume dirty or uncommitted worktree changes are represented in the',
-      );
+      expect(guidance).toContain('The graph is never evidence while stale, blocked, degraded, or untrusted.');
     }
 
     const claudeInstructions = await fs.readFile(
@@ -650,7 +686,12 @@ describe('setupClaudeCode', () => {
     for (const content of [claudeInstructions, codexInstructions, ontocodeInstructions]) {
       expect(content.match(/@ONTOINDEX\.md/g)).toHaveLength(1);
     }
+    expect(claudeInstructions).toBe(claudeUserInstructions);
     expect(codexInstructions).toContain('@LEAN-CTX.md');
     expect(ontocodeInstructions).toContain('@LEAN-CTX.md');
+    expect(codexInstructions).toContain('# User header');
+    expect(codexInstructions).toContain('Keep Codex footer');
+    expect(ontocodeInstructions).toContain('# User header');
+    expect(ontocodeInstructions).toContain('Keep Ontocode footer');
   });
 });

@@ -3,7 +3,7 @@ name: ontoindex-debugging
 description: 'Diagnose failing behavior, trace errors, and locate the source of a reproducible bug.'
 ---
 
-Read ontoindex-navigation first (freshness labels and query failure guidance).
+Read ontoindex-navigation first. Pass the absolute root of the exact current checkout or linked worktree as `repo` in every call; stale or refreshing graph results are not evidence.
 
 ## Trace the failure
 
@@ -11,10 +11,10 @@ Record the trigger, expected behavior, observed behavior, and available reproduc
 Locate the failing path and inspect its immediate relationships:
 
 ```text
-search({action: "semantic", repo: "<repo>", query: "<error or failing behavior>", limit: 5})
-inspect({action: "context", repo: "<repo>", target: "<symbol>", include_content: true})
-inspect({action: "related", repo: "<repo>", symbol: "<symbol>", includeCallers: true, includeCallees: true})
-inspect({action: "evidence", repo: "<repo>", targets: ["<symbol>"], context_lines: 5})
+search({action: "semantic", repo: "<absolute exact current worktree root>", query: "<error or failing behavior>", limit: 5})
+inspect({action: "context", repo: "<absolute exact current worktree root>", target: "<symbol>", include_content: true})
+inspect({action: "related", repo: "<absolute exact current worktree root>", symbol: "<symbol>", includeCallers: true, includeCallees: true})
+inspect({action: "evidence", repo: "<absolute exact current worktree root>", targets: ["<symbol>"], context_lines: 5})
 ```
 
 Read current source around the evidence; trace inputs, guards, state changes, and error handling.

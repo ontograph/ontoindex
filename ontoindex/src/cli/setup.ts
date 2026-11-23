@@ -16,6 +16,10 @@ import { fileURLToPath } from 'url';
 import { glob } from 'glob';
 import { getGitRoot } from '../storage/git.js';
 import { getGlobalDir } from '../storage/repo-manager.js';
+import {
+  MCP_FRESHNESS_GATE_GUIDANCE,
+  MCP_REPO_ROOT_PLACEHOLDER,
+} from '../mcp/freshness-guidance.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -90,18 +94,24 @@ source. The \`ontoindex\` CLI may not be on PATH; prefer MCP tools/resources.
 For simple exact file lookup or newly-created unindexed files, direct source
 inspection is acceptable; do not label it OntoIndex evidence.
 
-For non-trivial code research/analysis on an indexed repo, use OntoIndex early,
-then verify exact claims from source:
+${MCP_FRESHNESS_GATE_GUIDANCE}
 
-1. Explore/search -> \`inspect({action: "explore", query: "concept"})\` or \`search\`
-2. Inspect/context -> \`inspect\` for callers, callees, and execution flows
-3. Impact before edits -> \`impact\` or \`impact({action: "diff_impact"})\`
-4. Verify diff before commit -> \`audit({action: "verify_diff"})\` to confirm scope
+## Explicit CLI maintenance
 
-The graph index is commit-based. When current HEAD differs from the indexed
-commit, exactly one process must re-analyze before graph-backed claims. Never
-silently assume dirty or uncommitted worktree changes are represented in the
-graph; verify current source or the diff for those changes.
+Run installed \`ontoindex analyze\` only for an explicitly requested index setup,
+rebuild, or maintenance task; never use it as the freshness gate.
+
+For graph-dependent code research or edits, pass the exact current worktree root
+as \`repo\` and use this order only after the freshness gate passes. If it blocks,
+report the missing graph evidence and inspect source directly:
+
+1. Explore/search -> \`inspect({action: "explore", repo: "${MCP_REPO_ROOT_PLACEHOLDER}", query: "concept"})\` or \`search\`
+2. Inspect/context -> \`inspect({action: "context", repo: "${MCP_REPO_ROOT_PLACEHOLDER}", target: "<symbol>"})\` for callers, callees, and execution flows
+3. Impact before edits -> \`impact({repo: "${MCP_REPO_ROOT_PLACEHOLDER}", action: "symbol", target: "symbol"})\`
+4. Verify diff before commit -> \`audit({action: "verify_diff", repo: "${MCP_REPO_ROOT_PLACEHOLDER}", scope: "branch"})\` to confirm scope
+
+The graph is never evidence while stale, blocked, degraded, or untrusted. Verify
+uncommitted and changed source directly.
 `;
 
 function resolveMcpRepoPath(): string {
@@ -1210,9 +1220,13 @@ export const setupCommand = async () => {
   );
   console.log('');
   console.log('  Next steps:');
-  console.log('    1. cd into any git repo');
-  console.log('    2. Run: ontoindex analyze');
+  console.log('    1. cd into a Git repo and open it in your editor');
+  console.log(
+    `    2. Before graph work, call MCP manage({action: "ensure_fresh", repo: "${MCP_REPO_ROOT_PLACEHOLDER}", autoAnalyze: true})`,
+  );
+  console.log(
+    `       If analysisSubmission.status is "queued" or "reused", poll manage({action: "analyze_job", repo: "${MCP_REPO_ROOT_PLACEHOLDER}", jobId: "<returned jobId>"}) until complete with exitCode 0, then recheck freshness; see ONTOINDEX.md.`,
+  );
   console.log('    3. Run: ontoindex setup (safe to rerun after installs/upgrades)');
-  console.log('    4. Open the repo in your editor — MCP is ready!');
   console.log('');
 };

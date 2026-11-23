@@ -3,7 +3,7 @@ name: ontoindex-pr-review
 description: 'Review a pull request or diff for correctness, merge risk, and missing test coverage.'
 ---
 
-Read ontoindex-navigation first (freshness labels and query failure guidance).
+Read ontoindex-navigation first. Pass the absolute root of the exact current checkout or linked worktree as `repo` in every call; stale or refreshing graph results are not evidence.
 
 ## Establish the review scope
 
@@ -12,9 +12,9 @@ Resolve the PR's base and head commits and ensure the local comparison contains 
 Use that exact range for graph-assisted review:
 
 ```text
-audit({action: "review_diff", repo: "<repo>", scope: "commit-range", commitRange: "<base>...<head>"})
-impact({action: "diff_impact", repo: "<repo>", scope: "commit-range", commitRange: "<base>...<head>"})
-audit({action: "test_gap", repo: "<repo>", scope: "compare", diffRef: "<base>", changedFiles: ["<changed-file>"], executedTests: ["<executed-test>"]})
+audit({action: "review_diff", repo: "<absolute exact current worktree root>", scope: "commit-range", commitRange: "<base>...<head>"})
+impact({action: "diff_impact", repo: "<absolute exact current worktree root>", scope: "commit-range", commitRange: "<base>...<head>"})
+audit({action: "test_gap", repo: "<absolute exact current worktree root>", scope: "compare", diffRef: "<base>", changedFiles: ["<changed-file>"], executedTests: ["<executed-test>"]})
 ```
 
 Run coverage comparison in the checkout of the reviewed head; supply only tests actually executed.

@@ -13,8 +13,8 @@ import { ONTOINDEX_TOOLS } from '../../src/mcp/tools.js';
 const GROUP_TOOLS = new Set(['group_list', 'group_sync']);
 
 describe('ONTOINDEX_TOOLS', () => {
-  it('exports all tools (base + route_map/tool/shape + analysis catalog + api_impact + group + repomap + route + session + audit-roadmap tools + dead_code + sandbox + replace_symbol + cycle detection + policy/migration/type tools + get_symbol_info + update_symbol_body + rename_symbol + extract_function + move_symbol)', () => {
-    expect(ONTOINDEX_TOOLS).toHaveLength(42);
+  it('exports all tools (base + route_map/tool/shape + analysis catalog + api_impact + group + repomap + route + session + audit-roadmap tools + dead_code + sandbox + replace_symbol + cycle detection + policy/migration/type tools + get_symbol_info + update_symbol_body + rename_symbol + extract_function + move_symbol + parser diagnostics)', () => {
+    expect(ONTOINDEX_TOOLS).toHaveLength(43);
   });
 
   it('contains all expected tool names', () => {
@@ -35,6 +35,7 @@ describe('ONTOINDEX_TOOLS', () => {
         'impact',
         'analysis_catalog',
         'api_impact',
+        'parser_diagnostics',
       ]),
     );
   });

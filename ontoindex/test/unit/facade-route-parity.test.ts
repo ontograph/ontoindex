@@ -75,7 +75,8 @@ const ROUTES: readonly Route[] = [
 const NON_GN_ACTIONS = [
   ['discover', ['repos', 'routes', 'tools', 'packs', 'groups', 'sync']],
   ['search', ['semantic', 'cypher', 'repomap']],
-  ['inspect', ['context', 'evidence', 'shape', 'ipc']],
+  // diagnostics maps to the direct parser_diagnostics backend tool, not a legacy gn_* name.
+  ['inspect', ['context', 'evidence', 'shape', 'ipc', 'diagnostics']],
   ['impact', ['symbol', 'batch', 'route', 'diff']],
   [
     'audit',
@@ -151,7 +152,7 @@ describe('facade legacy route parity', () => {
         (action) => `${tool.name}/${action}`,
       ),
     );
-    expect(nonGnPairs).toHaveLength(37);
+    expect(nonGnPairs).toHaveLength(38);
     expect(new Set(routePairs).size).toBe(routePairs.length);
     expect(new Set(nonGnPairs).size).toBe(nonGnPairs.length);
     expect(routePairs.filter((pair) => nonGnPairs.includes(pair))).toEqual([]);

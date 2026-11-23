@@ -10,6 +10,10 @@ import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { type GeneratedSkillInfo } from './skill-gen.js';
+import {
+  MCP_FRESHNESS_GATE_GUIDANCE,
+  MCP_REPO_ROOT_PLACEHOLDER,
+} from '../mcp/freshness-guidance.js';
 
 // ESM equivalent of __dirname
 const __filename = fileURLToPath(import.meta.url);
@@ -46,108 +50,57 @@ const ONTOINDEX_BLOCK_PATTERN =
  * - Exact tool commands with parameters — vague directives get ignored
  * - Self-review checklist — forces model to verify its own work
  */
-async function findGroupsContainingRegistryName(registryName: string): Promise<string[]> {
-  const { listGroups, getDefaultOntoIndexDir, getGroupDir } =
-    await import('../core/group/storage.js');
-  const { loadGroupConfig } = await import('../core/group/config-parser.js');
-  const names = await listGroups();
-  const hits: string[] = [];
-  for (const g of names) {
-    try {
-      const config = await loadGroupConfig(getGroupDir(getDefaultOntoIndexDir(), g));
-      if (Object.values(config.repos).some((r) => r === registryName)) hits.push(config.name);
-    } catch {
-      // skip invalid or unreadable groups
-    }
-  }
-  return hits;
-}
-
 function generateOntoIndexContent(
-  projectName: string,
   generatedSkills?: GeneratedSkillInfo[],
-  groupNames?: string[],
-  cliCommand = 'ontoindex',
 ): string {
   const generatedRows =
     generatedSkills && generatedSkills.length > 0
       ? generatedSkills
           .map(
             (s) =>
-              `| Work in the ${s.label} area (${s.symbolCount} symbols) | \`.claude/skills/generated/${s.name}/SKILL.md\` |`,
+              `- Work in the ${s.label} area (${s.symbolCount} symbols): \`.claude/skills/generated/${s.name}/SKILL.md\``,
           )
           .join('\n')
       : '';
 
-  const skillsTable = `| Task | Read this skill file |
-|------|---------------------|
-| Start here, any task | \`.claude/skills/ontoindex/ontoindex-navigation/SKILL.md\` |
-| Understand architecture / "How does X work?" | \`.claude/skills/ontoindex/ontoindex-exploring/SKILL.md\` |
-| Blast radius / "What breaks if I change X?" | \`.claude/skills/ontoindex/ontoindex-impact-analysis/SKILL.md\` |
-| Trace bugs / "Why is X failing?" | \`.claude/skills/ontoindex/ontoindex-debugging/SKILL.md\` |
-| Rename / extract / split / refactor | \`.claude/skills/ontoindex/ontoindex-refactoring/SKILL.md\` |
-| Tools, resources, schema reference | \`.claude/skills/ontoindex/ontoindex-guide/SKILL.md\` |
-| Index, status, clean, wiki CLI commands | \`.claude/skills/ontoindex/ontoindex-cli/SKILL.md\` |${generatedRows ? '\n' + generatedRows : ''}`;
-
-  const analyzeCommand = cliCommand.startsWith('node ')
-    ? `ONTOINDEX_MAX_WORKERS=7 ${cliCommand} analyze`
-    : `${cliCommand} analyze`;
+  const skillsTable = `Skills under \`.claude/skills/ontoindex/\`: \`ontoindex-navigation/SKILL.md\`, \`ontoindex-exploring/SKILL.md\`, \`ontoindex-impact-analysis/SKILL.md\`, \`ontoindex-debugging/SKILL.md\`, \`ontoindex-refactoring/SKILL.md\`, \`ontoindex-guide/SKILL.md\`, \`ontoindex-cli/SKILL.md\`, \`ontoindex-pr-review/SKILL.md\`.${generatedRows ? '\n' + generatedRows : ''}`;
 
   return `${ONTOINDEX_START_MARKER}
 # OntoIndex — Code Intelligence
 
-This project is indexed by OntoIndex as **${projectName}**. Use the OntoIndex MCP tools to understand code, assess impact, and navigate safely.
+Use OntoIndex MCP for code context. Names here are labels, never MCP \`repo\` paths.
 
-> Always query OntoIndex first. Repo queries refresh stale indexes in the background; dirty edits use the automatic overlay. Use stale/refreshing results with freshness labels; verify edited or new code from source. Never fall back to grep-only because the index is stale. Manual \`${analyzeCommand}\` is only for immediate refresh with no active job. Sub-agents never start reindex jobs; refresh-on-query covers them.
+${MCP_FRESHNESS_GATE_GUIDANCE}
+
+Explicit maintenance only: \`ontoindex analyze\`.
 
 ## Always Do
 
-Use OntoIndex in this order:
+After the gate, in order (warn on HIGH/CRITICAL impact):
 
-1. **Explore/search** — MCP \`search({action: "semantic", repo: "${projectName}", query: "concept"})\` to find execution flows instead of grepping.
-2. **Inspect context** — MCP \`inspect({action: "context", repo: "${projectName}", target: "symbolName"})\` for a symbol's callers, callees, and execution flows.
-3. **Impact before edits** — MCP \`impact({action: "symbol", repo: "${projectName}", target: "symbolName", direction: "upstream"})\` or CLI \`${cliCommand} impact --repo ${projectName} <symbol>\`; report the blast radius and MUST warn on HIGH or CRITICAL risk before editing.
-4. **Verify scope before commit** — MCP \`audit({action: "verify_diff", repo: "${projectName}", scope: "all"})\` or CLI \`${cliCommand} detect-changes --repo ${projectName}\` to confirm only expected symbols and execution flows changed.
+1. **Explore/search** — \`search({action: "semantic", repo: "${MCP_REPO_ROOT_PLACEHOLDER}", query: "concept"})\`.
+2. **Inspect context** — \`inspect({action: "context", repo: "${MCP_REPO_ROOT_PLACEHOLDER}", target: "symbolName"})\`.
+3. **Impact before edits** — \`impact({action: "symbol", repo: "${MCP_REPO_ROOT_PLACEHOLDER}", target: "symbolName", direction: "upstream"})\`.
+4. **Verify scope before commit** — \`audit({action: "verify_diff", repo: "${MCP_REPO_ROOT_PLACEHOLDER}", scope: "all"})\`.
 
 ## Never Do
 
-- NEVER edit a function, class, or method without first running MCP \`impact\` or CLI \`${cliCommand} impact\` on it.
-- NEVER ignore HIGH or CRITICAL risk warnings from impact analysis.
-- NEVER rename symbols with find-and-replace — use MCP \`refactor({action: "rename", ...})\` which understands the call graph.
-- NEVER commit changes without step 4 verification.
+- Never use \`impact\` before the gate or report blocked graph evidence as success.
+- Rename with MCP \`refactor\`, not find-and-replace. Claim \`verify_diff\` passed only if step 4 ran.
 
 ## Resources
 
-| Resource | Use for |
-|----------|---------|
-| \`ontoindex://repo/${projectName}/context\` | Codebase overview, check index freshness |
-| \`ontoindex://repo/${projectName}/clusters\` | All functional areas |
-| \`ontoindex://repo/${projectName}/processes\` | All execution flows |
-| \`ontoindex://repo/${projectName}/process/{name}\` | Step-by-step execution trace |
+Use \`ontoindex://repo/{registered-name-confirmed-for-exact-current-worktree-root}/context\` etc.; resolve the name at task time.
 
-${
-  groupNames && groupNames.length > 0
-    ? `## Cross-Repo Groups
+## Cross-Repo Groups
 
-This repository is listed under OntoIndex **group(s): ${groupNames.join(', ')}** (see \`~/.ontoindex/groups/\`). For cross-repo analysis, use MCP tools \`impact\`, \`query\`, and \`context\` with \`repo\` set to \`@<groupName>\` or \`@<groupName>/<memberPath>\` (paths match keys in that group’s \`group.yaml\`). Use \`group_list\` / \`group_sync\` for membership and sync. From the terminal: \`${cliCommand} group list\`, \`${cliCommand} group sync <name>\`, \`${cliCommand} group impact <name> --target <symbol> --repo <group-path>\`.
+For cross-repo work, use \`discover({action: "groups"})\`; keep local \`repo\` calls on the active root.
 
-`
-    : ''
-}## CLI
+## CLI
 
 ${skillsTable}
 
 ${ONTOINDEX_END_MARKER}`;
-}
-
-async function resolveGeneratedCliCommand(repoPath: string): Promise<string> {
-  const localCli = path.join(repoPath, 'ontoindex', 'dist', 'cli', 'index.js');
-  try {
-    await fs.access(localCli);
-    return `node ${localCli}`;
-  } catch {
-    return 'ontoindex';
-  }
 }
 
 /**
@@ -317,7 +270,11 @@ description: ${skill.description}
 
 ${skill.description}
 
-Use OntoIndex tools to accomplish this task.
+${MCP_FRESHNESS_GATE_GUIDANCE}
+
+## Explicit CLI maintenance
+
+Run installed \`ontoindex analyze\` only for an explicitly requested index setup, rebuild, or maintenance task; never as the freshness gate.
 `;
       }
 
@@ -343,14 +300,12 @@ Use OntoIndex tools to accomplish this task.
 export async function generateAIContextFiles(
   repoPath: string,
   _storagePath: string,
-  projectName: string,
+  _projectName: string,
   _stats: RepoStats,
   generatedSkills?: GeneratedSkillInfo[],
   options?: AIContextOptions,
 ): Promise<{ files: string[] }> {
-  const groupNames = await findGroupsContainingRegistryName(projectName);
-  const cliCommand = await resolveGeneratedCliCommand(repoPath);
-  const content = generateOntoIndexContent(projectName, generatedSkills, groupNames, cliCommand);
+  const content = generateOntoIndexContent(generatedSkills);
   const createdFiles: string[] = [];
 
   if (!options?.skipAgentsMd) {

@@ -3,24 +3,24 @@ name: ontoindex-exploring
 description: 'Understand architecture, find code, and trace callers or execution flows in an unfamiliar repository.'
 ---
 
-Read ontoindex-navigation first (freshness labels and query failure guidance).
+Read ontoindex-navigation first. Pass the absolute root of the exact current checkout or linked worktree as `repo` in every call; stale or refreshing graph results are not evidence.
 
 ## Find and explain code
 
 Start with a concept, then inspect the returned symbol identity:
 
 ```text
-search({action: "semantic", repo: "<repo>", query: "<concept>", limit: 5})
-inspect({action: "explore", repo: "<repo>", query: "<concept>", depth: "balanced"})
-inspect({action: "context", repo: "<repo>", target: "<symbol>", include_content: true})
-inspect({action: "related", repo: "<repo>", symbol: "<symbol>", maxItemsPerCategory: 10})
+search({action: "semantic", repo: "<absolute exact current worktree root>", query: "<concept>", limit: 5})
+inspect({action: "explore", repo: "<absolute exact current worktree root>", query: "<concept>", depth: "balanced"})
+inspect({action: "context", repo: "<absolute exact current worktree root>", target: "<symbol>", include_content: true})
+inspect({action: "related", repo: "<absolute exact current worktree root>", symbol: "<symbol>", maxItemsPerCategory: 10})
 ```
 
 Use returned paths and identities to read current source and resolve ambiguous symbols.
 Trace the entry point, calls, state changes, and output; cite the evidence for each connection.
 Separate graph facts from hypotheses, and verify dirty or unindexed source directly.
 
-For structural queries, use `search` with `action: "cypher"` and `repo: "<repo>"`.
+For structural queries, use `search` with `action: "cypher"` and `repo: "<absolute exact current worktree root>"`.
 Every Cypher query must include `LIMIT` of at most 5000; avoid variable-length patterns.
 Use `impact` with `maxDepth` for bounded dependency traversal.
 If exploration leads to edits, read ontoindex-impact-analysis before changing symbols.

@@ -345,6 +345,20 @@ export function getNextStepHint(
     case 'query':
       return `\n\n---\n**Next:** To understand a specific symbol in depth, use inspect({action: "context", name: "<symbol_name>"${repoParam}}) to see categorized refs and process participation.`;
 
+    case 'parser_diagnostics': {
+      const source =
+        args?.source === 'committed'
+          ? 'committed'
+          : args?.source === 'workspace-overlay'
+            ? 'workspace-overlay'
+            : args?.read_mode === 'workspace'
+              ? 'workspace-overlay'
+              : undefined;
+      const sourceParam = source ? ', source: "' + source + '"' : '';
+      const diagnosticRepoParam = repo ? ', repo: "' + repo + '"' : '';
+      return '\n\n---\n**Next:** Continue with inspect({action: "diagnostics"' + sourceParam + ', generation: "<generation>", cursor: "<cursor>"' + diagnosticRepoParam + '}) to page the same diagnostic source. Keep the returned generation and cursor together when continuing.';
+    }
+
     case 'context':
       return `\n\n---\n**Next:** If planning changes, use impact({action: "symbol", target: "${args?.name || '<name>'}", direction: "upstream"${repoParam}}) to check blast radius. To see execution flows, READ ontoindex://repo/${repoPath}/processes.`;
 

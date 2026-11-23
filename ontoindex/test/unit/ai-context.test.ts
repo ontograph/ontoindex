@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
@@ -34,6 +34,35 @@ describe('generateAIContextFiles', () => {
     expect(result.files.length).toBeGreaterThan(0);
   });
 
+  it('copies the generated block to both files and preserves surrounding user instructions', async () => {
+    const repoPath = path.join(tmpDir, 'preserved-user-instructions');
+    const storagePath = path.join(repoPath, '.ontoindex');
+    await fs.mkdir(storagePath, { recursive: true });
+    const oldBlock = '<!-- ontoindex:start -->\nold generated content\n<!-- ontoindex:end -->';
+    const agentsBefore = `# User heading\n\nKeep this AGENTS text.\n\n${oldBlock}\n\n# User footer\n`;
+    const claudeBefore = `# User heading\n\nKeep this CLAUDE text.\n\n${oldBlock}\n\n# User footer\n`;
+    await fs.writeFile(path.join(repoPath, 'AGENTS.md'), agentsBefore, 'utf-8');
+    await fs.writeFile(path.join(repoPath, 'CLAUDE.md'), claudeBefore, 'utf-8');
+
+    await generateAIContextFiles(repoPath, storagePath, 'CopiedProjectName', { nodes: 1 });
+
+    const agents = await fs.readFile(path.join(repoPath, 'AGENTS.md'), 'utf-8');
+    const claude = await fs.readFile(path.join(repoPath, 'CLAUDE.md'), 'utf-8');
+    const blockPattern = /<!-- ontoindex:start -->[\s\S]*?<!-- ontoindex:end -->/;
+    const agentsBlock = agents.match(blockPattern)?.[0];
+    const claudeBlock = claude.match(blockPattern)?.[0];
+
+    expect(agentsBlock).toBeDefined();
+    expect(claudeBlock).toBe(agentsBlock);
+    for (const content of [agents, claude]) {
+      expect(content).toContain('# User heading');
+      expect(content).toContain('# User footer');
+      expect(content).toContain('Keep this');
+      expect(content).not.toContain('CopiedProjectName');
+      expect(content).toContain('repo: "<absolute exact current worktree root>"');
+    }
+  });
+
   it('creates or updates CLAUDE.md with OntoIndex section', async () => {
     const stats = { nodes: 50, edges: 100, processes: 5 };
     await generateAIContextFiles(tmpDir, storagePath, 'TestProject', stats);
@@ -42,34 +71,37 @@ describe('generateAIContextFiles', () => {
     const content = await fs.readFile(claudeMdPath, 'utf-8');
     expect(content).toContain('ontoindex:start');
     expect(content).toContain('ontoindex:end');
-    expect(content).toContain('TestProject');
+    expect(content).toContain('exact current worktree root');
   });
 
   it('keeps the load-bearing repo-specific sections in the CLAUDE.md block (#856)', async () => {
     // The trimmed block must still contain everything that is genuinely
-    // unique per repo or load-bearing for the agent: the freshness warning,
+    // load-bearing for the agent: the exact-root freshness gate,
     // the Always Do / Never Do imperative lists, the Resources URI table
-    // (projectName-interpolated), and the skills routing table that tells
+    // portable resource templates, and the skills routing table that tells
     // the agent which skill file to read for each task.
     const stats = { nodes: 50, edges: 100, processes: 5 };
     await generateAIContextFiles(tmpDir, storagePath, 'TestProject', stats);
 
     const content = await fs.readFile(path.join(tmpDir, 'CLAUDE.md'), 'utf-8');
 
-    expect(content).toContain('Always query OntoIndex first');
+    expect(content).toContain('## Freshness gate');
     expect(content).toContain('## Always Do');
     expect(content).toContain('## Never Do');
     expect(content).toContain('## Resources');
-    expect(content).toContain('ontoindex://repo/TestProject/context');
+    expect(content).toContain(
+      'ontoindex://repo/{registered-name-confirmed-for-exact-current-worktree-root}/context',
+    );
     expect(content).toContain('ontoindex-impact-analysis/SKILL.md');
     expect(content).toContain('ontoindex-refactoring/SKILL.md');
     expect(content).toContain('ontoindex-debugging/SKILL.md');
     expect(content).toContain('ontoindex-cli/SKILL.md');
+    expect(content).toContain('ontoindex-pr-review/SKILL.md');
     expect(content).toContain('ontoindex analyze');
     expect(content).not.toContain('npx ontoindex');
   });
 
-  it('orders the small-tool ladder and keeps stale evidence usable during refresh', async () => {
+  it('generates a fail-closed exact-worktree freshness gate', async () => {
     const stats = { nodes: 50, edges: 100, processes: 5 };
     await generateAIContextFiles(tmpDir, storagePath, 'TestProject', stats);
 
@@ -84,17 +116,30 @@ describe('generateAIContextFiles', () => {
     expect(inspect).toBeGreaterThan(explore);
     expect(impact).toBeGreaterThan(inspect);
     expect(verify).toBeGreaterThan(impact);
-    expect(content).toContain('audit({action: "verify_diff", repo: "TestProject", scope: "all"})');
-    expect(content).toContain('ontoindex detect-changes --repo TestProject');
-
-    expect(content).toContain('Repo queries refresh stale indexes in the background');
-    expect(content).toContain('dirty edits use the automatic overlay');
-    expect(content).toContain('Use stale/refreshing results with freshness labels');
-    expect(content).toContain('verify edited or new code from source');
-    expect(content).toContain('Never fall back to grep-only because the index is stale');
-    expect(content).toContain('is only for immediate refresh with no active job');
-    expect(content).toContain('Sub-agents never start reindex jobs; refresh-on-query covers them');
-    expect(content).not.toContain('exactly one process must run');
+    const root = '<absolute exact current worktree root>';
+    expect(content).toContain(
+      `manage({action: "ensure_fresh", repo: "${root}", autoAnalyze: true})`,
+    );
+    expect(content).toContain(
+      `manage({action: "analyze_job", repo: "${root}", jobId: "<returned jobId>"})`,
+    );
+    expect(content).toContain('analysisSubmission.status');
+    expect(content).toContain('"queued"');
+    expect(content).toContain('"reused"');
+    expect(content).toContain('job.status === "complete"');
+    expect(content).toContain('job.exitCode === 0');
+    expect(content).toContain('rerun');
+    expect(content).toContain('isStale === false');
+    expect(content).toContain('runtime health must not be degraded or untrusted');
+    expect(content).toContain('needsAnalysis: true');
+    expect(content).toContain('Stale graph output is never evidence');
+    expect(content).toContain('Check uncommitted changes against source and diff.');
+    expect(content).toContain('Do not use local wrappers or `ontoindex analyze` as a freshness gate');
+    expect(content).toContain('Explicit maintenance only');
+    expect(content).toContain('ontoindex analyze');
+    expect(content).not.toContain('Use stale/refreshing results with freshness labels');
+    expect(content).not.toContain('repo: "TestProject"');
+    expect(content).not.toContain('ontoindex://repo/TestProject/');
   });
 
   it('only names gn_* tools available in the core startup profile', async () => {
@@ -136,12 +181,8 @@ describe('generateAIContextFiles', () => {
     expect(content).not.toContain('## Keeping the Index Fresh');
   });
 
-  it('keeps the CLAUDE.md OntoIndex block under the token-cost budget (#856)', async () => {
-    // The pre-trim block was ~5465 chars. After #856 it was ~2580, and later
-    // MCP/runtime additions pushed it somewhat higher while still keeping the
-    // block materially smaller than the original. 3000 is the current soft ceiling.
-    // It still fails loudly if the trim is
-    // reverted or someone pads the block back out toward the original size.
+  it('keeps the CLAUDE.md OntoIndex block under the token-cost budget', async () => {
+    // Preserve the established compact block budget while keeping the fail-closed gate.
     const stats = { nodes: 50, edges: 100, processes: 5 };
     await generateAIContextFiles(tmpDir, storagePath, 'TestProject', stats);
 
@@ -168,7 +209,7 @@ describe('generateAIContextFiles', () => {
         });
         for (const filename of ['AGENTS.md', 'CLAUDE.md']) {
           const content = await fs.readFile(path.join(tmpDir, filename), 'utf-8');
-          expect(content).toContain('indexed by OntoIndex as **TestProject**.');
+          expect(content).not.toContain('TestProject');
           expect(content).not.toContain('symbols,');
         }
       }
@@ -288,25 +329,87 @@ This project is indexed by OntoIndex as **OldRealProject** (4 symbols, 5 relatio
     const ends = content.match(/<!-- ontoindex:end -->/g) || [];
     expect(starts).toHaveLength(1);
     expect(ends).toHaveLength(1);
-    expect(content).toContain('CleanProject');
+    expect(content).toContain('exact current worktree root');
+    expect(content).not.toContain('CleanProject');
     expect(content).not.toContain('OldInlineProject');
     expect(content).not.toContain('OldRealProject');
     expect(content).not.toContain('npx ontoindex');
-    expect(content).toContain(`ONTOINDEX_MAX_WORKERS=7 node ${localCli} analyze`);
+    expect(content).toContain('Explicit maintenance only');
+    expect(content).not.toContain(localCli);
+    expect(content).not.toContain('repo: "CleanProject"');
+    expect(content).not.toContain('ontoindex://repo/CleanProject/');
   });
 
   it('installs skills files', async () => {
     const stats = { nodes: 10 };
-    const result = await generateAIContextFiles(tmpDir, storagePath, 'TestProject', stats);
+    await generateAIContextFiles(tmpDir, storagePath, 'TestProject', stats);
 
-    // Should have installed skill files
     const skillsDir = path.join(tmpDir, '.claude', 'skills', 'ontoindex');
-    try {
-      const entries = await fs.readdir(skillsDir, { recursive: true });
-      expect(entries.length).toBeGreaterThan(0);
-    } catch {
-      // Skills dir may not be created if skills source doesn't exist in test context
+    const skillNames = [
+      'ontoindex-cli',
+      'ontoindex-debugging',
+      'ontoindex-exploring',
+      'ontoindex-guide',
+      'ontoindex-impact-analysis',
+      'ontoindex-navigation',
+      'ontoindex-pr-review',
+      'ontoindex-refactoring',
+    ];
+    expect((await fs.readdir(skillsDir)).sort()).toEqual(skillNames);
+
+    for (const skillName of skillNames) {
+      const packagedSkill = await fs.readFile(
+        new URL(`../../skills/${skillName}.md`, import.meta.url),
+        'utf-8',
+      );
+      const installedSkill = await fs.readFile(
+        path.join(skillsDir, skillName, 'SKILL.md'),
+        'utf-8',
+      );
+      expect(installedSkill).toBe(packagedSkill);
+      expect(installedSkill).not.toContain('Use stale/refreshing results with freshness labels');
+      expect(installedSkill).not.toContain('Run: ontoindex analyze');
+      expect(installedSkill).not.toContain('npx ontoindex analyze');
+      if (skillName === 'ontoindex-cli') {
+        expect(installedSkill).toContain('ontoindex analyze [path]');
+        expect(installedSkill).toContain('explicitly asks to operate the CLI');
+        expect(installedSkill).toContain(
+          'never run a local wrapper, `reindex.sh`, or `ontoindex analyze` as a substitute',
+        );
+      } else {
+        expect(installedSkill).not.toContain('ontoindex analyze [path]');
+      }
     }
+  });
+
+  it('uses the fail-closed freshness gate when a packaged skill is unavailable', async () => {
+    const repoPath = path.join(tmpDir, 'fallback-skill');
+    const storagePath = path.join(repoPath, '.ontoindex');
+    await fs.mkdir(storagePath, { recursive: true });
+    const readFileSpy = vi
+      .spyOn(fs, 'readFile')
+      .mockRejectedValueOnce(Object.assign(new Error('missing packaged skill'), { code: 'ENOENT' }));
+
+    try {
+      await generateAIContextFiles(repoPath, storagePath, 'FallbackProject', { nodes: 1 });
+    } finally {
+      readFileSpy.mockRestore();
+    }
+
+    const fallback = await fs.readFile(
+      path.join(repoPath, '.claude', 'skills', 'ontoindex', 'ontoindex-navigation', 'SKILL.md'),
+      'utf-8',
+    );
+    expect(fallback).toContain('exact current worktree root');
+    expect(fallback).toContain('analysisSubmission.status');
+    expect(fallback).toContain('job.status === "complete"');
+    expect(fallback).toContain('job.exitCode === 0');
+    expect(fallback).toContain('Stale graph output is never evidence');
+    expect(fallback).toContain(
+      'Do not use local wrappers or `ontoindex analyze` as a freshness gate',
+    );
+    expect(fallback).toContain('Run installed `ontoindex analyze` only for an explicitly requested');
+    expect(fallback).not.toContain('repo: "FallbackProject"');
   });
 
   it('preserves manual AGENTS.md and CLAUDE.md edits when skipAgentsMd is enabled', async () => {

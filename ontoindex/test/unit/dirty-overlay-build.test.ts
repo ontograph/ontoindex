@@ -137,14 +137,15 @@ describe('disposable dirty overlay build', () => {
       );
       expect(analyzeRepo).toHaveBeenCalledWith(
         expect.objectContaining({
-          options: {
+          repoPath,
+          options: expect.objectContaining({
             profile: 'symbols',
             includePaths: ['src/dirty.ts'],
-            capturedWorkspace: {
+            capturedWorkspace: expect.objectContaining({
               captureRoot: expect.stringContaining('workspace-inputs'),
               canonicalRepoPath: await fs.realpath(repoPath),
-            },
-          },
+            }),
+          }),
         }),
       );
       // The capture is disposed after publication.
@@ -171,6 +172,15 @@ describe('disposable dirty overlay build', () => {
         manifestDigest: expect.stringMatching(/^[0-9a-f]{64}$/),
         configurationDigest: expect.stringMatching(/^[0-9a-f]{64}$/),
         parserIdentity: expect.any(String),
+        parserDiagnostics: {
+          version: 1,
+          complete: true,
+          chunkSize: 256,
+          parseErrorCount: 0,
+          degradedEntryCount: 0,
+          parseErrorChunkCount: 0,
+          degradedChunkCount: 0,
+        },
         includePaths: ['src/dirty.ts'],
         inputs: {
           'src/dirty.ts': createHash('sha256')

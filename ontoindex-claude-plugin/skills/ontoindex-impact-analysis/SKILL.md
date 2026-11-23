@@ -3,13 +3,13 @@ name: ontoindex-impact-analysis
 description: 'Assess blast radius before editing a symbol and identify dependencies that need review or validation.'
 ---
 
-Read ontoindex-navigation first (freshness labels and query failure guidance).
+Read ontoindex-navigation first. Pass the absolute root of the exact current checkout or linked worktree as `repo` in every call; stale or refreshing graph results are not evidence.
 
 ## Before editing
 
 ```text
-impact({action: "symbol", repo: "<repo>", target: "<symbol>", direction: "upstream", maxDepth: 3, includeTests: true})
-audit({action: "safe_edit_check", repo: "<repo>", symbol: "<symbol>", intent: "modify-body"})
+impact({action: "symbol", repo: "<absolute exact current worktree root>", target: "<symbol>", direction: "upstream", maxDepth: 3, includeTests: true})
+audit({action: "safe_edit_check", repo: "<absolute exact current worktree root>", symbol: "<symbol>", intent: "modify-body"})
 ```
 
 Use the tool's LOW, MEDIUM, HIGH, or CRITICAL risk output; warn on HIGH or CRITICAL before editing.
@@ -23,7 +23,7 @@ Prefer the smallest change in the existing owner and validate the affected behav
 ## Before committing
 
 ```text
-audit({action: "verify_diff", repo: "<repo>", scope: "all", changedFiles: ["<changed-file>"], expectedFiles: ["<expected-file>"], expectedSymbols: ["<symbol>"], executedTests: ["<executed-test>"]})
+audit({action: "verify_diff", repo: "<absolute exact current worktree root>", scope: "all", changedFiles: ["<changed-file>"], expectedFiles: ["<expected-file>"], expectedSymbols: ["<symbol>"], executedTests: ["<executed-test>"]})
 ```
 
 Supply actual paths and only tests that ran. Investigate unexpected files or symbols.

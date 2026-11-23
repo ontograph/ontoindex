@@ -581,6 +581,11 @@ describe('readResource', () => {
     const backend = createMockBackend({ repos: [] });
     const result = await readResource('ontoindex://repos', backend);
     expect(result).toContain('No repositories indexed');
+    const freshness = (yaml.load(result) as { freshness_gate: string }).freshness_gate;
+    expect(freshness).toContain('manage({action: "ensure_fresh"');
+    expect(freshness).toContain('repo: "<absolute exact current worktree root>"');
+    expect(freshness).toContain('manage({action: "analyze_job"');
+    expect(freshness).toContain('exitCode 0');
   });
 
   it('routes ontoindex://setup to setup resource', async () => {
@@ -599,7 +604,18 @@ describe('readResource', () => {
     expect(result).toContain('OntoIndex MCP');
     expect(result).toContain('proj');
     expect(result).toContain('CLI equivalent: `ontoindex list`');
-    expect(result).toContain('| `gn_ensure_fresh` |');
+    expect(result).toContain('| `manage({action: "ensure_fresh"})` |');
+    expect(result).toContain('| `manage({action: "analyze_job"})` |');
+    expect(result).toContain('repo: "<absolute exact current worktree root>"');
+    expect(result).toContain('job.status === "complete"');
+    expect(result).toContain('job.exitCode === 0');
+    expect(result).toContain('isStale === false');
+    expect(result).toContain('Stale graph output is never evidence');
+    expect(result).toContain(
+      'ontoindex://repo/{registered-name-confirmed-for-exact-current-worktree-root}/context',
+    );
+    expect(result).not.toContain('repo: "proj"');
+    expect(result).not.toContain('ontoindex://repo/proj/context');
     expect(result).toContain('| `search` |');
     expect(result).toContain('| `inspect` |');
     expect(result).not.toContain('| `query` |');
@@ -610,6 +626,13 @@ describe('readResource', () => {
     const backend = createMockBackend({ repos: [] });
     const result = await readResource('ontoindex://setup', backend);
     expect(result).toContain('No repositories indexed');
+    expect(result).toContain('manage({action: "ensure_fresh"');
+    expect(result).toContain('repo: "<absolute exact current worktree root>"');
+    expect(result).toContain('manage({action: "analyze_job"');
+    expect(result).toContain('job.exitCode === 0');
+    expect(result).toContain('only for an explicitly requested index setup');
+    expect(result).toContain('not a freshness gate');
+    expect(result).not.toContain('npx ontoindex analyze');
   });
 
   it('routes group contracts resource through backend', async () => {
@@ -642,6 +665,11 @@ describe('readResource', () => {
     expect(result).toContain('test-project');
     expect(result).toContain('files: 10');
     expect(result).toContain('search: Search semantically');
+    const freshness = (yaml.load(result) as { re_index: string }).re_index;
+    expect(freshness).toContain('exact absolute current Git worktree root');
+    expect(freshness).toContain('isStale=false');
+    expect(freshness).toContain('needsAnalysis is true');
+    expect(freshness).toContain('manage({action: "ensure_fresh"');
     expect(result).not.toContain('ontoindex_query');
   });
 
@@ -943,7 +971,8 @@ describe('readResource', () => {
     });
     const result = await readResource('ontoindex://repos', backend);
     expect(result).toContain('Multiple repos indexed');
-    expect(result).toContain('repo parameter');
+    expect(result).toContain('repo: "<absolute exact current worktree root>"');
+    expect(result).not.toContain('repo: "proj-a"');
   });
 
   // ─── Advisory memories ──────────────────────────────────────────────
@@ -1392,11 +1421,11 @@ describe('resource YAML string roundtrips', () => {
   });
 
   it('serializes the context setup error as one string', async () => {
-    expect(
-      yaml.load(await readResource('ontoindex://repo/r/context', createMockBackend())),
-    ).toEqual({
-      error: 'No codebase loaded. Run: ontoindex analyze',
-    });
+    const result = yaml.load(
+      await readResource('ontoindex://repo/r/context', createMockBackend()),
+    ) as { error: string };
+    expect(result.error).toContain('No codebase loaded. Resolve the exact absolute current Git worktree root');
+    expect(result.error).toContain('manage({action: "ensure_fresh"');
   });
 
   it('preserves pack, suite, and plan fields and structured params', async () => {

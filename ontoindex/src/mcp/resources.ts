@@ -14,6 +14,11 @@ import { buildAnalysisExecutionPlan } from '../analysis-packs/execution.js';
 import { loadMemoryCollection, loadMemory, type ParsedMemory } from './memory-parser.js';
 import { readRuntimeHealth } from '../core/runtime/runtime-health.js';
 import {
+  MCP_FRESHNESS_GATE_GUIDANCE,
+  MCP_FRESHNESS_GATE_HINT,
+  MCP_REPO_ROOT_PLACEHOLDER,
+} from './freshness-guidance.js';
+import {
   recordEvidenceReadSafe,
   type EvidenceReadClass,
 } from '../core/runtime/evidence-read-ledger.js';
@@ -661,7 +666,7 @@ async function getReposResource(backend: LocalBackend): Promise<string> {
   const repos = await backend.listRepos();
 
   if (repos.length === 0) {
-    return 'repos: []\n# No repositories indexed. Run: ontoindex analyze';
+    return `repos: []\nfreshness_gate: ${yamlString(MCP_FRESHNESS_GATE_HINT)}\n# No repositories indexed. Use the CLI only for an explicit index setup or maintenance request.`;
   }
 
   const lines: string[] = ['repos:'];
@@ -679,8 +684,10 @@ async function getReposResource(backend: LocalBackend): Promise<string> {
 
   if (repos.length > 1) {
     lines.push('');
-    lines.push('# Multiple repos indexed. Use repo parameter in tool calls:');
-    lines.push(`# ontoindex_search({query: "auth", repo: ${yamlString(repos[0].name)}})`);
+    lines.push('# Multiple repos indexed. Resolve the exact current worktree root for each MCP tool call:');
+    lines.push(
+      `# search({action: "semantic", query: "auth", repo: "${MCP_REPO_ROOT_PLACEHOLDER}"})`,
+    );
   }
 
   return lines.join('\n');
@@ -700,7 +707,7 @@ async function getContextResource(backend: LocalBackend, repoName?: string): Pro
   const context = backend.getContext(repoId) || backend.getContext();
 
   if (!context) {
-    return `error: ${yamlString('No codebase loaded. Run: ontoindex analyze')}`;
+    return `error: ${yamlString(`No codebase loaded. ${MCP_FRESHNESS_GATE_HINT}`)}`;
   }
 
   // Include current runtime health so callers can distinguish a clean index
@@ -780,7 +787,7 @@ async function getContextResource(backend: LocalBackend, repoName?: string): Pro
   }
 
   lines.push('');
-  lines.push('re_index: Run `ontoindex analyze` in terminal if data is stale');
+  lines.push(`re_index: ${yamlString(MCP_FRESHNESS_GATE_HINT)}`);
   lines.push('');
   lines.push('resources_available:');
   lines.push('  - ontoindex://repos: All indexed repositories');
@@ -839,7 +846,7 @@ async function getClustersResource(backend: LocalBackend, repoName?: string): Pr
 
     if (result.clusters.length > displayLimit) {
       lines.push(
-        `\n# Showing top ${displayLimit} of ${result.clusters.length} modules. Use search({action:'semantic', repo:'<repo>', query:'...'}) for deeper search.`,
+        `\n# Showing top ${displayLimit} of ${result.clusters.length} modules. Use search({action: "semantic", repo: "${MCP_REPO_ROOT_PLACEHOLDER}", query: "..."}) for deeper search.`,
       );
     }
 
@@ -873,7 +880,7 @@ async function getProcessesResource(backend: LocalBackend, repoName?: string): P
 
     if (result.processes.length > displayLimit) {
       lines.push(
-        `\n# Showing top ${displayLimit} of ${result.processes.length} processes. Use search({action:'semantic', repo:'<repo>', query:'...'}) for deeper search.`,
+        `\n# Showing top ${displayLimit} of ${result.processes.length} processes. Use search({action: "semantic", repo: "${MCP_REPO_ROOT_PLACEHOLDER}", query: "..."}) for deeper search.`,
       );
     }
 
@@ -1163,7 +1170,7 @@ async function getSetupResource(backend: LocalBackend): Promise<string> {
   const repos = await backend.listRepos();
 
   if (repos.length === 0) {
-    return '# OntoIndex\n\nNo repositories indexed. Run: `npx ontoindex analyze` in a repository.';
+    return `# OntoIndex\n\n${MCP_FRESHNESS_GATE_GUIDANCE}\n\nNo repositories indexed. Run installed \`ontoindex analyze\` only for an explicitly requested index setup or maintenance task; it is not a freshness gate.`;
   }
 
   const sections: string[] = [];
@@ -1172,34 +1179,31 @@ async function getSetupResource(backend: LocalBackend): Promise<string> {
     const lines = [
       `# OntoIndex MCP — ${repo.name}`,
       '',
-      `This project is indexed by OntoIndex as **${repo.name}**. Use \`discover\` action \`repos\` for current index statistics.`,
+      `This project is indexed by OntoIndex under the label **${repo.name}**. The label is for index/resource lookup, not the current worktree path. Use \`discover\` action \`repos\` for current index statistics.`,
+      '',
+      MCP_FRESHNESS_GATE_GUIDANCE,
       '',
       '## Tools',
       '',
       '| Tool | What it gives you |',
       '|------|-------------------|',
-      '| `gn_ensure_fresh` | Check index freshness and runtime health |',
+      '| `manage({action: "ensure_fresh"})` | Check index freshness and runtime health |',
+      '| `manage({action: "analyze_job"})` | Poll a queued or reused refresh job |',
       '| `search` | Search semantically, with Cypher, or through the repomap |',
       '| `inspect` | Inspect symbol context, evidence, API shapes, or IPC traces |',
       '| `impact` | Analyze symbol, batch, route, or diff impact |',
       '| `discover` | Discover indexed repositories (CLI equivalent: `ontoindex list`) |',
       '| `docs` | Trace requirements, check docs drift, or inspect readiness |',
       '| `audit` | Run architectural, migration, and systems audits |',
-      '| `manage` | Manage OntoIndex sessions and route maps |',
+      '| `manage` | Check freshness, poll refresh jobs, manage sessions, and route maps |',
       '| `refactor` | Preview rename candidates, replace bodies, or stage edits |',
-      '| `gn_explore` | Explore a concept and its execution flows |',
-      '| `gn_find_related` | Inspect callers, callees, and related symbols |',
-      '| `gn_safe_edit_check` | Check risk before editing a symbol |',
-      '| `gn_verify_diff` | Verify changed files, symbols, and tests |',
-      '| `gn_review_diff` | Review changes with graph-aware impact evidence |',
-      '| `gn_test_gap` | Review existing or changed-symbol test evidence |',
       '',
       '## Resources',
       '',
-      `- \`ontoindex://repo/${repo.name}/context\` — Stats, staleness check`,
-      `- \`ontoindex://repo/${repo.name}/clusters\` — All functional areas`,
-      `- \`ontoindex://repo/${repo.name}/processes\` — All execution flows`,
-      `- \`ontoindex://repo/${repo.name}/schema\` — Graph schema for Cypher`,
+      '- `ontoindex://repo/{registered-name-confirmed-for-exact-current-worktree-root}/context` — Stats, staleness check',
+      '- `ontoindex://repo/{registered-name-confirmed-for-exact-current-worktree-root}/clusters` — All functional areas',
+      '- `ontoindex://repo/{registered-name-confirmed-for-exact-current-worktree-root}/processes` — All execution flows',
+      '- `ontoindex://repo/{registered-name-confirmed-for-exact-current-worktree-root}/schema` — Graph schema for Cypher',
     ];
     sections.push(lines.join('\n'));
   }

@@ -39,10 +39,15 @@ describe('MCP Next-Step Hints', () => {
       for (const tool of [...ONTOINDEX_TOOLS, ...INTERNAL_TOOL_HANDLERS]) {
         const hint = getNextStepHint(tool.name, { repo: 'my-repo', read_mode });
         expect(hint, tool.name).toContain('repo: "my-repo"');
-        if (read_mode) expect(hint, tool.name).toContain('read_mode: "workspace"');
+        if (read_mode && tool.name !== 'parser_diagnostics') {
+          expect(hint, tool.name).toContain('read_mode: "workspace"');
+        }
+        if (read_mode && tool.name === 'parser_diagnostics') {
+          expect(hint, tool.name).toContain('source: "workspace-overlay"');
+        }
         for (const call of hint.matchAll(/\(\{([^{}]*)\}\)/g)) {
           expect(call[1], `${tool.name}: ${call[0]}`).toContain('repo: "my-repo"');
-          if (read_mode) {
+          if (read_mode && tool.name !== 'parser_diagnostics') {
             expect(call[1], `${tool.name}: ${call[0]}`).toContain('read_mode: "workspace"');
           }
         }
@@ -73,6 +78,26 @@ describe('MCP Next-Step Hints', () => {
         '---\n**Next:**',
       );
     }
+  });
+
+  it('continues parser diagnostics with the same immutable source and repository', () => {
+    const hint = getNextStepHint('parser_diagnostics', {
+      repo: 'my-repo',
+      source: 'workspace-overlay',
+    });
+
+    expect(hint).toContain(
+      'inspect({action: "diagnostics", source: "workspace-overlay", generation: "<generation>", cursor: "<cursor>", repo: "my-repo"})',
+    );
+    expect(hint).toContain('generation and cursor');
+
+    const explicitCommittedSource = getNextStepHint('parser_diagnostics', {
+      repo: 'my-repo',
+      read_mode: 'workspace',
+      source: 'committed',
+    });
+    expect(explicitCommittedSource).toContain('source: "committed"');
+    expect(explicitCommittedSource).not.toContain('source: "workspace-overlay"');
   });
 
   it('customizes context hint with repo parameter', () => {
