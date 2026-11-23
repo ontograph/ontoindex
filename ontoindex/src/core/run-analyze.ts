@@ -1842,6 +1842,15 @@ export async function runFullAnalysis(
       }
     }
 
+    if (embeddingSkipped && cachedEmbeddings.length > 0) {
+      // Cached rows were restored into a new generation, which has no vector
+      // index even when embedding generation is intentionally skipped.
+      const { createVectorIndex } = await import('./embeddings/embedding-pipeline.js');
+      if (!(await createVectorIndex(executeQuery))) {
+        throw new Error('Could not create vector index for restored embeddings');
+      }
+    }
+
     if (!embeddingSkipped) {
       const { isHttpMode } = await import('./embeddings/http-client.js');
       const httpMode = isHttpMode();

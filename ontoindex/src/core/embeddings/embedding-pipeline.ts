@@ -568,7 +568,7 @@ const normalizeExistingEmbeddingState = (
  * which owns the VECTOR extension lifecycle and state tracking.
 
  */
-const createVectorIndex = async (executeQuery: ExecuteQuery): Promise<boolean> => {
+export const createVectorIndex = async (executeQuery: ExecuteQuery): Promise<boolean> => {
   // Delegate to the adapter which tracks loaded state and handles DB reconnect resets
   await loadVectorExtension();
 
