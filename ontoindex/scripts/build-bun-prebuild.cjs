@@ -17,40 +17,20 @@ const TARGETS = [
   { key: 'win32-arm64', platform: 'win32', arch: 'arm64', bun: 'bun-windows-arm64' },
   { key: 'win32-x64', platform: 'win32', arch: 'x64', bun: 'bun-windows-x64' },
 ];
-const PHP_CASES = [
-  { grammar: 'php', name: 'php-open-tag-echo', source: '<?php echo "hello";' },
-  {
-    grammar: 'php',
-    name: 'php-typed-function',
-    source: '<?php function answer(): int { return 42; }',
-  },
-  {
-    grammar: 'php',
-    name: 'php-class-method',
-    source: '<?php class Box { public function get(): string { return "x"; } }',
-  },
-  {
-    grammar: 'php',
-    name: 'php-namespace-import',
-    source: '<?php namespace App; use Vendor\\Thing; $value = new Thing();',
-  },
-  { grammar: 'php_only', name: 'php-only-echo', source: 'echo "hello";' },
-  {
-    grammar: 'php_only',
-    name: 'php-only-typed-function',
-    source: 'function answer(): int { return 42; }',
-  },
-  {
-    grammar: 'php_only',
-    name: 'php-only-class-method',
-    source: 'class Box { public function get(): string { return "x"; } }',
-  },
-  {
-    grammar: 'php_only',
-    name: 'php-only-namespace-import',
-    source: 'namespace App; use Vendor\\Thing; $value = new Thing();',
-  },
+const INCLUDE_CASES = [
+  { keyword: 'include', expressionType: 'include_expression' },
+  { keyword: 'include_once', expressionType: 'include_once_expression' },
+  { keyword: 'require', expressionType: 'require_expression' },
+  { keyword: 'require_once', expressionType: 'require_once_expression' },
 ];
+const PHP_CASES = ['php', 'php_only'].flatMap((grammar) =>
+  INCLUDE_CASES.map(({ keyword, expressionType }) => ({
+    grammar,
+    expressionType,
+    name: `${grammar}-${keyword}-array-cast`,
+    source: `${grammar === 'php' ? '<?php ' : ''}$value = (array) ${keyword} 'fixture.php';`,
+  })),
+);
 
 function usage() {
   console.log(`Usage: node scripts/build-bun-prebuild.cjs [options]
@@ -197,15 +177,26 @@ function smokeSource(runtimeSpecifier, phpSpecifier) {
 const PHP = require(${JSON.stringify(phpSpecifier)});
 const cases = ${JSON.stringify(PHP_CASES)};
 const parser = new Parser();
+function hasExpectedArrayCast(node, expressionType) {
+  if (
+    node.type === 'cast_expression' &&
+    node.childForFieldName('type')?.text === 'array' &&
+    node.childForFieldName('value')?.type === expressionType
+  ) return true;
+  return node.namedChildren.some((child) => hasExpectedArrayCast(child, expressionType));
+}
 for (const testCase of cases) {
   parser.setLanguage(PHP[testCase.grammar]);
   const tree = parser.parse(testCase.source);
   if (tree.rootNode.type !== 'program' || tree.rootNode.hasError) {
     throw new Error(testCase.name + ' failed: ' + tree.rootNode.toString());
   }
+  if (!hasExpectedArrayCast(tree.rootNode, testCase.expressionType)) {
+    throw new Error(testCase.name + ' did not produce an array cast around ' + testCase.expressionType);
+  }
   console.log('PASS ' + testCase.name);
 }
-if (cases.length !== 8) throw new Error('Expected eight PHP cases');
+if (cases.length !== 8) throw new Error('Expected eight PHP array-cast cases');
 console.log('NATIVE_PARSER_SMOKE_OK');
 `;
 }
