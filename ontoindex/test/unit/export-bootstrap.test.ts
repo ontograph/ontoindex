@@ -203,6 +203,30 @@ describe('bootstrap export and hydrate', () => {
     ).toBe(true);
   });
 
+  it('blocks bootstrap export when a dirty source manifest is unconfirmed', async () => {
+    const cleanHealth = await readRuntimeHealthMock();
+    readRuntimeHealthMock.mockClear();
+    readRuntimeHealthMock.mockResolvedValue({
+      ...cleanHealth,
+      dirtyWorktree: true,
+      freshnessState: 'dirty',
+      degradedReason: 'working-tree source changes are not confirmed by the indexed source manifest',
+      repairCommand: 'ontoindex analyze',
+    });
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((code) => {
+      throw new Error(`process.exit(${code})`);
+    });
+
+    try {
+      await expect(
+        exportBootstrapCommand({ repo: repoHandle.dbPath, out: artifactPath }),
+      ).rejects.toThrow('process.exit(1)');
+      await expect(fs.access(artifactPath)).rejects.toThrow();
+    } finally {
+      exitSpy.mockRestore();
+    }
+  });
+
   it('force hydrate replaces stale snapshot state from an older local index', async () => {
     const restoredPaths = getStoragePaths(restoreHandle.dbPath);
     await fs.mkdir(restoredPaths.storagePath, { recursive: true });

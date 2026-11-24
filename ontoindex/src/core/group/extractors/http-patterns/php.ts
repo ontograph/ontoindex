@@ -1,5 +1,8 @@
 import PHP from 'tree-sitter-php';
-import { hasPhpOpenTag } from '../../../tree-sitter/php-grammar.js';
+import {
+  classifyPhpSource,
+  getPhpGrammar,
+} from '../../../tree-sitter/php-grammar.js';
 import {
   compilePatterns,
   runCompiledPatterns,
@@ -92,7 +95,7 @@ const PHP_PATTERNS = createPHPPatterns(PHP.php_only);
 const PHP_MIXED_PATTERNS = createPHPPatterns(PHP.php);
 
 const patternsForTree = (tree: import('tree-sitter').Tree): PhpPatternBundle =>
-  hasPhpOpenTag(tree.rootNode.text) ? PHP_MIXED_PATTERNS : PHP_PATTERNS;
+  classifyPhpSource(tree.rootNode.text) === 'tagless' ? PHP_PATTERNS : PHP_MIXED_PATTERNS;
 
 /**
  * Extract the inner text of a PHP `string` node. The tree-sitter-php
@@ -134,7 +137,7 @@ function isHttpUrlLiteral(path: string): boolean {
 export const PHP_HTTP_PLUGIN: HttpLanguagePlugin = {
   name: 'php-http',
   language: PHP.php_only,
-  languageForContent: (source) => (hasPhpOpenTag(source) ? PHP.php : PHP.php_only),
+  languageForContent: (source) => getPhpGrammar(source),
   scan(tree) {
     const out: HttpDetection[] = [];
     const patterns = patternsForTree(tree);

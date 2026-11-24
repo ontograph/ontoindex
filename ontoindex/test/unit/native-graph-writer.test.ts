@@ -110,7 +110,7 @@ describe('native graph writer selection', () => {
     ).rejects.toBe(primary);
   });
 
-  it('normalizes only Concept arrays before crossing the string-map boundary', async () => {
+  it('defers Concept arrays to typed writes after the CSV boundary', async () => {
     const native = nativeModule();
     const mixed = ['kept', '', 0, false, null, undefined, {}, "owner's\\path", '\u0000'];
     const concept = {
@@ -143,8 +143,8 @@ describe('native graph writer selection', () => {
 
     const nodes = native.writeGraphBatchNative.mock.calls[0][1];
     expect(nodes[0].properties).toEqual({
-      aliases: "['kept','owner''s\\\\path','']",
-      sourceDocuments: "['kept','owner''s\\\\path','']",
+      aliases: '[]',
+      sourceDocuments: '[]',
       sourceFactKeys: '[]',
       resolutionKeys: '[]',
       authority: 'advisory',

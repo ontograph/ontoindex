@@ -39,6 +39,10 @@ const validRelPairs = getValidRelPairs();
 import { streamAllCSVsToDisk } from './csv-generator.js';
 import type { CachedEmbedding } from '../embeddings/types.js';
 import { quoteLbugString } from './quote-string.js';
+import {
+  normalizeStringArrayProperty,
+  STRING_ARRAY_PROPERTIES,
+} from './string-array-properties.js';
 
 export type LbugProjectionRow = {
   [field: string]: unknown;
@@ -59,6 +63,7 @@ type CachedEmbeddingRow = LbugProjectionRow & {
   endLine?: unknown;
   embedding?: unknown;
   contentHash?: unknown;
+  chunkContentHash?: unknown;
 };
 
 type ExistingEmbeddingHash = string;
@@ -930,6 +935,9 @@ export const loadGraphToLbug = async (
     });
   }
 
+  // Fail this load before generation publication if any typed list write fails.
+  await persistStringArrayProperties(graph, getNodeLabel);
+
   // Bulk COPY relationships — split by FROM→TO label pair (LadybugDB requires it)
   let finalRelsByPairMeta: Map<string, { csvPath: string; rows: number }>;
   let finalTotalValidRels: number;
@@ -1423,6 +1431,122 @@ export const streamQuery = async <TRow extends LbugProjectionRow = LbugProjectio
   }
 };
 
+/** Return the durable vector row count, distinguishing an absent legacy table from I/O errors. */
+export const countCachedEmbeddings = async (): Promise<number> => {
+  if (!conn) throw new Error('LadybugDB not initialized. Call initLbug first.');
+  try {
+    const rows = await executeQuery(`MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN count(e) AS count`);
+    const count = Number(rows[0]?.count ?? rows[0]?.cnt ?? rows[0]?.[0] ?? 0);
+    if (!Number.isSafeInteger(count) || count < 0) {
+      throw new Error(`Invalid cached embedding row count: ${String(count)}`);
+    }
+    return count;
+  } catch (error) {
+    const message = getOptionalThrownMessage(error) ?? '';
+    if (isMissingColumnOrTableError(message)) return 0;
+    throw error;
+  }
+};
+
+/**
+ * Stream cached vectors without the bounded `.getAll()` path. Callers can spool
+ * rows to disk and restore indexes larger than the interactive query limits.
+ * Any missing columns or malformed rows fail the operation instead of returning
+ * a partial cache that could be mistaken for a successful preserve.
+ */
+export const streamCachedEmbeddings = async (
+  onEmbedding: (embedding: CachedEmbedding) => void | Promise<void>,
+): Promise<number> => {
+  const expectedCount = await countCachedEmbeddings();
+  if (expectedCount === 0) return 0;
+
+  const availableHashColumns = new Set(['contentHash', 'chunkContentHash']);
+  while (availableHashColumns.size > 0) {
+    const probeColumns = [
+      'e.nodeId AS nodeId',
+      'e.chunkIndex AS chunkIndex',
+      'e.startLine AS startLine',
+      'e.endLine AS endLine',
+      'e.embedding AS embedding',
+      ...(availableHashColumns.has('contentHash') ? ['e.contentHash AS contentHash'] : []),
+      ...(availableHashColumns.has('chunkContentHash')
+        ? ['e.chunkContentHash AS chunkContentHash']
+        : []),
+    ].join(', ');
+    try {
+      await executeQuery(`MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN ${probeColumns} LIMIT 1`);
+      break;
+    } catch (error) {
+      const message = getOptionalThrownMessage(error) ?? '';
+      const missingHashColumn = [...availableHashColumns].find(
+        (column) =>
+          message.includes(column) && /not found|does not exist/i.test(message),
+      );
+      if (!missingHashColumn) throw error;
+      availableHashColumns.delete(missingHashColumn);
+    }
+  }
+  const hasContentHash = availableHashColumns.has('contentHash');
+  const hasChunkContentHash = availableHashColumns.has('chunkContentHash');
+
+  const projectRow = (row: CachedEmbeddingRow): CachedEmbedding => {
+    const nodeId = String(row.nodeId ?? row[0] ?? '').trim();
+    const embedding = toEmbeddingNumbers(row.embedding ?? row[4]);
+    const chunkIndex = Number(row.chunkIndex ?? row[1] ?? 0);
+    const startLine = Number(row.startLine ?? row[2] ?? 0);
+    const endLine = Number(row.endLine ?? row[3] ?? 0);
+    if (
+      !nodeId ||
+      !embedding?.length ||
+      embedding.some((value) => !Number.isFinite(value)) ||
+      !Number.isSafeInteger(chunkIndex) ||
+      !Number.isSafeInteger(startLine) ||
+      !Number.isSafeInteger(endLine)
+    ) {
+      throw new Error('Cached embedding row is incomplete or malformed; refusing partial restore.');
+    }
+    let nextColumnIndex = 5;
+    const contentHash = hasContentHash
+      ? (row.contentHash ?? row[nextColumnIndex++])
+      : undefined;
+    const chunkContentHash = hasChunkContentHash
+      ? (row.chunkContentHash ?? row[nextColumnIndex])
+      : undefined;
+    return {
+      nodeId,
+      chunkIndex,
+      startLine,
+      endLine,
+      embedding,
+      ...(typeof contentHash === 'string' && contentHash ? { contentHash } : {}),
+      ...(typeof chunkContentHash === 'string' && chunkContentHash ? { chunkContentHash } : {}),
+    };
+  };
+
+  // Legacy schemas may lack either hash column; preserve every field available
+  // so the incremental pass can reuse exact cached chunks after restoration.
+  const columns = [
+    'e.nodeId AS nodeId',
+    'e.chunkIndex AS chunkIndex',
+    'e.startLine AS startLine',
+    'e.endLine AS endLine',
+    'e.embedding AS embedding',
+    ...(hasContentHash ? ['e.contentHash AS contentHash'] : []),
+    ...(hasChunkContentHash ? ['e.chunkContentHash AS chunkContentHash'] : []),
+  ].join(', ');
+  const actualCount = await streamQuery<CachedEmbeddingRow>(
+    `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN ${columns} ORDER BY e.nodeId, e.chunkIndex`,
+    async (row) => onEmbedding(projectRow(row)),
+  );
+
+  if (actualCount !== expectedCount) {
+    throw new Error(
+      `Cached embedding stream returned ${actualCount} of ${expectedCount} rows; refusing partial restore.`,
+    );
+  }
+  return actualCount;
+};
+
 /**
  * Execute a single parameterized query (prepare/execute pattern).
  * Prevents Cypher injection by binding values as parameters.
@@ -1454,6 +1578,44 @@ export const executePrepared = async <TRow extends LbugProjectionRow = LbugProje
     );
   }
   return rows;
+};
+
+const STRING_ARRAY_BATCH_SIZE = 250;
+
+/** COPY cannot safely encode arbitrary STRING[] elements; restore them with typed parameters. */
+const persistStringArrayProperties = async (
+  graph: KnowledgeGraph,
+  getNodeLabel: (id: string) => string,
+): Promise<void> => {
+  for (const [label, properties] of Object.entries(STRING_ARRAY_PROPERTIES)) {
+    const assignments = properties.map((property) => `n.${property} = row.${property}`).join(', ');
+    const query = `UNWIND $rows AS row MATCH (n:${escapeTableName(label)}) WHERE n.id = row.id SET ${assignments} RETURN count(n) AS updated`;
+    let batch: Array<Record<string, unknown>> = [];
+
+    const flush = async (): Promise<void> => {
+      if (batch.length === 0) return;
+      const expected = batch.length;
+      const result = await executePrepared<LbugProjectionRow>(query, { rows: batch });
+      const updated = Number(result[0]?.updated ?? result[0]?.count ?? result[0]?.cnt ?? 0);
+      if (updated !== expected) {
+        throw new Error(
+          `Failed to restore ${label} string arrays: updated ${updated} of ${expected} rows`,
+        );
+      }
+      batch = [];
+    };
+
+    for (const node of graph.iterNodes()) {
+      if ((node.label || getNodeLabel(node.id)) !== label) continue;
+      const row: Record<string, unknown> = { id: node.id };
+      for (const property of properties) {
+        row[property] = normalizeStringArrayProperty(label, property, node.properties[property]);
+      }
+      batch.push(row);
+      if (batch.length >= STRING_ARRAY_BATCH_SIZE) await flush();
+    }
+    await flush();
+  }
 };
 
 export const executeWithReusedStatement = async (

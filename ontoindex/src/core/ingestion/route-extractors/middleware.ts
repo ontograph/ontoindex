@@ -55,20 +55,41 @@ function walkNestedWrappers(content: string, pos: number): string[] {
  */
 export function extractMiddlewareChain(
   content: string,
+  httpMethod?: string | null,
+  allowDefaultFallback = true,
 ): { chain: string[]; method: string } | undefined {
+  const requestedMethod = httpMethod?.trim().toUpperCase();
+  const declaredMethods = new Set<string>();
+  const declaredMethodPattern =
+    /\bexport\s+(?:const\s+(POST|GET|PUT|DELETE|PATCH|HEAD|OPTIONS)\s*=|(?:async\s+)?function\s+(POST|GET|PUT|DELETE|PATCH|HEAD|OPTIONS)\b)/g;
+  let declaredMethodMatch;
+  while ((declaredMethodMatch = declaredMethodPattern.exec(content)) !== null) {
+    const method = declaredMethodMatch[1] ?? declaredMethodMatch[2];
+    if (method) declaredMethods.add(method);
+  }
+  let defaultChain: { chain: string[]; method: string } | undefined;
   const mwPattern =
     /export\s+(?:const\s+(POST|GET|PUT|DELETE|PATCH|HEAD|OPTIONS)\s*=|default)\s+(\w+)\s*\(/g;
   let mwMatch;
   while ((mwMatch = mwPattern.exec(content)) !== null) {
     const method = mwMatch[1] ?? 'default';
+    if (requestedMethod && method !== 'default' && method.toUpperCase() !== requestedMethod) continue;
     const firstWrapper = mwMatch[2];
     const chain: string[] = [firstWrapper];
     chain.push(...walkNestedWrappers(content, mwMatch.index + mwMatch[0].length));
     if (chain.length >= 2 || (chain.length === 1 && /^with[A-Z]/.test(chain[0]))) {
-      return { chain, method };
+      const extracted = { chain, method };
+      if (requestedMethod && method === 'default') {
+        defaultChain ??= extracted;
+        continue;
+      }
+      return extracted;
     }
   }
-  return undefined;
+  if (requestedMethod && (!allowDefaultFallback || declaredMethods.has(requestedMethod))) {
+    return undefined;
+  }
+  return defaultChain;
 }
 
 // ---------------------------------------------------------------------------

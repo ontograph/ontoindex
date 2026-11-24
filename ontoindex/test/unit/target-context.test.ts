@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import path from 'node:path';
 import type { Ignore } from 'ignore';
+import { sourceManifestDigest } from '../../src/core/indexing/source-manifest.js';
 
 const REPO_ID = 'test-repo';
 const CURRENT_COMMIT = 'abc123def456abc123def456abc123def456abc1';
@@ -114,6 +115,78 @@ describe('resolveTargetContext', () => {
       if (state === 'authoritative') expect(context.repairCommand).toBeUndefined();
     },
   );
+
+  it('bypasses pinned workspace and generation snapshots when verifying an active publication', async () => {
+    const { resolveTargetContext } = await loadActualResolver();
+    const activeGeneration = {
+      generationId: 'active-generation-2',
+      generationPath: '/repo/test-repo/.ontoindex/generations/active-generation-2',
+      lbugPath: '/repo/test-repo/.ontoindex/generations/active-generation-2/lbug',
+      metaPath: '/repo/test-repo/.ontoindex/generations/active-generation-2/meta.json',
+      snapshotPath: '/repo/test-repo/.ontoindex/generations/active-generation-2/snapshot.json',
+    };
+    const activeMeta = {
+      repoPath: registryEntry.path,
+      lastCommit: CURRENT_COMMIT,
+      indexedAt: '2026-11-24T00:00:00.000Z',
+      generationId: activeGeneration.generationId,
+      sourceManifest: manifest,
+    };
+    const pinnedOverlay = vi.fn(() => ({
+      usable: true,
+      capability: 'workspace-graph' as const,
+      coverage: 'complete' as const,
+      reason: null,
+      generation: 'pinned-old-overlay',
+      manifestDigest: 'old-overlay-manifest',
+      currentHead: CURRENT_COMMIT,
+      baseGenerationId: 'base-1',
+      baseCommit: CURRENT_COMMIT,
+      dirtyPaths: new Set<string>(),
+      parseErrorPaths: new Set<string>(),
+      overlayPaths: new Set<string>(),
+      uncoveredPaths: new Set<string>(),
+      tombstones: new Set<string>(),
+    }));
+    const pinnedGenerationDir = vi.fn(
+      () => '/repo/test-repo/.ontoindex/generations/pinned-old-generation',
+    );
+    const activeMetaRead = vi.fn(async () => ({
+      activeGeneration,
+      meta: activeMeta,
+      authority: 'active-generation' as const,
+    }));
+
+    const context = await resolveTargetContext(
+      {
+        repo: REPO_ID,
+        verifyGraphAuthority: true,
+        ignorePinnedGraphContext: true,
+      },
+      {
+        readRegistry: async () => [registryEntry],
+        execGit: execGitFor(CURRENT_COMMIT, ' M src/a.ts\n'),
+        readActiveGenerationMeta: activeMetaRead as never,
+        computeSourceManifest: async () => manifest,
+        getPinnedOverlaySnapshot: pinnedOverlay as never,
+        getPinnedGenerationDir: pinnedGenerationDir as never,
+        readIndexGenerationMeta: vi.fn() as never,
+      },
+    );
+
+    expect(context).toMatchObject({
+      status: 'ok',
+      generationId: activeGeneration.generationId,
+      graphAuthority: {
+        state: 'authoritative',
+        generationId: activeGeneration.generationId,
+        manifestDigest: sourceManifestDigest(manifest),
+        coverage: 'complete',
+      },
+    });
+    expect(pinnedOverlay).not.toHaveBeenCalled();
+    expect(pinnedGenerationDir).not.toHaveBeenCalled();
+  });
 
   it.each(['error', 'non-error'])('does not expose %s manifest failures', async (kind) => {
     const { resolveTargetContext } = await loadActualResolver();

@@ -275,8 +275,8 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
         const errorKeys = entry.errorKeys ?? phpShapes?.errorKeys;
         const middleware = entry.middleware?.length
           ? entry.middleware
-          : fileBased && content
-            ? extractMiddlewareChain(content)?.chain
+          : content
+            ? extractMiddlewareChain(content, entry.httpMethod, fileBased)?.chain
             : undefined;
         const routeNodeIdValue = routeNodeId(entry.routePath, entry.httpMethod);
         ctx.graph.addNode({

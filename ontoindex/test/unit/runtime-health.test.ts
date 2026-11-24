@@ -58,6 +58,18 @@ describe('commitless runtime health', () => {
     expect(health.freshnessState).toBe('clean');
   });
 
+  it('keeps a commitless source manifest mismatch stale in an unborn Git repository', async () => {
+    execFileSync('git', ['init', '--quiet'], { cwd: repoPath });
+    await fs.appendFile(path.join(repoPath, 'src/main.py'), '\nchanged = True\n');
+
+    const health = await readHealth();
+
+    expect(health.currentCommit).toBeNull();
+    expect(health.dirtyWorktree).toBe(true);
+    expect(health.freshnessState).toBe('stale');
+    expect(health.degradedReason).toBe('current source manifest does not match indexed manifest');
+  });
+
   it('uses the saved scope and symbols profile, preserving capability degradation', async () => {
     meta.sourceManifest = await computeSourceManifest(repoPath, {
       includePaths: ['src'],
@@ -292,8 +304,7 @@ describe('deriveRuntimeHealth', () => {
       }),
     ).toEqual({
       freshnessState: 'dirty',
-      degradedReason:
-        'committed index is current, but uncommitted files are not represented in the graph',
+      degradedReason: 'working-tree source changes are not confirmed by the indexed source manifest',
       repairCommand:
         'ontoindex analyze supports working-tree sources; ontoindex analyze --dirty-overlay provides partial file coverage, with current relationships limited to covered files',
       repairAction: {
@@ -304,6 +315,35 @@ describe('deriveRuntimeHealth', () => {
           'analyze working-tree sources; verify partial overlay coverage before relying on current relationships',
       },
     });
+  });
+
+  it('classifies a mismatched source manifest as dirty when the indexed commit is current', () => {
+    const health = deriveRuntimeHealth({
+      ...base,
+      dirtyWorktree: true,
+      sourceFreshness: {
+        state: 'stale',
+        reason: 'current source manifest does not match indexed manifest',
+      },
+    });
+
+    expect(health.freshnessState).toBe('dirty');
+    expect(health.degradedReason).toBe(
+      'working-tree source changes are not confirmed by the indexed source manifest',
+    );
+  });
+
+  it('keeps a source manifest mismatch stale when the worktree is clean', () => {
+    const health = deriveRuntimeHealth({
+      ...base,
+      sourceFreshness: {
+        state: 'stale',
+        reason: 'current source manifest does not match indexed manifest',
+      },
+    });
+
+    expect(health.freshnessState).toBe('stale');
+    expect(health.degradedReason).toBe('current source manifest does not match indexed manifest');
   });
 
   it('reports current committed freshness and coverable dirty source files', async () => {
@@ -326,7 +366,7 @@ describe('deriveRuntimeHealth', () => {
 
       expect(health.freshnessState).toBe('dirty');
       expect(health.degradedReason).toBe(
-        'committed index is current, but uncommitted files are not represented in the graph',
+        'working-tree source changes are not confirmed by the indexed source manifest',
       );
       expect(health.committedFreshness).toBe('fresh');
       expect(health.workspaceReadiness).toEqual({
@@ -341,6 +381,54 @@ describe('deriveRuntimeHealth', () => {
         uncoveredFiles: 0,
       });
       expect(health.embeddingsAvailable).toBe(true);
+    } finally {
+      await fs.rm(repoPath, { recursive: true, force: true });
+    }
+  });
+
+  it('accepts exact tracked and untracked source manifests for a dirty indexed worktree', async () => {
+    const repoPath = await makeCommittedGitRepo();
+    try {
+      const indexedCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
+        cwd: repoPath,
+        encoding: 'utf8',
+      }).trim();
+      await fs.writeFile(
+        path.join(repoPath, 'src/main.ts'),
+        'export const trackedWorkingTreeSource = true;\n',
+      );
+      await fs.writeFile(
+        path.join(repoPath, 'src/new-untracked.ts'),
+        'export const untrackedWorkingTreeSource = true;\n',
+      );
+      const sourceManifest = await computeSourceManifest(repoPath, {
+        includePaths: ['src'],
+        pipelineProfile: 'full',
+      });
+      const meta: RepoMeta = {
+        repoPath,
+        lastCommit: indexedCommit,
+        indexedAt: '2026-10-14T00:00:00.000Z',
+        sourceManifest,
+      };
+
+      const exact = await readRuntimeHealth(repoPath, { meta });
+      expect(exact).toMatchObject({
+        freshnessState: 'clean',
+        committedFreshness: 'fresh',
+        dirtyWorktree: true,
+        degradedReason: null,
+      });
+
+      await fs.appendFile(
+        path.join(repoPath, 'src/new-untracked.ts'),
+        '\nexport const later = 1;\n',
+      );
+      const changedAfterIndexing = await readRuntimeHealth(repoPath, { meta });
+      expect(changedAfterIndexing.freshnessState).toBe('dirty');
+      expect(changedAfterIndexing.degradedReason).toBe(
+        'working-tree source changes are not confirmed by the indexed source manifest',
+      );
     } finally {
       await fs.rm(repoPath, { recursive: true, force: true });
     }

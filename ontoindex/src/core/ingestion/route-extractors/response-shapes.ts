@@ -17,6 +17,90 @@ const JS_CALLABLES = new Set([
   'arrow_function',
   'method_definition',
 ]);
+const ROUTE_COMPOSER_NAMES = new Set(['chain', 'compose', 'default', 'middleware']);
+
+function isRouteWrapperCall(value: SyntaxNode): boolean {
+  if (value.type !== 'call_expression') return false;
+  const callee = value.childForFieldName('function');
+  const calleeName =
+    callee?.type === 'identifier' ? callee.text : callee?.childForFieldName('property')?.text;
+  return Boolean(
+    calleeName && (/^with[A-Z]/.test(calleeName) || ROUTE_COMPOSER_NAMES.has(calleeName)),
+  );
+}
+
+function routeHandlerCandidates(value: SyntaxNode | null): {
+  callables: SyntaxNode[];
+  nestedIdentifiers: SyntaxNode[];
+  identifiers: SyntaxNode[];
+} {
+  if (!value) return { callables: [], nestedIdentifiers: [], identifiers: [] };
+  if (JS_CALLABLES.has(value.type)) {
+    return { callables: [value], nestedIdentifiers: [], identifiers: [] };
+  }
+  if (value.type === 'identifier') {
+    return { callables: [], nestedIdentifiers: [], identifiers: [value] };
+  }
+  if (
+    ['parenthesized_expression', 'as_expression', 'satisfies_expression', 'non_null_expression'].includes(
+      value.type,
+    )
+  ) {
+    return routeHandlerCandidates(
+      value.childForFieldName('expression') ?? value.namedChildren[0] ?? null,
+    );
+  }
+  if (value.type !== 'call_expression' || !isRouteWrapperCall(value)) {
+    return { callables: [], nestedIdentifiers: [], identifiers: [] };
+  }
+
+  const args = value
+    .childForFieldName('arguments')
+    ?.namedChildren.filter((child) => child.type !== 'comment');
+  const candidates = {
+    callables: [] as SyntaxNode[],
+    nestedIdentifiers: [] as SyntaxNode[],
+    identifiers: [] as SyntaxNode[],
+  };
+  for (const argument of args ?? []) {
+    const nested = routeHandlerCandidates(argument);
+    candidates.callables.push(...nested.callables);
+    candidates.nestedIdentifiers.push(...nested.nestedIdentifiers);
+    if (isRouteWrapperCall(argument)) {
+      candidates.nestedIdentifiers.push(...nested.identifiers);
+    } else {
+      candidates.identifiers.push(...nested.identifiers);
+    }
+  }
+  return candidates;
+}
+
+/** Resolve wrapper arguments conservatively when they contain one callable handler. */
+function resolveRouteHandler(
+  value: SyntaxNode | null,
+  extract: ReturnType<typeof createRouteResponseShapeExtractor>,
+): SyntaxNode | null {
+  const candidates = routeHandlerCandidates(value);
+  const select = (nodes: SyntaxNode[]): { found: boolean; value: SyntaxNode | null } => {
+    if (nodes.length === 0) return { found: false, value: null };
+    const withShapes = nodes.filter((candidate) => {
+      const shape = extract(candidate);
+      return Boolean(shape.responseKeys?.length || shape.errorKeys?.length);
+    });
+    if (withShapes.length === 1) return { found: true, value: withShapes[0]! };
+    if (withShapes.length > 1) return { found: true, value: null };
+    return nodes.length === 1
+      ? { found: true, value: nodes[0]! }
+      : { found: true, value: null };
+  };
+
+  const callable = select(candidates.callables);
+  if (callable.found) return callable.value;
+  if (candidates.nestedIdentifiers.length > 0) {
+    return candidates.nestedIdentifiers.length === 1 ? candidates.nestedIdentifiers[0]! : null;
+  }
+  return candidates.identifiers.length === 1 ? candidates.identifiers[0]! : null;
+}
 
 /** Static object keys only; values, comments and computed keys provide no shape evidence. */
 function objectKey(node: SyntaxNode | null): string | undefined {
@@ -306,14 +390,16 @@ export function extractNextjsRouteShapes(
     const declaration = statement.childForFieldName('declaration');
     if (pages && statement.children.some((child) => child.type === 'default')) {
       const value = declaration ?? statement.childForFieldName('value');
-      if (value) add('default', value);
+      if (value) add('default', resolveRouteHandler(value, extract) ?? value);
     } else if (declaration?.type === 'function_declaration') {
       const name = declaration.childForFieldName('name');
       if (name) add(name.text, declaration);
     } else if (declaration?.type === 'lexical_declaration') {
       for (const binding of declaration.namedChildren) {
         const name = binding.childForFieldName('name');
-        if (name?.type === 'identifier') add(name.text, name);
+        if (name?.type === 'identifier') {
+          add(name.text, resolveRouteHandler(binding.childForFieldName('value'), extract) ?? name);
+        }
       }
     } else {
       const clause = statement.namedChildren.find((child) => child.type === 'export_clause');

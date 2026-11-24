@@ -11,6 +11,8 @@ import { findTopLevelResultLimit } from '../../core/cypher-limit.js';
 import { resolveSemanticVectorRowsFetcher } from '../../core/embeddings/zvec-semantic-backend.js';
 import {
   EmbeddingRevisionMismatchError,
+  getConfiguredEmbeddingModelId,
+  getConfiguredEmbeddingRevision,
   getEmbeddingRevisionMismatch,
 } from '../../core/embeddings/embedding-revision.js';
 
@@ -323,9 +325,9 @@ export async function bm25Search(
  * Semantic vector search helper
  *
  * @param intentModelOverride  Optional model id selected by the intent router.
- *   When provided and the embedder has not yet been initialised, temporarily
- *   sets ONTOINDEX_EMBEDDING_MODEL so that initEmbedder() picks the right model
- *   on its first (lazy) load.  Has no effect once the singleton is warm.
+ *   When provided before the singleton selects a model, it is passed directly
+ *   to the lazy embedder after the index identity check. It never changes the
+ *   process-wide embedding configuration.
  */
 export async function semanticSearch(
   repo: QueryRepoHandle,
@@ -344,19 +346,44 @@ export async function semanticSearch(
 
     const { loadMeta } = await import('../../storage/repo-manager.js');
     const meta = await loadMeta(repo.storagePath ?? repo.id);
-    const revisionMismatch = getEmbeddingRevisionMismatch(meta?.embedding_revision);
+    if (!meta?.model_hash?.trim()) {
+      throw new EmbeddingRevisionMismatchError(
+        'Embedding model identity is missing from index metadata; refusing semantic search against vectors with an unverified model.',
+      );
+    }
+    const {
+      embedQuery,
+      getEmbeddingDims,
+      getMcpEmbeddingModelId,
+      isMcpEmbeddingModelSelected,
+      isEmbedderReady,
+    } = await import('../core/embedder.js');
+    const useIntentModelOverride = Boolean(
+      intentModelOverride?.trim() && !isEmbedderReady() && !isMcpEmbeddingModelSelected(),
+    );
+    const configuredModelId = useIntentModelOverride
+      ? intentModelOverride!.trim()
+      : typeof getMcpEmbeddingModelId === 'function'
+        ? getMcpEmbeddingModelId()
+        : getConfiguredEmbeddingModelId();
+    const revisionMismatch = getEmbeddingRevisionMismatch(
+      meta?.embedding_revision,
+      getConfiguredEmbeddingRevision(),
+      meta?.model_hash,
+      useIntentModelOverride && configuredModelId !== getConfiguredEmbeddingModelId()
+        ? null
+        : undefined,
+      configuredModelId,
+    );
     if (revisionMismatch) throw new EmbeddingRevisionMismatchError(revisionMismatch);
-
-    const { embedQuery, getEmbeddingDims, isEmbedderReady } = await import('../core/embedder.js');
 
     // Apply intent-based model override on cold-start path only.
     // Once the singleton embedder is warm, the model is fixed for the process
     // lifetime — the override is a no-op but is still captured in query_intent.
-    if (intentModelOverride && !isEmbedderReady()) {
-      process.env.ONTOINDEX_EMBEDDING_MODEL = intentModelOverride;
-    }
-
-    const queryVec = await embedQuery(query);
+    const queryVec = await embedQuery(
+      query,
+      useIntentModelOverride ? configuredModelId : undefined,
+    );
     const dims = getEmbeddingDims();
     const queryVecStr = `[${queryVec.join(',')}]`;
 

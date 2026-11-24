@@ -174,6 +174,7 @@ type ExistingEmbeddingStateByNode = Map<string, ExistingEmbeddingState>;
 export interface EmbeddingPipelineResult {
   vectorIndexDigest?: string;
   didRebuildVectorIndex: boolean;
+  vectorIndexReady: boolean;
 }
 
 type EmbeddingRowDigestState =
@@ -698,14 +699,6 @@ export const runEmbeddingPipeline = async (
       }
 
       const fullNodeDeleteParams: Array<{ nodeId: string }> = [];
-      const staleChunkDeleteParams: Array<{ nodeId: string; chunkIndex: number }> = [];
-      const staleChunkDeleteKeys = new Set<string>();
-      const markStaleChunkDelete = (nodeId: string, chunkIndex: number): void => {
-        const key = `${nodeId}:${chunkIndex}`;
-        if (staleChunkDeleteKeys.has(key)) return;
-        staleChunkDeleteKeys.add(key);
-        staleChunkDeleteParams.push({ nodeId, chunkIndex });
-      };
 
       const activeNodes = pageNodes.filter((node) => {
         const cache = existingEmbeddings?.get(node.id);
@@ -756,6 +749,14 @@ export const runEmbeddingPipeline = async (
       for (let batchIndex = 0; batchIndex < activeNodes.length; batchIndex += batchSize) {
         throwIfAborted();
         const batch = activeNodes.slice(batchIndex, batchIndex + batchSize);
+        const staleChunkDeleteParams: Array<{ nodeId: string; chunkIndex: number }> = [];
+        const staleChunkDeleteKeys = new Set<string>();
+        const markStaleChunkDelete = (nodeId: string, chunkIndex: number): void => {
+          const key = `${nodeId}:${chunkIndex}`;
+          if (staleChunkDeleteKeys.has(key)) return;
+          staleChunkDeleteKeys.add(key);
+          staleChunkDeleteParams.push({ nodeId, chunkIndex });
+        };
         const allTexts: string[] = [];
         const allUpdates: Array<{
           nodeId: string;
@@ -863,6 +864,7 @@ export const runEmbeddingPipeline = async (
 
               if (isReusable) {
                 staleExistingChunkIndexes?.delete(chunk.chunkIndex);
+                prevTail = overlap > 0 ? chunk.text.slice(-overlap) : '';
                 continue;
               }
 
@@ -994,6 +996,7 @@ export const runEmbeddingPipeline = async (
     onProgress({ phase: 'indexing', percent: 90, nodesProcessed: totalNodes, totalNodes });
     const indexStartTime = Date.now();
     let didRebuildVectorIndex = true;
+    let vectorIndexReady = false;
     let vectorIndexDigest: string | undefined;
 
     const shouldCreateVectorIndex = async (): Promise<boolean> => {
@@ -1059,10 +1062,13 @@ export const runEmbeddingPipeline = async (
       }
       if (!didCreateVectorIndex) {
         didRebuildVectorIndex = false;
+      } else {
+        vectorIndexReady = true;
       }
     } else {
       didRebuildVectorIndex = false;
       didCreateVectorIndex = true;
+      vectorIndexReady = true;
     }
     timings.indexing = Date.now() - indexStartTime;
 
@@ -1086,7 +1092,7 @@ export const runEmbeddingPipeline = async (
       console.log('✅ Embedding pipeline complete!', timings);
     }
 
-    return { didRebuildVectorIndex, vectorIndexDigest };
+    return { didRebuildVectorIndex, vectorIndexDigest, vectorIndexReady };
   } catch (error) {
     onProgress({
       phase: 'error',

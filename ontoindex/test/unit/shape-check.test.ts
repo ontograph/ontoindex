@@ -87,6 +87,45 @@ describe('handler-owned AST response shapes', () => {
     ).toEqual(['page']);
   });
 
+  it('extracts response shapes through nested route wrappers without borrowing sibling shapes', async () => {
+    const parser = await createParserForLanguage(SupportedLanguages.TypeScript);
+    const tree = parser.parse(
+      [
+        'const policy = { role: "reader" };',
+        'export const GET = withAuth(policy, withRateLimit(async () => Response.json({ items: [], count: 0 })));',
+        'export const POST = async () => Response.json({ id: "123", created: true });',
+      ].join('\n'),
+    );
+    expect(tree.rootNode.hasError).toBe(false);
+    const routes = extractNextjsRouteShapes(
+      tree.rootNode,
+      'app/api/items/route.ts',
+      createRouteResponseShapeExtractor(tree.rootNode),
+    );
+    expect(routes.map(({ httpMethod, responseKeys }) => ({ httpMethod, responseKeys }))).toEqual([
+      { httpMethod: 'GET', responseKeys: ['items', 'count'] },
+      { httpMethod: 'POST', responseKeys: ['id', 'created'] },
+    ]);
+  });
+
+  it('does not treat ambiguous identifier arguments as the route handler', async () => {
+    const parser = await createParserForLanguage(SupportedLanguages.TypeScript);
+    const tree = parser.parse(
+      [
+        'const policy = () => Response.json({ policyOnly: true });',
+        'const handler = () => Response.json({ handlerOnly: true });',
+        'export const GET = withAuth(policy, handler);',
+      ].join('\n'),
+    );
+    expect(tree.rootNode.hasError).toBe(false);
+    const routes = extractNextjsRouteShapes(
+      tree.rootNode,
+      'app/api/items/route.ts',
+      createRouteResponseShapeExtractor(tree.rootNode),
+    );
+    expect(routes[0]?.responseKeys).toBeUndefined();
+  });
+
   it.each([SupportedLanguages.TypeScript, SupportedLanguages.JavaScript])(
     'omits reassigned exported and destructured handlers without invalidating property names in %s',
     async (language) => {

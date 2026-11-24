@@ -46,6 +46,10 @@ import {
   registryRepoIds,
 } from '../shared/target-context.js';
 import { createEnvelopeFromLegacy } from '../shared/response-envelope.js';
+import {
+  getConfiguredEmbeddingModelId,
+  getConfiguredEmbeddingRevision,
+} from '../../core/embeddings/embedding-revision.js';
 
 const GIT_PROBE_TIMEOUT_MS = 5_000;
 const GIT_PROBE_MAX_BUFFER = 1024 * 1024;
@@ -59,7 +63,7 @@ export interface EnsureFreshParams {
   /** Internal refresh scope, inherited from the active index. */
   scope?: { includePaths: string[]; pipelineProfile: 'full' | 'symbols' };
   repo?: string;
-  withEmbeddings?: boolean; // default: false
+  withEmbeddings?: boolean; // omitted: preserve embeddings already present in the index
   requiredGraphCapabilities?: readonly GraphAuthorityCapability[]; // default: ['symbols']
   autoAnalyze?: boolean; // default: false (require explicit confirm)
   killMcpForLock?: boolean; // deprecated; advisory only for safety
@@ -495,7 +499,7 @@ function freshnessCacheKey(
   return JSON.stringify([
     repoId,
     params.repo ?? null,
-    params.withEmbeddings === true,
+    params.withEmbeddings ?? null,
     requiredGraphCapabilities,
   ]);
 }
@@ -525,6 +529,7 @@ export async function gnEnsureFresh(
     preflightTargetContext = await resolveTargetContext({
       repo: params.repo ?? repoId,
       verifyGraphAuthority: true,
+      ignorePinnedGraphContext: true,
       requiredGraphCapabilities,
     });
   }
@@ -548,6 +553,7 @@ export async function gnEnsureFresh(
       preflightTargetContext?.graphAuthority?.state === 'review' &&
         preflightTargetContext.graphAuthority.reason ===
           'current source manifest does not match indexed manifest',
+      preflightTargetContext,
     );
     if (cacheable && ttlMs > 0) {
       freshnessCache.set(cacheKey, {
@@ -600,6 +606,7 @@ async function buildEnsureFreshReport(
   repoId: string,
   params: EnsureFreshParams,
   sourceManifestStale = false,
+  preflightTargetContext?: Awaited<ReturnType<typeof resolveTargetContext>>,
 ): Promise<EnsureFreshReport> {
   const requiredGraphCapabilities = normalizeRequiredGraphCapabilities(
     params.requiredGraphCapabilities,
@@ -798,12 +805,6 @@ async function buildEnsureFreshReport(
     dirtyFileCount,
     isStale,
   });
-  if ((dirtyWorktree.untrackedCount ?? 0) > 0) {
-    warnings.push(
-      `${dirtyWorktree.untrackedCount} untracked file${dirtyWorktree.untrackedCount === 1 ? ' is' : 's are'} absent from the graph entirely; ${dirtyWorktree.trackedChangedCount} tracked change${dirtyWorktree.trackedChangedCount === 1 ? ' is' : 's are'} indexed at the indexed commit.`,
-    );
-  }
-
   // ---- 4. Build preCheck --------------------------------------------------
   const preCheck = { indexedCommit, currentCommit, isStale };
   const runtimeFallbackMeta: RepoMeta | null =
@@ -887,11 +888,87 @@ async function buildEnsureFreshReport(
   }
 
   // ---- 5. Embeddings status -----------------------------------------------
+  const indexedEmbeddingCount = repoMeta?.stats?.embeddings ?? 0;
+  const indexedEmbeddingCountKnown = typeof repoMeta?.stats?.embeddings === 'number';
+  const hasEmbeddingIdentity = Boolean(repoMeta?.model_hash?.trim() || repoMeta?.embedding_revision);
+  const indexedEmbeddingsKnown =
+    indexedEmbeddingCount > 0 || (!indexedEmbeddingCountKnown && hasEmbeddingIdentity);
+  const withManagedEmbeddings =
+    params.withEmbeddings === true ||
+    (params.withEmbeddings === undefined && indexedEmbeddingsKnown);
+  const configuredEmbeddingHash = process.env.ONTOINDEX_EMBEDDING_MODEL_HASH?.trim() || undefined;
+  const indexedEmbeddingHash = repoMeta?.model_hash?.trim() || undefined;
+  const configuredRevision = getConfiguredEmbeddingRevision();
+  const verifiedIndexedEmbeddingHash =
+    configuredEmbeddingHash ??
+    (configuredRevision &&
+    indexedEmbeddingHash === `${getConfiguredEmbeddingModelId()}@${configuredRevision}`
+      ? indexedEmbeddingHash
+      : undefined);
+  const indexedSourceManifest = repoMeta?.sourceManifest;
+  const analysisScope = params.scope ?? {
+    includePaths: indexedSourceManifest?.includePaths ?? repoMeta?.includePaths ?? [],
+    pipelineProfile: (
+      indexedSourceManifest?.pipelineProfile === 'symbols' ||
+      indexedSourceManifest?.pipelineProfile === 'huge-repo-symbols' ||
+      repoMeta?.pipelineProfile === 'symbols' ||
+      repoMeta?.pipelineProfile === 'huge-repo-symbols' ||
+      repoMeta?.indexMode === 'symbols-only'
+        ? ('symbols' as const)
+        : ('full' as const)
+    ),
+  };
+  const indexedManifestMatchesRequestedScope = Boolean(
+    indexedSourceManifest &&
+      Array.isArray(indexedSourceManifest.includePaths) &&
+      (indexedSourceManifest.pipelineProfile === analysisScope.pipelineProfile ||
+        (analysisScope.pipelineProfile === 'symbols' &&
+          indexedSourceManifest.pipelineProfile === 'huge-repo-symbols')) &&
+      indexedSourceManifest.includePaths.length === analysisScope.includePaths.length &&
+      indexedSourceManifest.includePaths.every(
+        (includePath, index) => includePath === analysisScope.includePaths[index],
+      ),
+  );
+  const preflightConfirmsIndexedManifest =
+    params.autoAnalyze !== true ||
+    Boolean(
+      preflightTargetContext?.status === 'ok' &&
+        preflightTargetContext.graphAuthority?.state === 'authoritative' &&
+        preflightTargetContext.graphAuthority.coverage === 'complete' &&
+        preflightTargetContext.graphAuthority.generationId === repoMeta?.generationId &&
+        indexedSourceManifest &&
+        preflightTargetContext.graphAuthority.manifestDigest?.toLowerCase() ===
+          sourceManifestDigest(indexedSourceManifest).toLowerCase(),
+    );
+  const indexedSourceManifestMatchesCurrentWorktree = Boolean(
+    !sourceManifestStale &&
+      indexedSourceManifest?.coverage === 'complete' &&
+      indexedManifestMatchesRequestedScope &&
+      runtimeHealth.freshnessState === 'clean' &&
+      preflightConfirmsIndexedManifest,
+  );
+  if (dirtyFileCount > 0) {
+    if (indexedSourceManifestMatchesCurrentWorktree) {
+      warnings.push(
+        `${dirtyFileCount} uncommitted file change${dirtyFileCount === 1 ? '' : 's'} match the complete indexed source manifest; tracked changes and eligible untracked files are represented in the current graph.`,
+      );
+    } else {
+      const trackedChangedCount = dirtyWorktree.trackedChangedCount;
+      const untrackedCount = dirtyWorktree.untrackedCount;
+      const trackedLabel =
+        `${trackedChangedCount} tracked change` + (trackedChangedCount === 1 ? '' : 's');
+      const untrackedLabel =
+        `${untrackedCount} untracked file` + (untrackedCount === 1 ? '' : 's');
+      warnings.push(
+        `${trackedLabel} and ${untrackedLabel} are present; the indexed manifest does not confirm this worktree, so graph coverage is unconfirmed.`,
+      );
+    }
+  }
   const embeddingsStatus = resolveEmbeddingsStatus({
     repoMeta,
     currentEmbeddingModelHash: process.env.ONTOINDEX_EMBEDDING_MODEL_HASH,
     isStale,
-    withEmbeddings: params.withEmbeddings,
+    withEmbeddings: withManagedEmbeddings,
   });
   const embeddingsRepairRequired = embeddingsStatus.required && embeddingsStatus.status !== 'ok';
   if (embeddingsRepairRequired) {
@@ -919,7 +996,7 @@ async function buildEnsureFreshReport(
     isStale ||
     // Uncommitted edits are absent from a commit-scoped graph, so a dirty tree
     // is refreshable work even when HEAD already matches the indexed commit.
-    (dirtyFileCount !== null && dirtyFileCount > 0) ||
+    (dirtyFileCount !== null && dirtyFileCount > 0 && !indexedSourceManifestMatchesCurrentWorktree) ||
     (!currentHeadAvailable && indexedCommit !== '') ||
     embeddingsRepairRequired ||
     runtimeHealth.analyzeLock.state === 'stale' ||
@@ -930,10 +1007,10 @@ async function buildEnsureFreshReport(
   // ---- 6. Recommendations (always populated) ------------------------------
   if (isStale) {
     recommendations.push(
-      `Index is stale (indexed ${indexedCommit} vs current ${currentCommit}). Run: ontoindex analyze${params.withEmbeddings ? ' --embeddings' : ''}`,
+      `Index is stale (indexed ${indexedCommit} vs current ${currentCommit}). Coordinator: use manage({ action: "ensure_fresh", repo: ${JSON.stringify(repoRoot)}, autoAnalyze: true }), wait for the managed analysis job to complete successfully, and recheck freshness before using graph evidence.`,
     );
     recommendations.push(
-      'For multi-agent sessions, let one coordinator run analyze; workers should continue with explicit stale-index consent or git-only workflows.',
+      'Workers: use source files and git until the index is fresh; do not use stale graph evidence.',
     );
   }
   if (
@@ -962,14 +1039,43 @@ async function buildEnsureFreshReport(
     recommendations.push('Restore the git worktree status probe before retrying autoAnalyze.');
   } else if (
     params.autoAnalyze === true &&
-    params.withEmbeddings === true &&
-    !process.env.ONTOINDEX_EMBEDDING_MODEL_HASH?.trim()
+    refreshWorkNeeded &&
+    withManagedEmbeddings &&
+    indexedEmbeddingsKnown &&
+    configuredEmbeddingHash &&
+    indexedEmbeddingHash &&
+    configuredEmbeddingHash !== indexedEmbeddingHash
+  ) {
+    analysisSubmission = {
+      status: 'blocked',
+      reasonCode: 'EMBEDDING_MODEL_IDENTITY_MISMATCH',
+      message:
+        `Indexed vectors use model identity "${indexedEmbeddingHash}" but this runtime uses "${configuredEmbeddingHash}". ` +
+        'Managed refresh cannot preserve vectors across model identities.',
+    };
+  } else if (
+    params.autoAnalyze === true &&
+    refreshWorkNeeded &&
+    withManagedEmbeddings &&
+    !verifiedIndexedEmbeddingHash
   ) {
     analysisSubmission = {
       status: 'blocked',
       reasonCode: 'EMBEDDING_MODEL_IDENTITY_UNAVAILABLE',
       message:
         'ONTOINDEX_EMBEDDING_MODEL_HASH must be set to a non-empty model identity before requesting managed embedding analysis.',
+    };
+  } else if (
+    params.autoAnalyze === true &&
+    refreshWorkNeeded &&
+    params.withEmbeddings === false &&
+    indexedEmbeddingsKnown
+  ) {
+    analysisSubmission = {
+      status: 'blocked',
+      reasonCode: 'EMBEDDING_PRESERVATION_DISABLED',
+      message:
+        'This index already records embeddings; managed refresh with withEmbeddings=false would drop them. Preserve embeddings or intentionally clear/rebuild the index first.',
     };
   } else if (
     params.autoAnalyze === true &&
@@ -1035,26 +1141,23 @@ async function buildEnsureFreshReport(
     const forceEmbeddingsRepair = !isFirstIndex && !isStale && embeddingsRepairRequired;
     const forceAnalyze = forceRecovery || forceEmbeddingsRepair;
     if (forceAnalyze) args.push('--force');
-    if (params.withEmbeddings) args.push('--embeddings');
-    for (const includePath of params.scope?.includePaths ?? []) {
+    if (withManagedEmbeddings) args.push('--embeddings');
+    for (const includePath of analysisScope.includePaths) {
       args.push('--include-path', includePath);
     }
-    if (params.scope?.pipelineProfile === 'symbols') args.push('--symbols-only');
+    if (analysisScope.pipelineProfile === 'symbols') args.push('--symbols-only');
 
     try {
       const requestedCapabilities: AnalysisRequestedCapabilities = {
         version: ANALYSIS_REQUESTED_CAPABILITIES_VERSION,
         graph: true,
         graphCapabilities: requiredGraphCapabilities,
-        embeddings: params.withEmbeddings === true,
-        embeddingModelHash:
-          params.withEmbeddings === true
-            ? process.env.ONTOINDEX_EMBEDDING_MODEL_HASH!.trim()
-            : null,
+        embeddings: withManagedEmbeddings,
+        embeddingModelHash: withManagedEmbeddings ? verifiedIndexedEmbeddingHash! : null,
       };
       const manifest = await computeSourceManifest(repoRoot, {
-        includePaths: params.scope?.includePaths ?? [],
-        pipelineProfile: params.scope?.pipelineProfile ?? 'full',
+        includePaths: analysisScope.includePaths,
+        pipelineProfile: analysisScope.pipelineProfile,
       });
       const manifestDigest = sourceManifestDigest(manifest);
       // A dirty tree is analyzed as-is, but it must not be published under a
@@ -1078,8 +1181,8 @@ async function buildEnsureFreshReport(
         command: cli.command,
         args,
         options: {
-          withEmbeddings: params.withEmbeddings === true,
-          ...(params.scope ? { scope: params.scope } : {}),
+          withEmbeddings: withManagedEmbeddings,
+          scope: analysisScope,
         },
       });
       analysisJob = submitted.job;
@@ -1088,10 +1191,10 @@ async function buildEnsureFreshReport(
         jobId: analysisJob.id,
       };
       actionsTaken.push(
-        `${submitted.reused ? 'Reused' : 'Started'} analysis job ${analysisJob.id}: ${cli.displayPrefix} analyze${forceAnalyze ? ' --force' : ''}${params.withEmbeddings ? ' --embeddings' : ''}`,
+        `${submitted.reused ? 'Reused' : 'Started'} analysis job ${analysisJob.id}: ${cli.displayPrefix} analyze${forceAnalyze ? ' --force' : ''}${withManagedEmbeddings ? ' --embeddings' : ''}`,
       );
       recommendations.push(
-        `Poll gn_analyze_job with jobId "${analysisJob.id}" for terminal status, exit code, generation ID, and log path.`,
+        `Poll the managed job with manage({ action: "analyze_job", repo: ${JSON.stringify(repoRoot)}, jobId: ${JSON.stringify(analysisJob.id)} }) until terminal status; verify success (exit code 0), generation ID, and log path.`,
       );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

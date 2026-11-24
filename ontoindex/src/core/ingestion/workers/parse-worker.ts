@@ -25,7 +25,7 @@ import {
   getParseMaxAstNodes,
   getTreeSitterBufferSize,
 } from '../constants.js';
-import { hasPhpOpenTag } from '../../tree-sitter/php-grammar.js';
+import { classifyPhpSource } from '../../tree-sitter/php-grammar.js';
 import { extractFetchEvidence } from '../route-extractors/fetch-evidence.js';
 import type { SymbolTableReader } from '../model/symbol-table.js';
 import {
@@ -981,13 +981,13 @@ const processBatch = async (
     };
 
     if (language === SupportedLanguages.PHP) {
-      const taggedFiles: HydratedParseWorkerInput[] = [];
+      const mixedFiles: HydratedParseWorkerInput[] = [];
       const taglessFiles: HydratedParseWorkerInput[] = [];
       for (const file of regularFiles) {
-        (hasPhpOpenTag(file.content) ? taggedFiles : taglessFiles).push(file);
+        (classifyPhpSource(file.content) === 'tagless' ? taglessFiles : mixedFiles).push(file);
       }
       processRegularGroup(taglessFiles, asTreeSitterLanguage(PHP.php_only));
-      processRegularGroup(taggedFiles, asTreeSitterLanguage(PHP.php));
+      processRegularGroup(mixedFiles, asTreeSitterLanguage(PHP.php));
     } else {
       processRegularGroup(regularFiles);
     }

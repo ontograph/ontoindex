@@ -17,6 +17,7 @@ import {
   getHttpDimensions,
   httpEmbedQuery,
 } from '../../core/embeddings/http-client.js';
+import { EmbeddingRevisionMismatchError } from '../../core/embeddings/embedding-revision.js';
 import { silenceStdout, restoreStdout, realStderrWrite } from '../../core/lbug/pool-adapter.js';
 import { isCudaAvailable } from '../../core/embeddings/cuda-probe.js';
 import { DEFAULT_EMBEDDING_CONFIG } from '../../core/embeddings/types.js';
@@ -32,13 +33,19 @@ interface FeatureExtractionPipeline {
   dispose?: () => void | Promise<void>;
 }
 
-// Model config — single source of truth in DEFAULT_EMBEDDING_CONFIG.modelId
-const MODEL_ID = DEFAULT_EMBEDDING_CONFIG.modelId;
+export const getMcpEmbeddingModelId = (): string =>
+  activeModelId ??
+  process.env.ONTOINDEX_EMBEDDING_MODEL?.trim() ??
+  DEFAULT_EMBEDDING_CONFIG.modelId;
+
+/** True once this process has selected the singleton model, including while it loads. */
+export const isMcpEmbeddingModelSelected = (): boolean => activeModelId !== undefined;
 
 // Module-level state for singleton pattern
 let embedderInstance: FeatureExtractionPipeline | null = null;
 let isInitializing = false;
 let initPromise: Promise<FeatureExtractionPipeline> | null = null;
+let activeModelId: string | undefined;
 
 type FeatureExtractionPipelineFactory = (
   task: 'feature-extraction',
@@ -87,9 +94,16 @@ const silentStderrWrite: StderrWrite = () => true;
 /**
  * Initialize the embedding model (lazy, on first search)
  */
-export const initEmbedder = async (): Promise<FeatureExtractionPipeline> => {
+export const initEmbedder = async (modelIdOverride?: string): Promise<FeatureExtractionPipeline> => {
   if (isHttpMode()) {
     throw new Error('initEmbedder() should not be called in HTTP mode.');
+  }
+
+  const requestedModelId = modelIdOverride?.trim();
+  if (requestedModelId && activeModelId && requestedModelId !== activeModelId) {
+    throw new EmbeddingRevisionMismatchError(
+      `Embedding model mismatch: the singleton uses "${activeModelId}" but this request requires "${requestedModelId}".`,
+    );
   }
 
   if (embedderInstance) {
@@ -100,6 +114,8 @@ export const initEmbedder = async (): Promise<FeatureExtractionPipeline> => {
     return initPromise;
   }
 
+  activeModelId = requestedModelId || getMcpEmbeddingModelId();
+  const modelId = activeModelId;
   isInitializing = true;
 
   initPromise = (async () => {
@@ -140,7 +156,7 @@ export const initEmbedder = async (): Promise<FeatureExtractionPipeline> => {
           try {
             embedderInstance = await createFeatureExtractionPipeline(
               'feature-extraction',
-              MODEL_ID,
+              modelId,
               {
                 device: device,
                 dtype: 'fp32',
@@ -164,6 +180,7 @@ export const initEmbedder = async (): Promise<FeatureExtractionPipeline> => {
       isInitializing = false;
       initPromise = null;
       embedderInstance = null;
+      activeModelId = undefined;
       throw error;
     } finally {
       isInitializing = false;
@@ -181,12 +198,12 @@ export const isEmbedderReady = (): boolean => isHttpMode() || embedderInstance !
 /**
  * Embed a query text for semantic search
  */
-export const embedQuery = async (query: string): Promise<number[]> => {
+export const embedQuery = async (query: string, modelIdOverride?: string): Promise<number[]> => {
   if (isHttpMode()) {
     return httpEmbedQuery(query);
   }
 
-  const embedder = await initEmbedder();
+  const embedder = await initEmbedder(modelIdOverride);
 
   const result = await embedder(query, {
     pooling: 'mean',
@@ -207,6 +224,7 @@ export const getEmbeddingDims = (): number => {
  * Cleanup embedder
  */
 export const disposeEmbedder = async (): Promise<void> => {
+  if (isInitializing && initPromise) await initPromise.catch(() => {});
   if (embedderInstance) {
     try {
       if ('dispose' in embedderInstance && typeof embedderInstance.dispose === 'function') {
@@ -216,4 +234,5 @@ export const disposeEmbedder = async (): Promise<void> => {
     embedderInstance = null;
     initPromise = null;
   }
+  activeModelId = undefined;
 };

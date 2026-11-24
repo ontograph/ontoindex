@@ -2,6 +2,10 @@ import { GraphNode, GraphRelationship } from 'ontoindex-shared';
 import { createRequire } from 'module';
 import { isNativeFeatureEnabled, type OntoIndexNativeModule } from './module.js';
 import { sanitizeUTF8 } from '../core/lbug/csv-sanitize.js';
+import {
+  EMPTY_STRING_ARRAY_LITERAL,
+  isStringArrayProperty,
+} from '../core/lbug/string-array-properties.js';
 const require = createRequire(import.meta.url);
 
 let nativeModule: OntoIndexNativeModule | null = null;
@@ -129,7 +133,8 @@ function deriveLabel(nodeId: string): string {
 
 /**
  * High-performance graph-to-CSV serializer using native Rust kernel.
- * Returns metadata about the files written.
+ * Returns metadata about the internal staging files. String-array columns use
+ * empty placeholders and are restored only by loadGraphToLbug.
  */
 export async function writeGraphBatch(
   csvDir: string,
@@ -204,6 +209,7 @@ export async function writeGraphBatch(
               value = typeof value === 'number' ? value : -1;
             }
           }
+          if (isStringArrayProperty(label, key)) value = EMPTY_STRING_ARRAY_LITERAL;
           properties[key] = serializeNativeProperty(value);
         }
       }

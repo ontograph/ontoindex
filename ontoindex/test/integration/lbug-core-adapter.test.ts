@@ -61,6 +61,58 @@ withTestLbugDB(
         expect(stats.edges).toBe(4);
       });
 
+      it('streams every cached vector and normalizes legacy null chunk metadata', async () => {
+        const { countCachedEmbeddings, executeQuery: coreExecuteQuery, streamCachedEmbeddings } =
+          await import('../../src/core/lbug/lbug-adapter.js');
+        const { EMBEDDING_DIMS, EMBEDDING_TABLE_NAME } =
+          await import('../../src/core/lbug/schema.js');
+        const vector = `[${Array.from({ length: EMBEDDING_DIMS }, () => '0.25').join(',')}]`;
+        await coreExecuteQuery(
+          `CREATE (e:${EMBEDDING_TABLE_NAME} {id: 'stream:0', nodeId: 'Function:stream', chunkIndex: 0, startLine: 1, endLine: 2, embedding: ${vector}, contentHash: 'hash', chunkContentHash: 'chunk-hash'})`,
+        );
+        await coreExecuteQuery(
+          `CREATE (e:${EMBEDDING_TABLE_NAME} {id: 'legacy-null:0', nodeId: 'Function:legacy-null', chunkIndex: null, startLine: null, endLine: null, embedding: ${vector}})`,
+        );
+
+        const streamed: Array<{
+          nodeId: string;
+          chunkIndex: number;
+          startLine: number;
+          endLine: number;
+          contentHash?: string;
+          chunkContentHash?: string;
+        }> = [];
+        const streamedCount = await streamCachedEmbeddings((embedding) => {
+          streamed.push({
+            nodeId: embedding.nodeId,
+            chunkIndex: embedding.chunkIndex,
+            startLine: embedding.startLine,
+            endLine: embedding.endLine,
+            ...(embedding.contentHash ? { contentHash: embedding.contentHash } : {}),
+            ...(embedding.chunkContentHash
+              ? { chunkContentHash: embedding.chunkContentHash }
+              : {}),
+          });
+        });
+
+        expect(await countCachedEmbeddings()).toBe(2);
+        expect(streamedCount).toBe(2);
+        expect(streamed).toContainEqual({
+          nodeId: 'Function:legacy-null',
+          chunkIndex: 0,
+          startLine: 0,
+          endLine: 0,
+        });
+        expect(streamed).toContainEqual({
+          nodeId: 'Function:stream',
+          chunkIndex: 0,
+          startLine: 1,
+          endLine: 2,
+          contentHash: 'hash',
+          chunkContentHash: 'chunk-hash',
+        });
+      });
+
       describe('unhappy path', () => {
         it('throws on malformed Cypher query', async () => {
           const { executeQuery } = await import('../../src/core/lbug/lbug-adapter.js');
@@ -279,10 +331,10 @@ withTestLbugDB('native-schema-parity', (handle) => {
     expect(concepts.rows).toHaveLength(2);
     expect(concepts.rows[0]).toEqual({
       ...concept,
-      aliases: "['kept','owner''s\\\\path']",
-      sourceDocuments: "['guide.md']",
-      sourceFactKeys: "['fact:1']",
-      resolutionKeys: "['key:1']",
+      aliases: '[]',
+      sourceDocuments: '[]',
+      sourceFactKeys: '[]',
+      resolutionKeys: '[]',
     });
     const defaultConcept = {
       id: 'Concept:default',
@@ -346,8 +398,7 @@ withTestLbugDB('native-schema-parity', (handle) => {
     expect(await executeQuery('MATCH (n:Method) RETURN count(n) AS count')).toEqual([
       { count: 1001 },
     ]);
-    // Compare COPY's list decoding with the canonical TypeScript writer as well
-    // as the exact native CSV assertions above.
+    // Compare both CSV paths; typed list values are restored after COPY.
     await executeQuery('MATCH (n:Method) DETACH DELETE n');
     await executeQuery('MATCH (n:Concept) DETACH DELETE n');
     process.env.ONTOINDEX_NATIVE_GRAPH_WRITER = '0';
@@ -365,5 +416,148 @@ withTestLbugDB('native-schema-parity', (handle) => {
       records.map(([label, expected]) => query(label, expected)),
     );
     expect(nativeRows).toEqual(canonicalRows);
+  });
+
+  it('round-trips every string-array column through typed COPY restoration', async () => {
+    const { executePrepared, loadGraphToLbug } =
+      await import('../../src/core/lbug/lbug-adapter.js');
+    const values = ['withAuth', "O'Reilly", 'double"quote', 'comma,inside', 'close]bracket', 'back\\slash'];
+    const routeResponseKeys = ['items', ...values.slice(1)];
+    const previous = process.env.ONTOINDEX_NATIVE_GRAPH_WRITER;
+
+    for (const mode of ['typescript', 'native'] as const) {
+      const suffix = mode;
+      const ids = {
+        community: `comm_array-${suffix}`,
+        process: `proc_array-${suffix}`,
+        summary: `SummaryNode:array-${suffix}`,
+        concept: `Concept:array-${suffix}`,
+        route: `Route:array-${suffix}`,
+        emptyRoute: `Route:empty-${suffix}`,
+      };
+      const graph = buildTestGraph([
+        {
+          id: ids.community,
+          label: 'Community' as any,
+          name: 'Array community',
+          filePath: '',
+          extra: { keywords: values },
+        },
+        {
+          id: ids.process,
+          label: 'Process' as any,
+          name: 'Array process',
+          filePath: '',
+          extra: { communities: values },
+        },
+        {
+          id: ids.summary,
+          label: 'SummaryNode' as any,
+          name: 'Array summary',
+          filePath: '',
+          extra: {
+            summarizedCommunityIds: [...values, ''],
+            summarizedConceptIds: [...values, ''],
+            summarizedNodeIds: [...values, ''],
+            sourceDocuments: [...values, ''],
+            sourceFactKeys: [...values, ''],
+            resolutionKeys: [...values, ''],
+          },
+        },
+        {
+          id: ids.concept,
+          label: 'Concept' as any,
+          name: 'Array concept',
+          filePath: '',
+          extra: {
+            aliases: [...values, ''],
+            sourceDocuments: [...values, ''],
+            sourceFactKeys: [...values, ''],
+            resolutionKeys: [...values, ''],
+          },
+        },
+        {
+          id: ids.route,
+          label: 'Route' as any,
+          name: '/array',
+          filePath: 'src/route.ts',
+          extra: {
+            responseKeys: routeResponseKeys,
+            errorKeys: [...values],
+            middleware: [...values],
+          },
+        },
+        {
+          id: ids.emptyRoute,
+          label: 'Route' as any,
+          name: '/empty',
+          filePath: 'src/route.ts',
+        },
+      ]);
+
+      process.env.ONTOINDEX_NATIVE_GRAPH_WRITER = mode === 'native' ? '1' : '0';
+      try {
+        if (mode === 'native') {
+          expect(getNativeGraphWriterStatus()).toMatchObject({ enabled: true, available: true });
+        }
+        await loadGraphToLbug(
+          graph,
+          handle.tmpHandle.dbPath,
+          path.join(handle.tmpHandle.dbPath, `string-arrays-${mode}`),
+        );
+      } finally {
+        if (previous === undefined) delete process.env.ONTOINDEX_NATIVE_GRAPH_WRITER;
+        else process.env.ONTOINDEX_NATIVE_GRAPH_WRITER = previous;
+      }
+
+      const readArray = async (label: string, id: string, property: string): Promise<unknown> => {
+        const rows = await executePrepared<{ value?: unknown }>(
+          `MATCH (n:${label}) WHERE n.id = $id RETURN n.${property} AS value`,
+          { id },
+        );
+        expect(rows).toHaveLength(1);
+        return rows[0].value;
+      };
+
+      expect(await readArray('Community', ids.community, 'keywords')).toEqual(values);
+      expect(await readArray('Process', ids.process, 'communities')).toEqual(values);
+      for (const property of [
+        'summarizedCommunityIds',
+        'summarizedConceptIds',
+        'summarizedNodeIds',
+        'sourceDocuments',
+        'sourceFactKeys',
+        'resolutionKeys',
+      ]) {
+        expect(await readArray('SummaryNode', ids.summary, property)).toEqual(values);
+      }
+      for (const property of ['aliases', 'sourceDocuments', 'sourceFactKeys', 'resolutionKeys']) {
+        expect(await readArray('Concept', ids.concept, property)).toEqual(values);
+      }
+      expect(await readArray('Route', ids.route, 'responseKeys')).toEqual(routeResponseKeys);
+      expect(await readArray('Route', ids.route, 'errorKeys')).toEqual(values);
+      expect(await readArray('Route', ids.route, 'middleware')).toEqual(values);
+      for (const property of ['responseKeys', 'errorKeys', 'middleware']) {
+        expect(await readArray('Route', ids.emptyRoute, property)).toEqual([]);
+      }
+
+      for (const probe of values) {
+        const rows = await executePrepared<{ count?: unknown }>(
+          'MATCH (r:Route) WHERE r.id = $id AND $probe IN r.middleware RETURN count(r) AS count',
+          { id: ids.route, probe },
+        );
+        expect(Number(rows[0]?.count)).toBe(1);
+      }
+      const responseMembership = await executePrepared<{ count?: unknown }>(
+        'MATCH (r:Route) WHERE r.id = $id AND $probe IN r.responseKeys RETURN count(r) AS count',
+        { id: ids.route, probe: 'items' },
+      );
+      expect(Number(responseMembership[0]?.count)).toBe(1);
+      const absentResponseMembership = await executePrepared<{ count?: unknown }>(
+        'MATCH (r:Route) WHERE r.id = $id AND $probe IN r.responseKeys RETURN count(r) AS count',
+        { id: ids.route, probe: 'withAuth' },
+      );
+      expect(Number(absentResponseMembership[0]?.count)).toBe(0);
+    }
   });
 });

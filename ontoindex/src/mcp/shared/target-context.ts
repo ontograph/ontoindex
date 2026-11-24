@@ -201,6 +201,8 @@ export interface ResolveTargetContextOptions {
   scopePaths?: string[];
   checkSidecar?: boolean;
   verifyGraphAuthority?: boolean;
+  /** Bypass request-pinned overlay and generation state when verifying a publication. */
+  ignorePinnedGraphContext?: boolean;
   requiredGraphCapabilities?: readonly GraphAuthorityCapability[];
   readiness?: {
     embeddingsCount?: number;
@@ -336,7 +338,9 @@ export async function resolveTargetContext(
   const dirtyWorktree = workspaceSummary !== null ? workspaceSummary.dirtyFileCount > 0 : null;
   const dirtyFileCount = workspaceSummary?.dirtyFileCount ?? null;
   const repoId = repoIds.get(entry) ?? entry.name.toLowerCase();
-  const workspaceSnapshot = (deps.getPinnedOverlaySnapshot ?? getPinnedOverlaySnapshot)(repoId);
+  const workspaceSnapshot = options.ignorePinnedGraphContext
+    ? undefined
+    : (deps.getPinnedOverlaySnapshot ?? getPinnedOverlaySnapshot)(repoId);
   const admittedWorkspace =
     workspaceSnapshot?.capability === 'workspace-graph' ? workspaceSnapshot : undefined;
   let generationMeta: ActiveGenerationMetaPair = admittedWorkspace
@@ -344,6 +348,7 @@ export async function resolveTargetContext(
     : await readGenerationMetaPair(entry.storagePath, deps);
   let queriedGenerationId = generationMeta.activeGeneration?.generationId;
   const pinnedGenerationDir = admittedWorkspace
+    || options.ignorePinnedGraphContext
     ? undefined
     : (deps.getPinnedGenerationDir ?? getPinnedGenerationDir)(repoId);
   const pinnedGenerationId = pinnedGenerationDir ? path.basename(pinnedGenerationDir) : undefined;

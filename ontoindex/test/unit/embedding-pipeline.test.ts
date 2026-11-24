@@ -446,6 +446,122 @@ describe('runEmbeddingPipeline incremental filter', () => {
     expect(deletedChunkIndexes).toEqual([1]);
   });
 
+  it('advances overlap context after reusing a cached chunk', async () => {
+    const chunks = [
+      { text: 'first chunk has a reusable tail', chunkIndex: 0, startLine: 1, endLine: 4 },
+      { text: 'second chunk should reuse too', chunkIndex: 1, startLine: 5, endLine: 8 },
+      { text: 'third chunk should reuse too', chunkIndex: 2, startLine: 9, endLine: 12 },
+    ];
+    const node = makeNode({
+      id: 'Enum:colors:src/colors.ts',
+      name: 'colors',
+      label: 'Enum',
+      filePath: 'src/colors.ts',
+      content: 'enum Colors { Red, Green, Blue }',
+      startLine: 1,
+      endLine: 12,
+    });
+    const chunkConfig = { ...DEFAULT_EMBEDDING_CONFIG, overlap: 5 };
+    let prevTail = '';
+    const chunkContentHashes = new Map<number, string>();
+    for (const chunk of chunks) {
+      const text = generateEmbeddingText(
+        node,
+        chunk.text,
+        chunkConfig,
+        chunk.chunkIndex,
+        prevTail,
+      );
+      chunkContentHashes.set(chunk.chunkIndex, chunkContentHash(text));
+      prevTail = chunk.text.slice(-chunkConfig.overlap);
+    }
+
+    vi.doMock('../../src/core/embeddings/chunker.js', () => ({
+      chunkNode: vi.fn().mockResolvedValue(chunks),
+      characterChunk: vi.fn(),
+    }));
+    mockEmbedderSetup();
+
+    const executeQuery = mockExecuteQuery([node]);
+    const executeWithReusedStatement = mockExecuteWithReusedStatement();
+    const { runEmbeddingPipeline } =
+      await import('../../src/core/embeddings/embedding-pipeline.js');
+
+    await runEmbeddingPipeline(
+      executeQuery,
+      executeWithReusedStatement,
+      onProgress,
+      chunkConfig,
+      undefined,
+      undefined,
+      new Map([
+        [
+          node.id,
+          {
+            contentHash: contentHashForNode(node, chunkConfig),
+            chunkContentHashes,
+          },
+        ],
+      ]),
+    );
+
+    expect(stmtCalls.filter((call) => call.cypher.includes('CREATE'))).toHaveLength(0);
+    expect(stmtCalls.filter((call) => call.cypher.includes('DELETE'))).toHaveLength(0);
+  });
+
+  it('does not repeat stale chunk deletes across embedding batches', async () => {
+    mockEmbedderSetup();
+
+    const nodes = [
+      makeNode({
+        id: 'TypeAlias:first:src/first.ts',
+        name: 'first',
+        label: 'TypeAlias',
+        filePath: 'src/first.ts',
+        content: 'type First = string;',
+      }),
+      makeNode({
+        id: 'TypeAlias:second:src/second.ts',
+        name: 'second',
+        label: 'TypeAlias',
+        filePath: 'src/second.ts',
+        content: 'type Second = number;',
+      }),
+    ];
+    const existingEmbeddings = new Map<
+      string,
+      { contentHash: string; chunkContentHashes: Map<number, string> }
+    >(
+      nodes.map((node) => [
+        node.id,
+        {
+          contentHash: contentHashForNode(node, DEFAULT_EMBEDDING_CONFIG),
+          chunkContentHashes: new Map([[0, 'stale-chunk-hash']]),
+        },
+      ]),
+    );
+    const executeQuery = mockExecuteQuery(nodes);
+    const executeWithReusedStatement = mockExecuteWithReusedStatement();
+    const { runEmbeddingPipeline } =
+      await import('../../src/core/embeddings/embedding-pipeline.js');
+
+    await runEmbeddingPipeline(
+      executeQuery,
+      executeWithReusedStatement,
+      onProgress,
+      { ...DEFAULT_EMBEDDING_CONFIG, batchSize: 1 },
+      undefined,
+      undefined,
+      existingEmbeddings,
+    );
+
+    const deleteCalls = stmtCalls.filter((call) => call.cypher.includes('DELETE'));
+    expect(deleteCalls.map((call) => call.params)).toEqual([
+      [{ nodeId: nodes[0].id, chunkIndex: 0 }],
+      [{ nodeId: nodes[1].id, chunkIndex: 0 }],
+    ]);
+  });
+
   it('honors an abort signal before starting work', async () => {
     mockEmbedderSetup();
 

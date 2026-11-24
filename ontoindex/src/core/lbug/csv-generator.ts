@@ -31,6 +31,9 @@ import {
 } from './csv-row-writer.js';
 import { selectCsvRowWriterFactory } from '../../native/csv-writer.js';
 import { sanitizeUTF8 } from './csv-sanitize.js';
+import {
+  EMPTY_STRING_ARRAY_LITERAL,
+} from './string-array-properties.js';
 export { sanitizeUTF8 } from './csv-sanitize.js';
 
 // ============================================================================
@@ -50,14 +53,6 @@ export const escapeCSVNumber = (
 ): string => {
   if (value === undefined || value === null) return String(defaultValue);
   return String(value);
-};
-
-const toLbugStringArrayLiteral = (values: unknown): string => {
-  if (!Array.isArray(values)) return '[]';
-  return `[${values
-    .filter((value): value is string => typeof value === 'string' && value.length > 0)
-    .map((value) => `'${value.replace(/\\/g, '\\\\').replace(/'/g, "''")}'`)
-    .join(',')}]`;
 };
 
 const optionalStringProperty = (value: unknown, fallback: string): string =>
@@ -443,6 +438,8 @@ const writeCsvRow = (writer: CsvRowWriter, row: string): void | Promise<void> =>
  * Stream all CSV data directly to disk files.
  * Iterates graph nodes exactly ONCE — routes each node to the right writer.
  * File contents are lazy-read from disk with a generous LRU cache.
+ * List columns contain empty placeholders; only loadGraphToLbug restores them
+ * from the source graph with prepared STRING[] parameters before using the data.
  */
 export const streamAllCSVsToDisk = async (
   graph: KnowledgeGraph,
@@ -711,15 +708,13 @@ export const streamAllCSVsToDisk = async (
           if (pendingWrite) await pendingWrite;
           break;
         case 'Community': {
-          const keywords = node.properties.keywords || [];
-          const keywordsStr = `[${keywords.map((k: string) => `'${k.replace(/\\/g, '\\\\').replace(/'/g, "''").replace(/,/g, '\\,')}'`).join(',')}]`;
           pendingWrite = writeCsvRow(
             communityWriter,
             [
               escapeCSVField(node.id),
               escapeCSVField(node.properties.name || ''),
               escapeCSVField(node.properties.heuristicLabel || ''),
-              keywordsStr,
+              EMPTY_STRING_ARRAY_LITERAL,
               escapeCSVField(node.properties.description || ''),
               escapeCSVField(node.properties.enrichedBy || 'heuristic'),
               escapeCSVNumber(node.properties.cohesion, 0),
@@ -730,8 +725,6 @@ export const streamAllCSVsToDisk = async (
           break;
         }
         case 'Process': {
-          const communities = node.properties.communities || [];
-          const communitiesStr = `[${communities.map((c: string) => `'${c.replace(/'/g, "''")}'`).join(',')}]`;
           pendingWrite = writeCsvRow(
             processWriter,
             [
@@ -740,7 +733,7 @@ export const streamAllCSVsToDisk = async (
               escapeCSVField(node.properties.heuristicLabel || ''),
               escapeCSVField(node.properties.processType || ''),
               escapeCSVNumber(node.properties.stepCount, 0),
-              escapeCSVField(communitiesStr),
+              escapeCSVField(EMPTY_STRING_ARRAY_LITERAL),
               escapeCSVField(node.properties.entryPointId || ''),
               escapeCSVField(node.properties.terminalId || ''),
             ].join(','),
@@ -770,9 +763,9 @@ export const streamAllCSVsToDisk = async (
               escapeCSVField(node.properties.filePath || ''),
               escapeCSVNumber(node.properties.level, 0),
               escapeCSVField(summaryKind),
-              escapeCSVField(toLbugStringArrayLiteral(node.properties.summarizedCommunityIds)),
-              escapeCSVField(toLbugStringArrayLiteral(node.properties.summarizedConceptIds)),
-              escapeCSVField(toLbugStringArrayLiteral(node.properties.summarizedNodeIds)),
+              escapeCSVField(EMPTY_STRING_ARRAY_LITERAL),
+              escapeCSVField(EMPTY_STRING_ARRAY_LITERAL),
+              escapeCSVField(EMPTY_STRING_ARRAY_LITERAL),
               node.properties.truncated ? 'true' : 'false',
               escapeCSVNumber(depth, 0),
               escapeCSVField(node.properties.description || ''),
@@ -789,9 +782,9 @@ export const streamAllCSVsToDisk = async (
               escapeCSVNumber(groundingCount, 0),
               escapeCSVNumber(includedGroundingCount, 0),
               node.properties.groundingsTruncated ? 'true' : 'false',
-              escapeCSVField(toLbugStringArrayLiteral(node.properties.sourceDocuments)),
-              escapeCSVField(toLbugStringArrayLiteral(node.properties.sourceFactKeys)),
-              escapeCSVField(toLbugStringArrayLiteral(node.properties.resolutionKeys)),
+              escapeCSVField(EMPTY_STRING_ARRAY_LITERAL),
+              escapeCSVField(EMPTY_STRING_ARRAY_LITERAL),
+              escapeCSVField(EMPTY_STRING_ARRAY_LITERAL),
               escapeCSVField(optionalStringProperty(node.properties.authority, '')),
               escapeCSVField(optionalStringProperty(node.properties.evidenceClass, '')),
               escapeCSVField(optionalStringProperty(node.properties.freshness, '')),
@@ -809,10 +802,10 @@ export const streamAllCSVsToDisk = async (
               escapeCSVField(node.id),
               escapeCSVField(node.properties.name || ''),
               escapeCSVField(node.properties.filePath || ''),
-              escapeCSVField(toLbugStringArrayLiteral(node.properties.aliases)),
-              escapeCSVField(toLbugStringArrayLiteral(node.properties.sourceDocuments)),
-              escapeCSVField(toLbugStringArrayLiteral(node.properties.sourceFactKeys)),
-              escapeCSVField(toLbugStringArrayLiteral(node.properties.resolutionKeys)),
+              escapeCSVField(EMPTY_STRING_ARRAY_LITERAL),
+              escapeCSVField(EMPTY_STRING_ARRAY_LITERAL),
+              escapeCSVField(EMPTY_STRING_ARRAY_LITERAL),
+              escapeCSVField(EMPTY_STRING_ARRAY_LITERAL),
               escapeCSVField(optionalStringProperty(node.properties.authority, 'advisory')),
               escapeCSVField(optionalStringProperty(node.properties.confidence, 'low')),
               escapeCSVField(
@@ -897,23 +890,15 @@ export const streamAllCSVsToDisk = async (
           break;
         }
         case 'Route': {
-          const responseKeys = node.properties.responseKeys || [];
-          // LadybugDB array literal inside a quoted CSV field: escapeCSVField wraps in "..."
-          // and the array uses single-quoted elements
-          const keysStr = `[${responseKeys.map((k: string) => `'${k.replace(/'/g, "''")}'`).join(',')}]`;
-          const errorKeys = node.properties.errorKeys || [];
-          const errorKeysStr = `[${errorKeys.map((k: string) => `'${k.replace(/'/g, "''")}'`).join(',')}]`;
-          const middleware = node.properties.middleware || [];
-          const middlewareStr = `[${middleware.map((m: string) => `'${m.replace(/'/g, "''")}'`).join(',')}]`;
           pendingWrite = writeCsvRow(
             routeWriter,
             [
               escapeCSVField(node.id),
               escapeCSVField(node.properties.name || ''),
               escapeCSVField(node.properties.filePath || ''),
-              escapeCSVField(keysStr),
-              escapeCSVField(errorKeysStr),
-              escapeCSVField(middlewareStr),
+              escapeCSVField(EMPTY_STRING_ARRAY_LITERAL),
+              escapeCSVField(EMPTY_STRING_ARRAY_LITERAL),
+              escapeCSVField(EMPTY_STRING_ARRAY_LITERAL),
             ].join(','),
           );
           if (pendingWrite) await pendingWrite;

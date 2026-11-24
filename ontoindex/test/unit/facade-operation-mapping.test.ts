@@ -2200,7 +2200,8 @@ describe('diagnosis facade mapping', () => {
 describe('index freshness facade mapping', () => {
   it.each([
     { label: 'omitted', options: {} },
-    { label: 'false', options: { autoAnalyze: false } },
+    { label: 'autoAnalyze false', options: { autoAnalyze: false } },
+    { label: 'withEmbeddings false', options: { withEmbeddings: false } },
     {
       label: 'true with legacy options',
       options: {
@@ -2292,14 +2293,17 @@ describe('index freshness facade mapping', () => {
     expect(dispatchSuperMock).toHaveBeenCalledExactlyOnceWith('gn_ensure_fresh', {}, '');
   });
 
-  it('advertises legacy freshness fields and defaults without requiring them globally', () => {
+  it('advertises freshness fields with omitted embeddings meaning preserve', () => {
     const schema = ONTOINDEX_FACADE_TOOLS.find((tool) => tool.name === 'manage')!.inputSchema;
     expect(schema.required).toEqual(['action']);
     expect(schema.properties.action.enum).toContain('ensure_fresh');
     expect(schema.properties).toMatchObject({
       repo: { type: 'string' },
       autoAnalyze: { type: 'boolean', default: false },
-      withEmbeddings: { type: 'boolean', default: false },
+      withEmbeddings: {
+        type: 'boolean',
+        description: expect.stringContaining('Omit to preserve existing vectors'),
+      },
       killMcpForLock: { type: 'boolean', default: false },
       requiredGraphCapabilities: {
         type: 'array',
@@ -2308,6 +2312,13 @@ describe('index freshness facade mapping', () => {
       },
       legacyResponse: { type: 'boolean', default: true },
     });
+    expect(schema.properties.withEmbeddings).not.toHaveProperty('default');
+    expect(schema.properties.withEmbeddings.description).toContain(
+      'true to populate or refresh embeddings',
+    );
+    expect(schema.properties.withEmbeddings.description).toContain(
+      'false to block refreshes that would discard existing vectors',
+    );
   });
 });
 

@@ -60,6 +60,7 @@ describe('explicit committed navigation over MCP', () => {
       repo,
       {
         skipNativeClose: true,
+        skipAiContext: true,
         skipAgentsMd: true,
         noStats: true,
         registryName: repoName,

@@ -1855,6 +1855,7 @@ export async function exportBootstrapCommand(opts: ExportBootstrapOptions): Prom
   });
   if (
     runtimeHealth.freshnessState === 'stale' ||
+    runtimeHealth.freshnessState === 'dirty' ||
     runtimeHealth.freshnessState === 'degraded' ||
     runtimeHealth.freshnessState === 'untrusted' ||
     runtimeHealth.freshnessState === 'failed-after-partial-run'
@@ -1887,9 +1888,6 @@ export async function exportBootstrapCommand(opts: ExportBootstrapOptions): Prom
   console.log(`bootstrap artifact exported to: ${path.relative(process.cwd(), outPath)}`);
   console.log(`  indexed commit: ${artifact.sourceIndexedCommit ?? 'unknown'}`);
   console.log(`  graph store: ${artifact.payload.lbugSizeBytes.toLocaleString()} bytes`);
-  if (runtimeHealth.freshnessState === 'dirty') {
-    console.warn('  warning: worktree is dirty; artifact still reflects the indexed commit only');
-  }
 }
 
 export async function exportBootstrapHydrateCommand(

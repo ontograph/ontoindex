@@ -223,12 +223,14 @@ describe('processParsing fallback', () => {
         language: 'typescript',
         durationMs: 0,
         status: 'skipped',
+        reason: 'Simulated native parser crash',
       },
       {
         filePath: 'b.ts',
         language: 'typescript',
         durationMs: 0,
         status: 'skipped',
+        reason: 'Simulated native parser crash',
       },
     ]);
     expect(graph.nodeCount).toBe(0);

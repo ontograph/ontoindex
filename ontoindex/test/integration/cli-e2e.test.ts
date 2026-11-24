@@ -10,6 +10,9 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawnSync, spawn } from 'child_process';
+import { createHash } from 'node:crypto';
+import { createServer } from 'node:http';
+import { once } from 'node:events';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
@@ -140,6 +143,145 @@ function runCliWithEnv(
   });
 }
 
+function runCliWithEnvAsync(
+  extraArgs: string[],
+  cwd: string,
+  extraEnv: Record<string, string>,
+  timeoutMs = 120_000,
+): Promise<{ status: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['--import', tsxImportUrl, cliEntry, ...extraArgs], {
+      cwd,
+      env: {
+        ...process.env,
+        NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim(),
+        ONTOINDEX_HOME: cliHome,
+        ...extraEnv,
+      },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGTERM');
+    }, timeoutMs);
+    child.stdout.setEncoding('utf8').on('data', (chunk: string) => (stdout += chunk));
+    child.stderr.setEncoding('utf8').on('data', (chunk: string) => (stderr += chunk));
+    child.once('error', (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+    child.once('close', (status) => {
+      clearTimeout(timeout);
+      resolve({ status: timedOut ? null : status, stdout, stderr });
+    });
+  });
+}
+
+type E2EEmbeddingRow = {
+  id: string;
+  nodeId: string;
+  chunkIndex: number;
+  contentHash?: string;
+  chunkContentHash?: string;
+  embedding: number[];
+};
+
+async function readEmbeddingRows(repoPath: string): Promise<E2EEmbeddingRow[]> {
+  const [{ initLbug, executeQuery, closeLbug }, { EMBEDDING_TABLE_NAME }, { getStoragePaths }] =
+    await Promise.all([
+      import('../../src/core/lbug/lbug-adapter.js'),
+      import('../../src/core/lbug/schema.js'),
+      import('../../src/storage/repo-manager.js'),
+    ]);
+  const paths = getStoragePaths(repoPath);
+  const metadata = JSON.parse(fs.readFileSync(paths.metaPath, 'utf8')) as {
+    generationId?: string;
+  };
+  if (!metadata.generationId) throw new Error('Index metadata has no active generation id');
+  const generationLbugPath = path.join(
+    paths.storagePath,
+    'generations',
+    metadata.generationId,
+    'lbug',
+  );
+  await initLbug(generationLbugPath);
+  try {
+    const rows = await executeQuery(
+      `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN e.id AS id, e.nodeId AS nodeId, e.chunkIndex AS chunkIndex, e.contentHash AS contentHash, e.chunkContentHash AS chunkContentHash, e.embedding AS embedding ORDER BY e.nodeId, e.chunkIndex`,
+    );
+    return rows.map((row) => {
+      const rawEmbedding = row.embedding;
+      if (!rawEmbedding || typeof rawEmbedding !== 'object') {
+        throw new Error(`Cached vector row ${String(row.id)} has no embedding`);
+      }
+      const embedding = Array.from(rawEmbedding as ArrayLike<number>, Number);
+      if (embedding.length === 0 || embedding.some((value) => !Number.isFinite(value))) {
+        throw new Error(`Cached vector row ${String(row.id)} has an invalid embedding`);
+      }
+      return {
+        id: String(row.id),
+        nodeId: String(row.nodeId),
+        chunkIndex: Number(row.chunkIndex),
+        ...(typeof row.contentHash === 'string' ? { contentHash: row.contentHash } : {}),
+        ...(typeof row.chunkContentHash === 'string'
+          ? { chunkContentHash: row.chunkContentHash }
+          : {}),
+        embedding,
+      };
+    });
+  } finally {
+    await closeLbug({ strict: true });
+  }
+}
+
+function digestEmbeddingRows(rows: readonly E2EEmbeddingRow[]): string {
+  const sortedPayload = rows
+    .map((row) =>
+      JSON.stringify({
+        id: row.id,
+        nodeId: row.nodeId,
+        chunkIndex: row.chunkIndex,
+        contentHash: row.contentHash ?? null,
+        chunkContentHash: row.chunkContentHash ?? null,
+        embedding: row.embedding,
+      }),
+    )
+    .sort();
+  return createHash('sha256')
+    .update(`${sortedPayload.length}\u0000${sortedPayload.join('\u001f')}`, 'utf8')
+    .digest('hex');
+}
+
+async function readSectionNodeIdentities(
+  repoPath: string,
+): Promise<Array<{ nodeId: string; filePath: string; content: string }>> {
+  const [{ initLbug, executeQuery, closeLbug }, { getStoragePaths }] = await Promise.all([
+    import('../../src/core/lbug/lbug-adapter.js'),
+    import('../../src/storage/repo-manager.js'),
+  ]);
+  const paths = getStoragePaths(repoPath);
+  const metadata = JSON.parse(fs.readFileSync(paths.metaPath, 'utf8')) as {
+    generationId?: string;
+  };
+  if (!metadata.generationId) throw new Error('Index metadata has no active generation id');
+  await initLbug(path.join(paths.storagePath, 'generations', metadata.generationId, 'lbug'));
+  try {
+    const rows = await executeQuery(
+      'MATCH (n:Section) RETURN n.id AS nodeId, n.filePath AS filePath, n.content AS content ORDER BY n.id',
+    );
+    return rows.map((row) => ({
+      nodeId: String(row.nodeId),
+      filePath: String(row.filePath),
+      content: String(row.content),
+    }));
+  } finally {
+    await closeLbug({ strict: true });
+  }
+}
+
 function ensureMiniRepoIndexed(timeoutMs = 120000) {
   if (miniRepoIndexed) return;
 
@@ -246,6 +388,9 @@ describe('CLI end-to-end', () => {
 
   it('analyze command runs pipeline on mini-repo', () => {
     ensureMiniRepoIndexed();
+    const statusResult = runCli('status', MINI_REPO, 30000);
+    expect(statusResult.status).toBe(0);
+    expect(statusResult.stdout).toContain('Runtime health: clean');
   }, 120_000);
 
   it('bootstrap export and hydrate survive a real CLI round-trip', () => {
@@ -315,6 +460,223 @@ describe('CLI end-to-end', () => {
       fs.rmSync(cloneParent, { recursive: true, force: true });
     }
   }, 120_000);
+
+  it('indexes generated skills before reporting a fresh source manifest and is idempotent', () => {
+    const repo = makeMiniRepoCopy('mini-repo-skills', 'gn-cli-skills-');
+    const repoParent = path.dirname(repo);
+    const isolatedHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-cli-skills-home-'));
+
+    try {
+      const analyzeResult = runCliWithEnv(
+        ['analyze', repo, '--skills'],
+        repo,
+        { ONTOINDEX_HOME: isolatedHome },
+        120_000,
+      );
+      expect(
+        analyzeResult.status,
+        [
+          `analyze --skills exited with ${analyzeResult.status}`,
+          `stdout: ${analyzeResult.stdout}`,
+          `stderr: ${analyzeResult.stderr}`,
+        ].join('\n'),
+      ).toBe(0);
+
+      const generatedSkillsPath = path.join(repo, '.claude', 'skills', 'generated');
+      const generatedSkillDirs = fs.readdirSync(generatedSkillsPath);
+      expect(generatedSkillDirs.length).toBeGreaterThan(0);
+      expect(fs.readFileSync(path.join(repo, 'AGENTS.md'), 'utf8')).toContain(
+        '.claude/skills/generated/',
+      );
+      const generatedSkillContents = generatedSkillDirs.map((name) =>
+        fs.readFileSync(path.join(generatedSkillsPath, name, 'SKILL.md'), 'utf8'),
+      );
+      const agentsContent = fs.readFileSync(path.join(repo, 'AGENTS.md'), 'utf8');
+
+      const repeatAnalyzeResult = runCliWithEnv(
+        ['analyze', repo, '--skills'],
+        repo,
+        { ONTOINDEX_HOME: isolatedHome },
+        120_000,
+      );
+      expect(
+        repeatAnalyzeResult.status,
+        [
+          `repeated analyze --skills exited with ${repeatAnalyzeResult.status}`,
+          `stdout: ${repeatAnalyzeResult.stdout}`,
+          `stderr: ${repeatAnalyzeResult.stderr}`,
+        ].join('\n'),
+      ).toBe(0);
+      expect(fs.readdirSync(generatedSkillsPath)).toEqual(generatedSkillDirs);
+      expect(
+        generatedSkillDirs.map((name) =>
+          fs.readFileSync(path.join(generatedSkillsPath, name, 'SKILL.md'), 'utf8'),
+        ),
+      ).toEqual(generatedSkillContents);
+      expect(fs.readFileSync(path.join(repo, 'AGENTS.md'), 'utf8')).toBe(agentsContent);
+
+      const statusResult = runCliWithEnv(['status'], repo, { ONTOINDEX_HOME: isolatedHome }, 30000);
+      expect(statusResult.status).toBe(0);
+      expect(statusResult.stdout).toContain('Runtime health: clean');
+    } finally {
+      fs.rmSync(repoParent, { recursive: true, force: true });
+      fs.rmSync(isolatedHome, { recursive: true, force: true });
+    }
+  }, 180_000);
+
+  it('preserves generated vectors through the forced --skills reindex', async () => {
+    const repo = makeMiniRepoCopy('mini-repo-skills-vectors', 'gn-cli-skills-vectors-');
+    const repoParent = path.dirname(repo);
+    const isolatedHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-cli-skills-vectors-home-'));
+    const embeddingServer = createServer((request, response) => {
+      const chunks: Buffer[] = [];
+      request.on('data', (chunk: Buffer) => chunks.push(chunk));
+      request.on('end', () => {
+        const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { input?: string[] };
+        const data = (body.input ?? []).map((_, index) => ({
+          index,
+          embedding: Array.from({ length: 8 }, (_, dimension) => (index + dimension + 1) / 64),
+        }));
+        response.writeHead(200, { 'Content-Type': 'application/json' });
+        response.end(JSON.stringify({ data }));
+      });
+    });
+
+    try {
+      embeddingServer.listen(0, '127.0.0.1');
+      await once(embeddingServer, 'listening');
+      const address = embeddingServer.address();
+      if (!address || typeof address === 'string') throw new Error('Embedding server did not bind');
+      const env = {
+        ONTOINDEX_HOME: isolatedHome,
+        ONTOINDEX_EMBEDDING_URL: `http://127.0.0.1:${address.port}/v1`,
+        ONTOINDEX_EMBEDDING_MODEL: 'fixture-vector-model',
+        ONTOINDEX_EMBEDDING_MODEL_HASH: 'fixture-vector-model',
+        ONTOINDEX_EMBEDDING_DIMS: '8',
+      };
+
+      const analyzeResult = await runCliWithEnvAsync(
+        ['analyze', repo, '--skills', '--embeddings'],
+        repo,
+        env,
+        180_000,
+      );
+      expect(
+        analyzeResult.status,
+        [
+          `analyze --skills --embeddings exited with ${analyzeResult.status}`,
+          `stdout: ${analyzeResult.stdout}`,
+          `stderr: ${analyzeResult.stderr}`,
+        ].join('\n'),
+      ).toBe(0);
+
+      const initialVectorRows = await readEmbeddingRows(repo);
+      const initialSectionNodes = await readSectionNodeIdentities(repo);
+      const metadataPath = path.join(repo, '.ontoindex', 'meta.json');
+      const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8')) as {
+        stats?: { embeddings?: number; nodes?: number; files?: number; edges?: number };
+        model_hash?: string;
+        embedding_revision?: string;
+        embeddingVectorIndexDigest?: string;
+        sourceManifest?: { sourceDigest?: string; sourceEntryCount?: number };
+      };
+      expect(metadata.stats?.embeddings).toBeGreaterThan(0);
+      expect(metadata.model_hash).toBe(env.ONTOINDEX_EMBEDDING_MODEL_HASH);
+      expect(metadata.embedding_revision).toBeUndefined();
+      expect(metadata.embeddingVectorIndexDigest).toMatch(/^sha256:[a-f0-9]{64}$/);
+
+      const repeatAnalyzeResult = await runCliWithEnvAsync(
+        ['analyze', repo, '--skills', '--embeddings'],
+        repo,
+        env,
+        180_000,
+      );
+      expect(
+        repeatAnalyzeResult.status,
+        [
+          `repeated analyze --skills --embeddings exited with ${repeatAnalyzeResult.status}`,
+          `stdout: ${repeatAnalyzeResult.stdout}`,
+          `stderr: ${repeatAnalyzeResult.stderr}`,
+        ].join('\n'),
+      ).toBe(0);
+      const repeatedVectorRows = await readEmbeddingRows(repo);
+      expect(digestEmbeddingRows(repeatedVectorRows)).toBe(digestEmbeddingRows(initialVectorRows));
+      const repeatedSectionNodes = await readSectionNodeIdentities(repo);
+      const repeatedMetadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8')) as {
+        stats?: { embeddings?: number; nodes?: number; files?: number; edges?: number };
+        model_hash?: string;
+        embedding_revision?: string;
+        embeddingVectorIndexDigest?: string;
+        sourceManifest?: { sourceDigest?: string; sourceEntryCount?: number };
+      };
+      expect(repeatedMetadata.model_hash).toBe(metadata.model_hash);
+      expect(repeatedMetadata.embedding_revision).toBe(metadata.embedding_revision);
+      expect(repeatedMetadata.sourceManifest).toEqual(metadata.sourceManifest);
+      expect(repeatedSectionNodes).toEqual(initialSectionNodes);
+      expect({
+        stats: repeatedMetadata.stats,
+        vectorDigest: repeatedMetadata.embeddingVectorIndexDigest,
+      }, `first analyze:\n${analyzeResult.stdout}\nrepeat analyze:\n${repeatAnalyzeResult.stdout}`).toEqual({
+        stats: metadata.stats,
+        vectorDigest: metadata.embeddingVectorIndexDigest,
+      });
+      const initialVectorKeys = new Set(
+        initialVectorRows.map((row) => `${row.nodeId}:${row.chunkIndex}`),
+      );
+      const repeatedVectorKeys = new Set(
+        repeatedVectorRows.map((row) => `${row.nodeId}:${row.chunkIndex}`),
+      );
+      expect({
+        added: [...repeatedVectorKeys].filter((key) => !initialVectorKeys.has(key)),
+        removed: [...initialVectorKeys].filter((key) => !repeatedVectorKeys.has(key)),
+      }).toEqual({ added: [], removed: [] });
+
+      const stableAnalyzeResult = await runCliWithEnvAsync(
+        ['analyze', repo, '--skills', '--embeddings'],
+        repo,
+        env,
+        180_000,
+      );
+      expect(
+        stableAnalyzeResult.status,
+        [
+          `stable analyze --skills --embeddings exited with ${stableAnalyzeResult.status}`,
+          `stdout: ${stableAnalyzeResult.stdout}`,
+          `stderr: ${stableAnalyzeResult.stderr}`,
+        ].join('\n'),
+      ).toBe(0);
+      const stableVectorRows = await readEmbeddingRows(repo);
+      const stableMetadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8')) as {
+        stats?: { embeddings?: number; nodes?: number; files?: number; edges?: number };
+        model_hash?: string;
+        embedding_revision?: string;
+        embeddingVectorIndexDigest?: string;
+        sourceManifest?: { sourceDigest?: string; sourceEntryCount?: number };
+      };
+      expect(stableMetadata.stats?.embeddings).toBe(repeatedMetadata.stats?.embeddings);
+      expect(stableMetadata.model_hash).toBe(repeatedMetadata.model_hash);
+      expect(stableMetadata.embedding_revision).toBe(repeatedMetadata.embedding_revision);
+      expect(stableMetadata.sourceManifest).toEqual(repeatedMetadata.sourceManifest);
+      expect(stableMetadata.embeddingVectorIndexDigest).toBe(
+        repeatedMetadata.embeddingVectorIndexDigest,
+      );
+      expect(digestEmbeddingRows(stableVectorRows)).toBe(digestEmbeddingRows(repeatedVectorRows));
+
+      const statusResult = runCliWithEnv(
+        ['status'],
+        repo,
+        { ONTOINDEX_HOME: isolatedHome },
+        30000,
+      );
+      expect(statusResult.status).toBe(0);
+      expect(statusResult.stdout).toContain('Runtime health: clean');
+      expect(statusResult.stdout).toMatch(/Semantic search: available \([1-9]\d* embeddings recorded\)/);
+    } finally {
+      embeddingServer.close();
+      fs.rmSync(repoParent, { recursive: true, force: true });
+      fs.rmSync(isolatedHome, { recursive: true, force: true });
+    }
+  }, 420_000);
 
   // ─── analyze --name <alias> collision handling ───────────────────
   //

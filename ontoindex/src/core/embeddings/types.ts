@@ -281,6 +281,7 @@ export interface CachedEmbedding {
   endLine: number;
   embedding: number[];
   contentHash?: string;
+  chunkContentHash?: string;
 }
 
 /**

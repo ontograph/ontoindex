@@ -4,6 +4,7 @@ import {
   FIXTURES,
   getRelationships,
   getNodesByLabel,
+  getNodesByLabelFull,
   runPipelineFromRepo,
   type PipelineResult,
 } from './helpers.js';
@@ -40,21 +41,23 @@ describe('Express/Hono route detection', () => {
     expect(itemsRoute!.sourceFilePath).toContain('app.js');
   });
 
-  it('detects multiple HTTP methods on same path as single route', () => {
-    // /api/users has GET and POST but route registry deduplicates by path
-    const routes = getNodesByLabel(result, 'Route');
-    const usersRoutes = routes.filter((r) => r === '/api/users');
-    expect(usersRoutes).toHaveLength(1);
+  it('keeps each HTTP method on the same path as a distinct route', () => {
+    const usersRoutes = getNodesByLabelFull(result, 'Route').filter((r) => r.name === '/api/users');
+    expect(usersRoutes.map((route) => route.properties.httpMethod).sort()).toEqual(['GET', 'POST']);
   });
 
-  it('unions methods for one URL without leaking shapes from other routes in the file', () => {
-    const keys = (url: string) =>
-      result.graph.nodes.find((node) => node.label === 'Route' && node.properties.name === url)
-        ?.properties.responseKeys;
-    expect(keys('/api/users')).toEqual(['users', 'id', 'created']);
-    expect(keys('/api/users/:id')).toEqual(['updated', 'deleted']);
-    expect(keys('/api/health')).toEqual(['status']);
-    expect(keys('/api/items')).toEqual(['items', 'created']);
+  it('keeps response shapes scoped to the route method', () => {
+    const route = (url: string, method: string) =>
+      getNodesByLabelFull(result, 'Route').find(
+        (node) => node.name === url && node.properties.httpMethod === method,
+      );
+    expect(route('/api/users', 'GET')?.properties.responseKeys).toEqual(['users']);
+    expect(route('/api/users', 'POST')?.properties.responseKeys).toEqual(['id', 'created']);
+    expect(route('/api/users/:id', 'PUT')?.properties.responseKeys).toEqual(['updated']);
+    expect(route('/api/users/:id', 'DELETE')?.properties.responseKeys).toEqual(['deleted']);
+    expect(route('/api/health', 'GET')?.properties.responseKeys).toEqual(['status']);
+    expect(route('/api/items', 'GET')?.properties.responseKeys).toEqual(['items']);
+    expect(route('/api/items', 'POST')?.properties.responseKeys).toEqual(['created']);
   });
 
   it('detects router.get() routes (not just app.get())', () => {

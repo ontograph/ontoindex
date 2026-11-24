@@ -60,6 +60,7 @@ vi.mock('../../src/core/search/bm25-index.js', () => ({
 
 vi.mock('../../src/mcp/core/embedder.js', () => ({
   embedQuery: vi.fn().mockResolvedValue([]),
+  getMcpEmbeddingModelId: vi.fn(() => 'test-model'),
   getEmbeddingDims: vi.fn().mockReturnValue(384),
 }));
 

@@ -36,12 +36,20 @@ describe('shape_check integration', () => {
     expect(searchRoute!.properties.responseKeys).toContain('articles');
   });
 
-  it('separates responseKeys from errorKeys by HTTP status', () => {
+  it('separates responseKeys from errorKeys by HTTP method and status', () => {
     const routes = getNodesByLabelFull(result, 'Route');
-    const usersRoute = routes.find((r) => r.name === '/api/users');
-    expect(usersRoute).toBeDefined();
-    expect(usersRoute!.properties.responseKeys).toEqual(expect.arrayContaining(['data']));
-    expect(usersRoute!.properties.errorKeys).toEqual(expect.arrayContaining(['error']));
+    const getUsers = routes.find(
+      (r) => r.name === '/api/users' && r.properties.httpMethod === 'GET',
+    );
+    const postUsers = routes.find(
+      (r) => r.name === '/api/users' && r.properties.httpMethod === 'POST',
+    );
+    expect(getUsers).toBeDefined();
+    expect(postUsers).toBeDefined();
+    expect(getUsers!.properties.responseKeys).toEqual(expect.arrayContaining(['data', 'total']));
+    expect(getUsers!.properties.errorKeys).toBeUndefined();
+    expect(postUsers!.properties.responseKeys).toEqual(expect.arrayContaining(['data', 'success']));
+    expect(postUsers!.properties.errorKeys).toEqual(expect.arrayContaining(['error', 'details']));
   });
 
   // --- Consumer key extraction ---

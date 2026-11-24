@@ -166,10 +166,12 @@ export async function readRuntimeHealth(
   const bootstrapSource = await readBootstrapSource(storagePath, warnings);
   const indexedCommit = normalizeCommit(meta?.lastCommit);
   const sourceFreshness =
-    meta && !indexedCommit ? await readSourceFreshness(repoPath, meta, warnings) : undefined;
+    meta?.sourceManifest ? await readSourceFreshness(repoPath, meta, warnings) : undefined;
   const metaReason =
     resolveMetaDegradedReason(meta, repoPath) ??
-    (sourceFreshness?.state === 'degraded' ? sourceFreshness.reason : null);
+    (sourceFreshness?.state === 'degraded' || sourceFreshness?.state === 'untrusted'
+      ? sourceFreshness.reason
+      : null);
   const hasRuntimeArtifacts =
     analyzeLock.present ||
     analysisCheckpoint.present ||
@@ -247,13 +249,14 @@ export function deriveRuntimeHealth(input: {
     repairAction: { tool: 'ontoindex', command, args, reason },
   });
   const dirtyReason =
-    input.dirtyWorktree === true && !input.sourceFreshness
-      ? 'committed index is current, but uncommitted files are not represented in the graph'
+    input.dirtyWorktree === true && input.sourceFreshness?.state !== 'clean'
+      ? 'working-tree source changes are not confirmed by the indexed source manifest'
       : null;
   const staleReason =
     input.indexedCommit && input.currentCommit && input.indexedCommit !== input.currentCommit
       ? 'current commit does not match indexed commit'
-      : input.sourceFreshness?.state === 'stale'
+      : input.sourceFreshness?.state === 'stale' &&
+          (input.dirtyWorktree !== true || (!input.indexedCommit && !input.currentCommit))
         ? input.sourceFreshness.reason
         : null;
   const lockReason =
@@ -324,6 +327,22 @@ export function deriveRuntimeHealth(input: {
       freshnessState: 'stale',
       degradedReason: staleReason,
       ...repair('analyze', [], 'refresh the stale index'),
+    };
+  }
+
+  if (input.sourceFreshness?.state === 'untrusted') {
+    return {
+      freshnessState: 'untrusted',
+      degradedReason: input.sourceFreshness.reason,
+      ...repair('analyze', ['--force'], 'rebuild an index with a valid source manifest'),
+    };
+  }
+
+  if (input.sourceFreshness?.state === 'degraded') {
+    return {
+      freshnessState: 'degraded',
+      degradedReason: input.sourceFreshness.reason,
+      ...repair('analyze', [], 'restore complete source manifest coverage'),
     };
   }
 

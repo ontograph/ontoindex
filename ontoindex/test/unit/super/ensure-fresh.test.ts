@@ -64,6 +64,8 @@ import { execFile, spawn } from 'child_process';
 import { readFileSync } from 'fs';
 import { gnEnsureFresh, resetFreshnessCache } from '../../../src/mcp/super/ensure-fresh.js';
 import { dispatchFacade } from '../../../src/mcp/facade/dispatch.js';
+import { ONTOINDEX_FACADE_TOOLS } from '../../../src/mcp/facade/tool-definitions.js';
+import { ONTOINDEX_SUPER_TOOLS } from '../../../src/mcp/super/tool-definitions.js';
 import type { LocalBackend } from '../../../src/mcp/local/local-backend.js';
 import { readRuntimeHealth } from '../../../src/core/runtime/runtime-health.js';
 import {
@@ -186,7 +188,7 @@ function makeMeta(
   options: {
     lastCommit?: string;
     embeddings?: number;
-    modelHash?: string;
+    modelHash?: string | null;
   } = {},
 ) {
   return {
@@ -194,7 +196,9 @@ function makeMeta(
     lastCommit: options.lastCommit ?? INDEXED_COMMIT,
     indexedAt: '2026-06-17T00:00:00.000Z',
     generationId: 'generation-1',
-    model_hash: options.modelHash ?? EMBEDDING_MODEL_HASH,
+    ...(options.modelHash === null
+      ? {}
+      : { model_hash: options.modelHash ?? EMBEDDING_MODEL_HASH }),
     stats: {
       embeddings: options.embeddings ?? 12,
     },
@@ -278,6 +282,21 @@ function setupSpawnExit(code: number = 0) {
 // ---------------------------------------------------------------------------
 
 describe('gnEnsureFresh', () => {
+  it('advertises omitted, true, and false embedding semantics without a schema default', () => {
+    const facadeManage = ONTOINDEX_FACADE_TOOLS.find((tool) => tool.name === 'manage');
+    const superEnsureFresh = ONTOINDEX_SUPER_TOOLS.find((tool) => tool.name === 'gn_ensure_fresh');
+    const facadeProperty = facadeManage?.inputSchema.properties.withEmbeddings;
+    const superProperty = superEnsureFresh?.inputSchema.properties.withEmbeddings;
+
+    for (const property of [facadeProperty, superProperty]) {
+      expect(property).toMatchObject({ type: 'boolean' });
+      expect(property).not.toHaveProperty('default');
+      expect(property?.description).toContain('Omit to preserve existing vectors');
+      expect(property?.description).toContain('true to populate or refresh embeddings');
+      expect(property?.description).toContain('false to block refreshes');
+    }
+  });
+
   it.each([undefined, '/custom/ontoindex-home'])(
     'reads the call-time registry home (%s)',
     async (home) => {
@@ -553,6 +572,25 @@ describe('gnEnsureFresh', () => {
     expect(mockSpawn).not.toHaveBeenCalled();
   });
 
+  it('recommends managed freshness and source/git until a stale index is fresh', async () => {
+    setupExecFile({ currentCommit: CURRENT_COMMIT });
+    const repoPathWithSpecialCharacters = `${REPO_PATH}/quoted"segment\\worktree`;
+    mockReadFileSync.mockReturnValue(
+      makeRegistry({ path: repoPathWithSpecialCharacters, lastCommit: CURRENT_COMMIT }) as any,
+    );
+    mockLoadMeta.mockResolvedValue(makeMeta({ lastCommit: STALE_INDEXED_COMMIT }) as any);
+
+    const report = await gnEnsureFresh(REPO_ID, { autoAnalyze: false });
+
+    expect(report.recommendations.slice(0, 2)).toEqual([
+      `Index is stale (indexed ${STALE_INDEXED_COMMIT} vs current ${CURRENT_COMMIT}). Coordinator: use manage({ action: "ensure_fresh", repo: ${JSON.stringify(repoPathWithSpecialCharacters)}, autoAnalyze: true }), wait for the managed analysis job to complete successfully, and recheck freshness before using graph evidence.`,
+      'Workers: use source files and git until the index is fresh; do not use stale graph evidence.',
+    ]);
+    expect(report.recommendations.join('\n')).not.toMatch(
+      /ontoindex analyze|explicit stale-index consent/i,
+    );
+  });
+
   // ---- Test 3: Stale with autoAnalyze: true → durable job submitted --------
   it('submits ontoindex analyze when stale and autoAnalyze: true', async () => {
     setupExecFile({ currentCommit: CURRENT_COMMIT });
@@ -572,8 +610,8 @@ describe('gnEnsureFresh', () => {
           version: 1,
           graph: true,
           graphCapabilities: ['symbols'],
-          embeddings: false,
-          embeddingModelHash: null,
+          embeddings: true,
+          embeddingModelHash: EMBEDDING_MODEL_HASH,
         },
         sourceManifestDigest: SOURCE_MANIFEST_DIGEST,
       }),
@@ -584,13 +622,44 @@ describe('gnEnsureFresh', () => {
     });
     expect(mockSubmitAnalysisJob.mock.calls[0][0].args).toContain('analyze');
     expect(mockSubmitAnalysisJob.mock.calls[0][0].args).toContain('--skip-ai-context');
-    expect(mockSubmitAnalysisJob.mock.calls[0][0].args).not.toContain('--embeddings');
+    expect(mockSubmitAnalysisJob.mock.calls[0][0].args).toContain('--embeddings');
 
     expect(report.actionsTaken).toHaveLength(1);
     expect(report.actionsTaken[0]).toContain('job-1');
     expect(report.analysisJob?.id).toBe('job-1');
     expect(report.analysisSubmission).toEqual({ status: 'queued', jobId: 'job-1' });
     expect(report.postCheck).toBeUndefined();
+  });
+
+  it('recommends public analyze_job polling with JSON-escaped repo path and job ID', async () => {
+    setupExecFile({ currentCommit: CURRENT_COMMIT });
+    const repoPathWithSpecialCharacters = `${REPO_PATH}/quoted"segment\\worktree`;
+    const jobIdWithSpecialCharacters = 'job"\\id';
+    mockReadFileSync.mockReturnValue(
+      makeRegistry({ path: repoPathWithSpecialCharacters, lastCommit: CURRENT_COMMIT }) as any,
+    );
+    mockLoadMeta.mockResolvedValue(makeMeta({ lastCommit: STALE_INDEXED_COMMIT }) as any);
+    mockSubmitAnalysisJob.mockResolvedValueOnce({
+      reused: false,
+      job: {
+        version: 1,
+        id: jobIdWithSpecialCharacters,
+        status: 'queued',
+        repoPath: repoPathWithSpecialCharacters,
+        targetHead: CURRENT_COMMIT,
+        optionsDigest: 'options-digest',
+        command: process.execPath,
+        args: ['analyze'],
+        logPath: `${repoPathWithSpecialCharacters}/.ontoindex/analysis-jobs/job.log`,
+        createdAt: '2026-08-05T00:00:00.000Z',
+      } as Awaited<ReturnType<typeof mockSubmitAnalysisJob>>['job'],
+    });
+
+    const report = await gnEnsureFresh(REPO_ID, { autoAnalyze: true });
+
+    expect(report.recommendations).toContain(
+      `Poll the managed job with manage({ action: "analyze_job", repo: ${JSON.stringify(repoPathWithSpecialCharacters)}, jobId: ${JSON.stringify(jobIdWithSpecialCharacters)} }) until terminal status; verify success (exit code 0), generation ID, and log path.`,
+    );
   });
 
   it('submits managed analysis when the source manifest is stale and the worktree is clean', async () => {
@@ -661,9 +730,212 @@ describe('gnEnsureFresh', () => {
       ]),
     );
     expect(mockSubmitAnalysisJob.mock.calls[0][0].options).toEqual({
-      withEmbeddings: false,
+      withEmbeddings: true,
       scope,
     });
+  });
+
+  it('inherits indexed scope when no managed refresh scope is supplied', async () => {
+    setupExecFile();
+    mockReadFileSync.mockReturnValue(makeRegistry() as any);
+    mockLoadMeta.mockResolvedValue({
+      ...makeMeta({ lastCommit: STALE_INDEXED_COMMIT }),
+      includePaths: ['src/api/'],
+      pipelineProfile: 'symbols',
+    } as any);
+
+    await gnEnsureFresh(REPO_ID, { autoAnalyze: true });
+
+    expect(mockComputeSourceManifest).toHaveBeenCalledWith(REPO_PATH, {
+      includePaths: ['src/api/'],
+      pipelineProfile: 'symbols',
+    });
+    expect(mockSubmitAnalysisJob.mock.calls[0][0].options).toEqual({
+      withEmbeddings: true,
+      scope: { includePaths: ['src/api/'], pipelineProfile: 'symbols' },
+    });
+  });
+
+  it('treats dirty tracked and untracked sources as fresh when the complete indexed manifest matches', async () => {
+    setupExecFile({
+      currentCommit: CURRENT_COMMIT,
+      statusOutput: ' M src/tracked.ts\n?? src/new-untracked.ts\n',
+    });
+    mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: CURRENT_COMMIT }) as any);
+    const sourceManifest = {
+      version: 1,
+      head: CURRENT_COMMIT,
+      sourceDigest: 'source-digest',
+      sourceEntryCount: 2,
+      includePaths: [],
+      scopeDigest: 'scope-digest',
+      ignorePolicyDigest: 'ignore-policy-digest',
+      pipelineProfile: 'full',
+      analyzerContractVersion: 'ontoindex-source-manifest-v1',
+      coverage: 'complete',
+    };
+    mockLoadMeta.mockResolvedValue({
+      ...makeMeta({ lastCommit: CURRENT_COMMIT }),
+      sourceManifest,
+    } as any);
+    mockReadRuntimeHealth.mockResolvedValue({
+      ...makeRuntimeHealth('clean'),
+      dirtyWorktree: true,
+    } as any);
+    mockResolveTargetContext.mockResolvedValue({
+      version: 1,
+      status: 'ok',
+      repoPath: REPO_PATH,
+      targetHead: CURRENT_COMMIT,
+      currentHead: CURRENT_COMMIT,
+      indexedHead: CURRENT_COMMIT,
+      graphAuthority: {
+        state: 'authoritative',
+        generationId: 'generation-1',
+        manifestDigest: SOURCE_MANIFEST_DIGEST,
+        coverage: 'complete',
+      },
+      dirtyWorktree: true,
+      dirtyFileCount: 2,
+      changedSinceIndex: true,
+      snapshotMode: 'dirty-worktree-overlay',
+    } as any);
+
+    const report = await gnEnsureFresh(REPO_ID, { autoAnalyze: true });
+
+    expect(report).toMatchObject({
+      isStale: false,
+      dirtyFileCount: 2,
+      analysisSubmission: { status: 'not-needed' },
+    });
+    expect(report.warnings).toContain(
+      '2 uncommitted file changes match the complete indexed source manifest; tracked changes and eligible untracked files are represented in the current graph.',
+    );
+    expect(report.warnings.join('\n')).not.toContain('untracked files are absent from the graph');
+    expect(mockSubmitAnalysisJob).not.toHaveBeenCalled();
+    expect(mockResolveTargetContext).toHaveBeenCalledWith({
+      repo: REPO_ID,
+      verifyGraphAuthority: true,
+      ignorePinnedGraphContext: true,
+      requiredGraphCapabilities: ['symbols'],
+    });
+  });
+
+  it('blocks managed refresh when explicit opt-out would discard existing vectors', async () => {
+    setupExecFile();
+    mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: STALE_INDEXED_COMMIT }) as any);
+    mockLoadMeta.mockResolvedValue(makeMeta({ lastCommit: STALE_INDEXED_COMMIT }) as any);
+
+    const report = await gnEnsureFresh(REPO_ID, { autoAnalyze: true, withEmbeddings: false });
+
+    expect(report.analysisSubmission).toMatchObject({
+      status: 'blocked',
+      reasonCode: 'EMBEDDING_PRESERVATION_DISABLED',
+    });
+    expect(mockSubmitAnalysisJob).not.toHaveBeenCalled();
+    expect(mockComputeSourceManifest).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, false])(
+    'treats a recorded zero embedding count as empty despite model identity (%s)',
+    async (withEmbeddings) => {
+      setupExecFile({ currentCommit: CURRENT_COMMIT });
+      mockReadFileSync.mockReturnValue(
+        makeRegistry({ lastCommit: STALE_INDEXED_COMMIT, embeddings: 0 }) as any,
+      );
+      mockLoadMeta.mockResolvedValue(
+        makeMeta({ lastCommit: STALE_INDEXED_COMMIT, embeddings: 0 }) as any,
+      );
+
+      const report = await gnEnsureFresh(REPO_ID, {
+        autoAnalyze: true,
+        ...(withEmbeddings === undefined ? {} : { withEmbeddings }),
+      });
+
+      expect(report.analysisSubmission).toEqual({ status: 'queued', jobId: 'job-1' });
+      expect(report.embeddingsStatus).toMatchObject({ count: 0, required: false, status: 'missing' });
+      expect(mockSubmitAnalysisJob).toHaveBeenCalledTimes(1);
+      expect(mockSubmitAnalysisJob.mock.calls[0][0].args).not.toContain('--embeddings');
+      expect(mockSubmitAnalysisJob.mock.calls[0][0].options.withEmbeddings).toBe(false);
+      expect(mockSubmitAnalysisJob.mock.calls[0][0].requestedCapabilities.embeddings).toBe(false);
+    },
+  );
+
+  it('allows explicit embeddings opt-in for a zero-count index with a different stored model hash', async () => {
+    setupExecFile({ currentCommit: CURRENT_COMMIT });
+    mockReadFileSync.mockReturnValue(
+      makeRegistry({ lastCommit: STALE_INDEXED_COMMIT, embeddings: 0 }) as any,
+    );
+    mockLoadMeta.mockResolvedValue(
+      makeMeta({ lastCommit: STALE_INDEXED_COMMIT, embeddings: 0, modelHash: 'old-hash' }) as any,
+    );
+
+    const report = await gnEnsureFresh(REPO_ID, {
+      autoAnalyze: true,
+      withEmbeddings: true,
+    });
+
+    expect(report.analysisSubmission).toEqual({ status: 'queued', jobId: 'job-1' });
+    expect(mockSubmitAnalysisJob).toHaveBeenCalledTimes(1);
+    expect(mockSubmitAnalysisJob.mock.calls[0][0].args).toContain('--embeddings');
+    expect(mockSubmitAnalysisJob.mock.calls[0][0].options.withEmbeddings).toBe(true);
+  });
+
+  it('blocks managed refresh when stored and configured model identities differ', async () => {
+    setupExecFile();
+    mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: STALE_INDEXED_COMMIT }) as any);
+    mockLoadMeta.mockResolvedValue(
+      makeMeta({ lastCommit: STALE_INDEXED_COMMIT, modelHash: 'stored-hash' }) as any,
+    );
+
+    const report = await gnEnsureFresh(REPO_ID, { autoAnalyze: true });
+
+    expect(report.analysisSubmission).toMatchObject({
+      status: 'blocked',
+      reasonCode: 'EMBEDDING_MODEL_IDENTITY_MISMATCH',
+    });
+    expect(mockSubmitAnalysisJob).not.toHaveBeenCalled();
+  });
+
+  it('does not block a fresh populated index when runtime model identity is unavailable', async () => {
+    setupExecFile({ currentCommit: CURRENT_COMMIT });
+    mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: CURRENT_COMMIT }) as any);
+    mockLoadMeta.mockResolvedValue(makeMeta({ lastCommit: CURRENT_COMMIT }) as any);
+    delete process.env.ONTOINDEX_EMBEDDING_MODEL_HASH;
+
+    const report = await gnEnsureFresh(REPO_ID, { autoAnalyze: true });
+
+    expect(report.analysisSubmission).toEqual({ status: 'not-needed' });
+    expect(mockSubmitAnalysisJob).not.toHaveBeenCalled();
+  });
+
+  it('does not block a fresh populated index when embeddings are explicitly disabled', async () => {
+    setupExecFile({ currentCommit: CURRENT_COMMIT });
+    mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: CURRENT_COMMIT }) as any);
+    mockLoadMeta.mockResolvedValue(makeMeta({ lastCommit: CURRENT_COMMIT }) as any);
+
+    const report = await gnEnsureFresh(REPO_ID, {
+      autoAnalyze: true,
+      withEmbeddings: false,
+    });
+
+    expect(report.analysisSubmission).toEqual({ status: 'not-needed' });
+    expect(mockSubmitAnalysisJob).not.toHaveBeenCalled();
+  });
+
+  it('still blocks a stale populated index when runtime model identity is unavailable', async () => {
+    setupExecFile({ currentCommit: CURRENT_COMMIT });
+    mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: STALE_INDEXED_COMMIT }) as any);
+    mockLoadMeta.mockResolvedValue(makeMeta({ lastCommit: STALE_INDEXED_COMMIT }) as any);
+    delete process.env.ONTOINDEX_EMBEDDING_MODEL_HASH;
+
+    const report = await gnEnsureFresh(REPO_ID, { autoAnalyze: true });
+
+    expect(report.analysisSubmission).toMatchObject({
+      status: 'blocked',
+      reasonCode: 'EMBEDDING_MODEL_IDENTITY_UNAVAILABLE',
+    });
+    expect(mockSubmitAnalysisJob).not.toHaveBeenCalled();
   });
 
   it('does not autoAnalyze when runtime health is untrusted', async () => {
@@ -838,6 +1110,9 @@ describe('gnEnsureFresh', () => {
   it('blocks managed embedding analysis without a model identity', async () => {
     setupExecFile({ currentCommit: CURRENT_COMMIT });
     mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: STALE_INDEXED_COMMIT }) as any);
+    mockLoadMeta.mockResolvedValue(
+      makeMeta({ lastCommit: STALE_INDEXED_COMMIT, modelHash: null }) as any,
+    );
     delete process.env.ONTOINDEX_EMBEDDING_MODEL_HASH;
 
     const report = await gnEnsureFresh(REPO_ID, { autoAnalyze: true, withEmbeddings: true });
@@ -881,7 +1156,7 @@ describe('gnEnsureFresh', () => {
       mockReadFileSync.mockReturnValue(
         makeRegistry({ lastCommit: CURRENT_COMMIT, embeddings: 0 }) as any,
       );
-      mockLoadMeta.mockResolvedValue(makeMeta({ embeddings: 0 }) as any);
+      mockLoadMeta.mockResolvedValue(makeMeta({ embeddings: 0, modelHash: null }) as any);
       delete process.env.ONTOINDEX_EMBEDDING_MODEL_HASH;
 
       const report = await gnEnsureFresh(REPO_ID, { autoAnalyze: true, withEmbeddings });
@@ -1080,6 +1355,21 @@ describe('gnEnsureFresh', () => {
     expect(report.embeddingsStatus.reason).toContain('drift check skipped');
   });
 
+  it('keeps omitted and explicit-false embedding requests separate in the read-only cache', async () => {
+    setupExecFile({ currentCommit: CURRENT_COMMIT });
+    mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: CURRENT_COMMIT }) as any);
+    mockLoadMeta.mockResolvedValue(
+      makeMeta({ lastCommit: CURRENT_COMMIT, modelHash: 'stored-hash', embeddings: 12 }) as any,
+    );
+
+    const defaultReport = await gnEnsureFresh(REPO_ID, {});
+    const optOutReport = await gnEnsureFresh(REPO_ID, { withEmbeddings: false });
+
+    expect(defaultReport.embeddingsStatus).toMatchObject({ required: true, status: 'drifted' });
+    expect(optOutReport.embeddingsStatus).toMatchObject({ required: false, status: 'drifted' });
+    expect(mockLoadMeta).toHaveBeenCalledTimes(2);
+  });
+
   // ---- Bonus Test 7: repo not in registry → warning + empty preCheck ------
   it('returns warning when repo is not found in registry', async () => {
     setupExecFile({ currentCommit: CURRENT_COMMIT });
@@ -1234,6 +1524,40 @@ describe('gnEnsureFresh', () => {
     expect(resolveRepo).not.toHaveBeenCalled();
     expect(mockSubmitAnalysisJob).not.toHaveBeenCalled();
     expect(mockSpawn).not.toHaveBeenCalled();
+  });
+
+  it('preserves omitted embeddings and blocks explicit false through the public facade', async () => {
+    setupExecFile({ currentCommit: CURRENT_COMMIT });
+    mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: STALE_INDEXED_COMMIT }) as any);
+    mockLoadMeta.mockResolvedValue(makeMeta({ lastCommit: STALE_INDEXED_COMMIT }) as any);
+    const backend = { resolveRepo: vi.fn() } as unknown as LocalBackend;
+
+    const preserved = (await dispatchFacade(
+      'manage',
+      'ensure_fresh',
+      { repo: REPO_ID, autoAnalyze: true },
+      backend,
+    )) as Awaited<ReturnType<typeof gnEnsureFresh>>;
+
+    expect(preserved.analysisSubmission).toEqual({ status: 'queued', jobId: 'job-1' });
+    expect(mockSubmitAnalysisJob).toHaveBeenCalledTimes(1);
+    expect(mockSubmitAnalysisJob.mock.calls[0][0].args).toContain('--embeddings');
+    expect(preserved.recommendations[0]).toContain('use manage({ action: "ensure_fresh"');
+
+    mockSubmitAnalysisJob.mockClear();
+    const optedOut = (await dispatchFacade(
+      'manage',
+      'ensure_fresh',
+      { repo: REPO_ID, autoAnalyze: true, withEmbeddings: false },
+      backend,
+    )) as Awaited<ReturnType<typeof gnEnsureFresh>>;
+
+    expect(optedOut.analysisSubmission).toMatchObject({
+      status: 'blocked',
+      reasonCode: 'EMBEDDING_PRESERVATION_DISABLED',
+    });
+    expect(mockSubmitAnalysisJob).not.toHaveBeenCalled();
+    expect(optedOut.recommendations[0]).toContain('use manage({ action: "ensure_fresh"');
   });
 
   // ---- Bonus Test 8: analyze failure → warning, no crash ------------------
@@ -1396,22 +1720,40 @@ describe('gnEnsureFresh', () => {
       trackedChangedCount: 1,
       untrackedCount: 2,
     });
-    expect(report.warnings.some((w) => w.includes('absent from the graph entirely'))).toBe(true);
+    expect(report.warnings.some((w) => w.includes('coverage is unconfirmed'))).toBe(true);
   });
 
-  it('agrees in number when exactly one file of each kind is present', async () => {
+  it('does not claim partial working-tree changes are absent from a dirty indexed graph', async () => {
     setupExecFile({
       currentCommit: CURRENT_COMMIT,
       statusOutput: ' M src/edit.ts\n?? src/new-file.rs\n',
     });
     mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: CURRENT_COMMIT }) as any);
+    mockLoadMeta.mockResolvedValue({
+      ...makeMeta({ lastCommit: CURRENT_COMMIT }),
+      sourceManifest: {
+        version: 1,
+        head: CURRENT_COMMIT,
+        sourceDigest: 'source-digest',
+        sourceEntryCount: 2,
+        includePaths: [],
+        scopeDigest: 'scope-digest',
+        ignorePolicyDigest: 'ignore-policy-digest',
+        pipelineProfile: 'full',
+        analyzerContractVersion: 'ontoindex-source-manifest-v1',
+        coverage: 'complete',
+      },
+    } as any);
+    mockReadRuntimeHealth.mockResolvedValue(makeRuntimeHealth('stale'));
 
     const report = await gnEnsureFresh(REPO_ID, {});
 
-    const warning = report.warnings.find((w) => w.includes('absent from the graph entirely'));
+    const warning = report.warnings.find((w) => w.includes('coverage is unconfirmed'));
     expect(warning).toBe(
-      '1 untracked file is absent from the graph entirely; 1 tracked change is indexed at the indexed commit.',
+      '1 tracked change and 1 untracked file are present; the indexed manifest does not confirm this worktree, so graph coverage is unconfirmed.',
     );
+    expect(warning).not.toContain('absent');
+    expect(warning).not.toContain('indexed at the indexed commit');
   });
 
   it('reports a clean worktree with zeroed breakdown and no untracked warning', async () => {
@@ -1424,7 +1766,7 @@ describe('gnEnsureFresh', () => {
       trackedChangedCount: 0,
       untrackedCount: 0,
     });
-    expect(report.warnings.some((w) => w.includes('absent from the graph entirely'))).toBe(false);
+    expect(report.warnings.some((w) => w.includes('coverage is unconfirmed'))).toBe(false);
   });
 
   it('warns that dirty analysis is not published under the commit identity', async () => {

@@ -62,6 +62,7 @@ vi.mock('../../src/core/embeddings/zvec-semantic-backend.js', () => ({
 
 vi.mock('../../src/mcp/core/embedder.js', () => ({
   embedQuery: vi.fn(),
+  getMcpEmbeddingModelId: vi.fn(() => 'test-model'),
   isEmbedderReady: vi.fn(),
 }));
 

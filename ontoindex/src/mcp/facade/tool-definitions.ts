@@ -1123,8 +1123,8 @@ export const ONTOINDEX_FACADE_TOOLS: ToolDefinition[] = [
         },
         withEmbeddings: {
           type: 'boolean',
-          description: 'Also check and populate embeddings. Default: false.',
-          default: false,
+          description:
+            'Omit to preserve existing vectors (or leave embeddings off on an empty index); true to populate or refresh embeddings; false to block refreshes that would discard existing vectors.',
         },
         requiredGraphCapabilities: {
           type: 'array',

@@ -12,6 +12,9 @@
 import path from 'path';
 import fs from 'fs/promises';
 import * as fsSync from 'fs';
+import { createReadStream } from 'node:fs';
+import { createInterface } from 'node:readline';
+import os from 'node:os';
 import { type PipelineOptions, type PipelineProfile } from './ingestion/pipeline.js';
 import { normalizeRepositoryIncludePaths } from './ingestion/filesystem-walker.js';
 import {
@@ -30,7 +33,8 @@ import {
   executeWithReusedStatement,
   closeLbug,
   closeLbugForPath,
-  loadCachedEmbeddings,
+  countCachedEmbeddings,
+  streamCachedEmbeddings,
   fetchExistingEmbeddingHashes,
   type ExistingEmbeddingHashEntry,
   createFTSIndex,
@@ -57,6 +61,7 @@ import { getLanguageFromFilename } from 'ontoindex-shared';
 import type { CachedEmbedding } from './embeddings/types.js';
 import {
   getConfiguredEmbeddingRevision,
+  getConfiguredEmbeddingModelId,
   getEmbeddingRevisionMismatch,
 } from './embeddings/embedding-revision.js';
 import { generateAIContextFiles } from '../cli/ai-context.js';
@@ -1385,6 +1390,23 @@ export async function runFullAnalysis(
   }
   const includePaths = await normalizeRepositoryIncludePaths(repoPath, options.includePaths);
   const requestedProfile = requestedPipelineProfile(options.profile);
+  if (!options.managedAnalysis && !options.skipAiContext) {
+    // These repository files are analysis inputs. Write them before capturing
+    // the source manifest so the published graph and its manifest describe the
+    // same workspace. Managed jobs keep their submitted snapshot immutable.
+    try {
+      await generateAIContextFiles(
+        repoPath,
+        storagePath,
+        options.registryName ?? path.basename(repoPath),
+        {},
+        undefined,
+        { skipAgentsMd: options.skipAgentsMd, noStats: options.noStats },
+      );
+    } catch {
+      // Best-effort — do not fail analysis because context files cannot be written.
+    }
+  }
   let initialProvenance: Awaited<ReturnType<typeof workingTreeMatchesHead>> | undefined;
   if (repoHasGit) {
     try {
@@ -1418,40 +1440,69 @@ export async function runFullAnalysis(
   }
 
   const existingMeta = await loadMeta(storagePath);
+  const sourceContentUnchanged = Boolean(
+    existingMeta?.sourceManifest?.coverage === 'complete' &&
+      persistedPipelineProfile(existingMeta) === requestedProfile &&
+      sameStringList(existingMeta.includePaths, includePaths) &&
+      manifestsMatch(existingMeta.sourceManifest, inputManifest),
+  );
   let embeddingVectorIndexDigest = existingMeta?.embeddingVectorIndexDigest;
   const embeddingRevision = getConfiguredEmbeddingRevision();
   const embeddingRevisionMismatch = getEmbeddingRevisionMismatch(
     existingMeta?.embedding_revision,
     embeddingRevision,
+    existingMeta?.model_hash,
+    process.env.ONTOINDEX_EMBEDDING_MODEL_HASH,
+    getConfiguredEmbeddingModelId(),
   );
-  const existingMetaShowsEmbeddings =
-    (existingMeta?.stats?.embeddings ?? 0) > 0 ||
-    Boolean(existingMeta?.model_hash || existingMeta?.embedding_revision);
-
-  if (embeddingsEnabledForRun && embeddingRevisionMismatch && existingMetaShowsEmbeddings) {
+  const metadataVectorCount = existingMeta?.stats?.embeddings ?? 0;
+  const metadataVectorCountKnown = typeof existingMeta?.stats?.embeddings === 'number';
+  const metadataRecordsEmbeddings =
+    metadataVectorCount > 0 ||
+    (!metadataVectorCountKnown && Boolean(existingMeta?.model_hash || existingMeta?.embedding_revision));
+  if (embeddingsEnabledForRun && metadataRecordsEmbeddings && embeddingRevisionMismatch) {
     gcTelemetry?.stop();
     throw new Error(embeddingRevisionMismatch);
   }
-
-  // ── Embedding model hash guard ────────────────────────────────────
-  // Refuse to re-embed against an existing index built with a different
-  // embedding model — mixing vectors from different models in the same
-  // store silently corrupts similarity scores. Only fires when the user
-  // asked for embeddings (`--embeddings`) and BOTH the persisted hash
-  // and the env hash are present and disagree.
-  if (embeddingsEnabledForRun && existingMeta?.model_hash) {
-    const envHash = process.env['ONTOINDEX_EMBEDDING_MODEL_HASH'];
-    if (envHash && envHash !== existingMeta.model_hash) {
+  if (
+    embeddingsEnabledForRun &&
+    metadataVectorCount > 0 &&
+    !existingMeta?.model_hash?.trim()
+  ) {
+    gcTelemetry?.stop();
+    throw new Error(
+      'Embedding model identity is missing from index metadata; refusing to reuse vectors with an unverified model.',
+    );
+  }
+  if (
+    embeddingsEnabledForRun &&
+    metadataVectorCount === 0 &&
+    (metadataVectorCountKnown || !existingMeta?.model_hash?.trim()) &&
+    fsSync.existsSync(activeLbugPath)
+  ) {
+    let storedEmbeddingCount = 0;
+    try {
+      await initLbug(activeLbugPath);
+      storedEmbeddingCount = await countCachedEmbeddings();
+      await closeLbug();
+    } catch (error) {
+      try {
+        await closeLbug({ strict: true });
+      } catch {
+        // Preserve the original read or teardown failure.
+      }
+      gcTelemetry?.stop();
+      throw error;
+    }
+    if (storedEmbeddingCount > 0) {
       gcTelemetry?.stop();
       throw new Error(
-        `Embedding model mismatch: existing index was built with model hash ` +
-          `"${existingMeta.model_hash}" but the current environment has ` +
-          `"${envHash}". Run \`ontoindex clean\` and re-analyze, or unset ` +
-          `ONTOINDEX_EMBEDDING_MODEL_HASH to use the existing index.`,
+        metadataVectorCountKnown
+          ? `Index metadata records zero embeddings but the active vector table contains ${storedEmbeddingCount}; refusing to treat the index as empty.`
+          : 'Embedding model identity is missing from index metadata; refusing to treat existing vectors as verified.',
       );
     }
   }
-
   // ── Early-return: already up to date ──────────────────────────────
   if (
     existingMeta &&
@@ -1494,34 +1545,103 @@ export async function runFullAnalysis(
 
   // ── Cache embeddings from existing index before rebuild ────────────
   let cachedEmbeddingNodeIds = new Set<string>();
-  let cachedEmbeddings: CachedEmbedding[] = [];
+  let cachedEmbeddingCount = 0;
+  let cachedEmbeddingSpoolDir: string | undefined;
+  let cachedEmbeddingSpoolPath: string | undefined;
+  let cachedEmbeddingDimensions: number | undefined;
+  const cachedEmbeddingContentHashes = new Map<string, ExistingEmbeddingHashEntry>();
   let existingEmbeddings: Map<string, ExistingEmbeddingHashEntry> | undefined;
+  const cleanupCachedEmbeddingSpool = async (): Promise<void> => {
+    if (!cachedEmbeddingSpoolDir) return;
+    const spoolDir = cachedEmbeddingSpoolDir;
+    cachedEmbeddingSpoolDir = undefined;
+    cachedEmbeddingSpoolPath = undefined;
+    await fs.rm(spoolDir, { recursive: true, force: true });
+  };
 
   if (
-    embeddingsEnabledForRun &&
-    existingMeta &&
-    (!options.force || process.env.ONTOINDEX_PRESERVE_FORCE_EMBEDDINGS === '1')
+    metadataVectorCount > 0 &&
+    (!embeddingsEnabledForRun || !fsSync.existsSync(activeLbugPath))
   ) {
-    try {
-      progress('embeddings', 0, 'Caching embeddings...');
-      await initLbug(activeLbugPath);
-      const cached = await loadCachedEmbeddings();
-      cachedEmbeddingNodeIds = cached.embeddingNodeIds;
-      cachedEmbeddings = cached.embeddings;
-      existingEmbeddings = await fetchExistingEmbeddingHashes(executeQuery);
-      await closeLbug();
-    } catch {
-      try {
-        await closeLbug();
-      } catch {
-        /* swallow */
-      }
-    }
+    gcTelemetry?.stop();
+    throw new Error(
+      'Cannot preserve the indexed vectors: embedding analysis is disabled or the source vector database is missing.',
+    );
   }
 
-  if (embeddingsEnabledForRun && embeddingRevisionMismatch && cachedEmbeddings.length > 0) {
-    gcTelemetry?.stop();
-    throw new Error(embeddingRevisionMismatch);
+  if (fsSync.existsSync(activeLbugPath)) {
+    try {
+      await initLbug(activeLbugPath);
+      const storedEmbeddingCount = await countCachedEmbeddings();
+      if (!embeddingsEnabledForRun && storedEmbeddingCount > 0) {
+        throw new Error(
+          `Graph refresh would discard ${storedEmbeddingCount} stored embeddings. ` +
+            'Submit with embedding preservation enabled.',
+        );
+      }
+      const metadataClaimsEmbeddings = metadataVectorCount > 0;
+      if (embeddingsEnabledForRun && storedEmbeddingCount > 0) {
+        if (embeddingRevisionMismatch) throw new Error(embeddingRevisionMismatch);
+        if (!existingMeta?.model_hash?.trim()) {
+          throw new Error(
+            'Embedding model identity is missing from index metadata; refusing to preserve vectors with an unverified model.',
+          );
+        }
+        progress('embeddings', 0, `Caching ${storedEmbeddingCount} embeddings...`);
+        cachedEmbeddingSpoolDir = await fs.mkdtemp(
+          path.join(os.tmpdir(), 'ontoindex-embedding-cache-'),
+        );
+        cachedEmbeddingSpoolPath = path.join(cachedEmbeddingSpoolDir, 'embeddings.jsonl');
+        await fs.writeFile(cachedEmbeddingSpoolPath, '', { flag: 'wx', mode: 0o600 });
+        const pending: CachedEmbedding[] = [];
+        const flushPending = async (): Promise<void> => {
+          if (!cachedEmbeddingSpoolPath || pending.length === 0) return;
+          const lines = pending.map((embedding) => JSON.stringify(embedding)).join('\n') + '\n';
+          await fs.appendFile(cachedEmbeddingSpoolPath, lines, { encoding: 'utf8', mode: 0o600 });
+          pending.length = 0;
+        };
+        cachedEmbeddingCount = await streamCachedEmbeddings(async (embedding) => {
+          if (cachedEmbeddingDimensions === undefined) {
+            cachedEmbeddingDimensions = embedding.embedding.length;
+          } else if (embedding.embedding.length !== cachedEmbeddingDimensions) {
+            throw new Error('Cached embeddings have inconsistent vector dimensions.');
+          }
+          cachedEmbeddingNodeIds.add(embedding.nodeId);
+          if (!cachedEmbeddingContentHashes.has(embedding.nodeId)) {
+            cachedEmbeddingContentHashes.set(
+              embedding.nodeId,
+              embedding.contentHash ?? STALE_HASH_SENTINEL,
+            );
+          }
+          pending.push(embedding);
+          if (pending.length >= 200) await flushPending();
+        });
+        await flushPending();
+        if (cachedEmbeddingCount !== storedEmbeddingCount) {
+          throw new Error(
+            `Cached embedding count changed during preservation (${storedEmbeddingCount} to ${cachedEmbeddingCount}).`,
+          );
+        }
+        if (metadataClaimsEmbeddings && cachedEmbeddingCount === 0) {
+          throw new Error('Index metadata records embeddings, but the vector table is empty.');
+        }
+        existingEmbeddings = await fetchExistingEmbeddingHashes(executeQuery);
+      } else if (metadataClaimsEmbeddings && embeddingsEnabledForRun) {
+        throw new Error(
+          'Index metadata records embeddings, but the vector table is missing or empty; refusing managed refresh.',
+        );
+      }
+      await closeLbug();
+    } catch (error) {
+      try {
+        await closeLbug({ strict: true });
+      } catch {
+        // Preserve the original failure; failed teardown will block later opens.
+      }
+      await cleanupCachedEmbeddingSpool().catch(() => {});
+      gcTelemetry?.stop();
+      throw error;
+    }
   }
 
   // ── Phase 1: Full Pipeline (0–60%) ────────────────────────────────
@@ -1665,6 +1785,7 @@ export async function runFullAnalysis(
       );
     }
   } catch (err) {
+    await cleanupCachedEmbeddingSpool().catch(() => {});
     if (stagedGeneration !== null) {
       await discardIndexGeneration(stagedGeneration)
         .then(() => {
@@ -1819,31 +1940,47 @@ export async function runFullAnalysis(
     });
 
     // ── Phase 3.5: Re-insert cached embeddings ────────────────────────
-    if (cachedEmbeddings.length > 0) {
-      const cachedDims = cachedEmbeddings[0].embedding.length;
+    if (cachedEmbeddingCount > 0 && cachedEmbeddingSpoolPath) {
       const { EMBEDDING_DIMS } = await import('./lbug/schema.js');
-      if (cachedDims !== EMBEDDING_DIMS) {
-        // Dimensions changed (e.g. switched embedding model) — discard cache and re-embed all
-        log(
-          `Embedding dimensions changed (${cachedDims}d -> ${EMBEDDING_DIMS}d), discarding cache`,
+      if (cachedEmbeddingDimensions !== EMBEDDING_DIMS) {
+        throw new Error(
+          `Cached embedding dimensions ${cachedEmbeddingDimensions ?? 'unknown'} do not match runtime dimensions ${EMBEDDING_DIMS}; refusing to publish a partial vector index.`,
         );
-        cachedEmbeddings = [];
-        cachedEmbeddingNodeIds = new Set();
-      } else {
-        progress('embeddings', 88, `Restoring ${cachedEmbeddings.length} cached embeddings...`);
-        const { batchInsertEmbeddings: batchInsert } =
-          await import('./embeddings/embedding-pipeline.js');
-        const EMBED_BATCH = 200;
-        for (let i = 0; i < cachedEmbeddings.length; i += EMBED_BATCH) {
-          const batch = cachedEmbeddings.slice(i, i + EMBED_BATCH);
-
-          try {
-            await batchInsert(executeWithReusedStatement, batch);
-          } catch {
-            /* some may fail if node was removed, that's fine */
-          }
-        }
       }
+      progress('embeddings', 88, `Restoring ${cachedEmbeddingCount} cached embeddings...`);
+      const { batchInsertEmbeddings: batchInsert } =
+        await import('./embeddings/embedding-pipeline.js');
+      const restoreBatch: CachedEmbedding[] = [];
+      const restoreBatchSize = 200;
+      let expectedRestoredCount = 0;
+      const flushRestoreBatch = async (): Promise<void> => {
+        if (restoreBatch.length === 0) return;
+        await batchInsert(executeWithReusedStatement, [...restoreBatch]);
+        restoreBatch.length = 0;
+      };
+      const input = createReadStream(cachedEmbeddingSpoolPath, 'utf8');
+      const lines = createInterface({ input, crlfDelay: Infinity });
+      try {
+        for await (const line of lines) {
+          if (!line.trim()) continue;
+          const embedding = JSON.parse(line) as CachedEmbedding;
+          if (!pipelineResult.graph.getNode(embedding.nodeId)) continue;
+          expectedRestoredCount++;
+          restoreBatch.push(embedding);
+          if (restoreBatch.length >= restoreBatchSize) await flushRestoreBatch();
+        }
+        await flushRestoreBatch();
+      } finally {
+        lines.close();
+        input.destroy();
+      }
+      const restoredEmbeddingCount = await countCachedEmbeddings();
+      if (restoredEmbeddingCount !== expectedRestoredCount) {
+        throw new Error(
+          `Restored ${restoredEmbeddingCount} of ${expectedRestoredCount} cached embeddings for current graph nodes; refusing to publish incomplete vectors.`,
+        );
+      }
+      await cleanupCachedEmbeddingSpool();
     }
 
     // ── Phase 4: Embeddings (90–98%) ──────────────────────────────────
@@ -1864,7 +2001,7 @@ export async function runFullAnalysis(
       }
     }
 
-    if (embeddingSkipped && cachedEmbeddings.length > 0) {
+    if (embeddingSkipped && cachedEmbeddingCount > 0) {
       // Cached rows were restored into a new generation, which has no vector
       // index even when embedding generation is intentionally skipped.
       const { createVectorIndex } = await import('./embeddings/embedding-pipeline.js');
@@ -1891,9 +2028,9 @@ export async function runFullAnalysis(
         if (!incrementalEmbeddings) {
           incrementalEmbeddings = new Map<string, ExistingEmbeddingHashEntry>();
         }
-        for (const e of cachedEmbeddings) {
-          if (!incrementalEmbeddings.has(e.nodeId)) {
-            incrementalEmbeddings.set(e.nodeId, e.contentHash ?? STALE_HASH_SENTINEL);
+        for (const [nodeId, contentHash] of cachedEmbeddingContentHashes) {
+          if (!incrementalEmbeddings.has(nodeId)) {
+            incrementalEmbeddings.set(nodeId, contentHash);
           }
         }
       }
@@ -1929,6 +2066,15 @@ export async function runFullAnalysis(
         embeddingCheckpointOptions,
       );
 
+      if (
+        options.managedAnalysis?.requestedCapabilities.embeddings === true &&
+        !embeddingPipelineResult.vectorIndexReady
+      ) {
+        throw new Error(
+          'Managed analysis could not create or verify the vector index; refusing to publish this generation.',
+        );
+      }
+
       if (embeddingPipelineResult?.vectorIndexDigest) {
         embeddingVectorIndexDigest = embeddingPipelineResult.vectorIndexDigest;
       }
@@ -1947,12 +2093,19 @@ export async function runFullAnalysis(
     } catch {
       /* table may not exist if embeddings never ran */
     }
-    if (
-      options.managedAnalysis?.requestedCapabilities.embeddings === true &&
-      (embeddingSkipped || embeddingCount <= 0)
-    ) {
+    if (options.managedAnalysis?.requestedCapabilities.embeddings === true && embeddingCount <= 0) {
       throw new Error(
         'Managed analysis requested embeddings, but no embeddings were successfully published.',
+      );
+    }
+    if (
+      options.managedAnalysis?.requestedCapabilities.embeddings === true &&
+      embeddingSkipped &&
+      cachedEmbeddingCount > 0 &&
+      !sourceContentUnchanged
+    ) {
+      throw new Error(
+        'Managed analysis skipped embedding refresh for changed source; refusing to publish stale cached vectors.',
       );
     }
 
@@ -2042,7 +2195,7 @@ export async function runFullAnalysis(
               mode: embeddingLifecycleMode,
               state: 'refreshed',
             }
-          : cachedEmbeddings.length > 0
+          : cachedEmbeddingCount > 0
             ? {
                 mode: embeddingLifecycleMode,
                 state: 'preserved',
@@ -2272,39 +2425,6 @@ export async function runFullAnalysis(
       }
     }
 
-    if (!options.skipAiContext) {
-      // ── Generate AI context files (best-effort) ───────────────────────
-      let aggregatedClusterCount = 0;
-      if (pipelineResult.communityResult?.communities) {
-        const groups = new Map<string, number>();
-        for (const c of pipelineResult.communityResult.communities) {
-          const label = c.heuristicLabel || c.label || 'Unknown';
-          groups.set(label, (groups.get(label) || 0) + c.symbolCount);
-        }
-        aggregatedClusterCount = Array.from(groups.values()).filter((count) => count >= 5).length;
-      }
-
-      try {
-        await generateAIContextFiles(
-          repoPath,
-          storagePath,
-          projectName,
-          {
-            files: pipelineResult.totalFileCount,
-            nodes: stats.nodes,
-            edges: stats.edges,
-            communities: pipelineResult.communityResult?.stats.totalCommunities,
-            clusters: aggregatedClusterCount,
-            processes: pipelineResult.processResult?.stats.totalProcesses,
-          },
-          undefined,
-          { skipAgentsMd: options.skipAgentsMd, noStats: options.noStats },
-        );
-      } catch {
-        // Best-effort — don't fail the entire analysis for context file issues
-      }
-    }
-
     // ── Close LadybugDB ──────────────────────────────────────────────
     if (!options.skipNativeClose) {
       await closeLbug();
@@ -2322,6 +2442,7 @@ export async function runFullAnalysis(
       pipelineResult,
     };
   } catch (err) {
+    await cleanupCachedEmbeddingSpool().catch(() => {});
     // Ensure LadybugDB is closed even on error
     try {
       if (!options.skipNativeClose) {

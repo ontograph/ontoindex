@@ -8,6 +8,7 @@ import {
 import {
   isValidSourceIdentity,
   readAnalysisPublicationReceipt,
+  worktreeSourceIdentity,
   type AnalysisPublicationReceipt,
 } from '../../core/analysis/analysis-publication-receipt.js';
 import { resolveActiveIndexGeneration } from '../../storage/repo-manager.js';
@@ -168,6 +169,7 @@ async function verifyPublishedJob(
     targetContext = await resolveTargetContext({
       repo: resolvedRepoPath,
       verifyGraphAuthority: true,
+      ignorePinnedGraphContext: true,
       requiredGraphCapabilities: job.requestedCapabilities.graphCapabilities,
     });
   } catch {
@@ -204,6 +206,7 @@ async function verifyPublishedJob(
     finalTargetContext = await resolveTargetContext({
       repo: resolvedRepoPath,
       verifyGraphAuthority: true,
+      ignorePinnedGraphContext: true,
       requiredGraphCapabilities: job.requestedCapabilities.graphCapabilities,
     });
   } catch {
@@ -276,6 +279,7 @@ async function verifyPublishedJob(
     terminalTargetContext = await resolveTargetContext({
       repo: resolvedRepoPath,
       verifyGraphAuthority: true,
+      ignorePinnedGraphContext: true,
       requiredGraphCapabilities: job.requestedCapabilities.graphCapabilities,
     });
   } catch {
@@ -385,6 +389,8 @@ function validatePostCheck(
   postCheck: EnsureFreshReport,
   targetContext: TargetContext,
 ): { reasonCode: string; message: string } | null {
+  const isWorkingTreeSource =
+    job.sourceIdentity === worktreeSourceIdentity(receipt.sourceManifestDigest);
   if (
     postCheck.indexedCommit !== job.targetHead ||
     postCheck.headCommit !== job.targetHead ||
@@ -396,12 +402,6 @@ function validatePostCheck(
     return mismatch(
       'POSTCHECK_TARGET_MISMATCH',
       'The current checkout and indexed commit do not both match the job target.',
-    );
-  }
-  if (postCheck.dirtyFileCount !== 0) {
-    return mismatch(
-      'POSTCHECK_WORKTREE_UNCONFIRMED',
-      'The final freshness post-check did not prove a clean worktree.',
     );
   }
   if (
@@ -417,27 +417,63 @@ function validatePostCheck(
       'The authoritative target context does not match the job target and repository.',
     );
   }
-  if (targetContext.dirtyWorktree !== false) {
-    return mismatch(
-      'TARGET_CONTEXT_WORKTREE_UNCONFIRMED',
-      'The authoritative target context did not prove a clean worktree.',
-    );
+  if (isWorkingTreeSource) {
+    const dirtyCount = postCheck.dirtyFileCount;
+    if (
+      !Number.isSafeInteger(dirtyCount) ||
+      dirtyCount! < 0 ||
+      !Number.isSafeInteger(targetContext.dirtyFileCount) ||
+      targetContext.dirtyFileCount !== dirtyCount ||
+      targetContext.dirtyWorktree !== (dirtyCount! > 0)
+    ) {
+      return mismatch(
+        'POSTCHECK_WORKTREE_STATE_MISMATCH',
+        'The freshness and authoritative target checks did not report the same working-tree state.',
+      );
+    }
+    const expectedSnapshotMode = dirtyCount! > 0 ? 'dirty-worktree-overlay' : 'committed-head';
+    if (targetContext.snapshotMode !== expectedSnapshotMode) {
+      return mismatch(
+        'TARGET_CONTEXT_SNAPSHOT_MISMATCH',
+        'The authoritative target context does not describe the published working-tree source mode.',
+      );
+    }
+    if (dirtyCount === 0 && targetContext.changedSinceIndex !== false) {
+      return mismatch(
+        'TARGET_CONTEXT_INDEX_DRIFT',
+        'The clean target context reports changes since the published working-tree source.',
+      );
+    }
+  } else {
+    if (postCheck.dirtyFileCount !== 0) {
+      return mismatch(
+        'POSTCHECK_WORKTREE_UNCONFIRMED',
+        'A commit source can only be confirmed when the final worktree is clean.',
+      );
+    }
+    if (targetContext.dirtyWorktree !== false) {
+      return mismatch(
+        'TARGET_CONTEXT_WORKTREE_UNCONFIRMED',
+        'The authoritative target context did not prove a clean worktree.',
+      );
+    }
+    if (targetContext.changedSinceIndex !== false) {
+      return mismatch(
+        'TARGET_CONTEXT_INDEX_DRIFT',
+        'The authoritative target context reports changes since the published index.',
+      );
+    }
   }
-  if (targetContext.snapshotMode !== 'committed-head') {
+  if (!isWorkingTreeSource && targetContext.snapshotMode !== 'committed-head') {
     return mismatch(
       'TARGET_CONTEXT_SNAPSHOT_MISMATCH',
       'The authoritative target context is not a committed-HEAD snapshot.',
     );
   }
-  if (targetContext.changedSinceIndex !== false) {
-    return mismatch(
-      'TARGET_CONTEXT_INDEX_DRIFT',
-      'The authoritative target context reports changes since the published index.',
-    );
-  }
   if (
     targetContext.graphAuthority?.state !== 'authoritative' ||
     targetContext.graphAuthority.generationId !== receipt.generationId ||
+    targetContext.graphAuthority.coverage !== 'complete' ||
     targetContext.graphAuthority.manifestDigest?.toLowerCase() !==
       receipt.sourceManifestDigest.toLowerCase()
   ) {

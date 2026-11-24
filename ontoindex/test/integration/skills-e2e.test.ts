@@ -17,6 +17,7 @@ import fs from 'fs';
 import os from 'os';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { createRequire } from 'module';
+import Parser from 'tree-sitter';
 
 const testDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(testDir, '../..');
@@ -28,6 +29,20 @@ const SKILLS_E2E_IDEMPOTENCY_HOOK_TIMEOUT_MS = 150000;
 // Absolute file:// URL to tsx loader — needed when spawning CLI with cwd
 // outside the project tree (bare 'tsx' specifier won't resolve there).
 const _require = createRequire(import.meta.url);
+const require = createRequire(import.meta.url);
+const describeKotlin = isKotlinParserAvailable() ? describe : describe.skip;
+
+function isKotlinParserAvailable(): boolean {
+  try {
+    const language = require('tree-sitter-kotlin') as Parser.Language;
+    const parser = new Parser();
+    parser.setLanguage(language);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 const tsxPkgDir = path.dirname(_require.resolve('tsx/package.json'));
 const tsxImportUrl = pathToFileURL(path.join(tsxPkgDir, 'dist', 'loader.mjs')).href;
 
@@ -2036,7 +2051,7 @@ function db_close() {
 // DESCRIBE 11: Kotlin
 // ============================================================================
 
-describe('Kotlin', () => {
+describeKotlin('Kotlin', () => {
   let tmpDir: string;
   let result: ReturnType<typeof runSkillsCli>;
 

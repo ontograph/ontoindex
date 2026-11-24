@@ -341,6 +341,37 @@ describe('middleware chain extraction', () => {
     });
   });
 
+  it('keeps default-export middleware available when the route method is known', () => {
+    expect(extractMiddlewareChain('export default withAuth(handler);', 'GET')).toEqual({
+      chain: ['withAuth'],
+      method: 'default',
+    });
+  });
+
+  it('prefers an explicit method chain over a default-export fallback', () => {
+    const content = `
+      export default withCache(handler);
+      export const GET = withAuth(handler);
+    `;
+    expect(extractMiddlewareChain(content, 'GET')).toEqual({ chain: ['withAuth'], method: 'GET' });
+  });
+
+  it('does not assign default middleware to a separately exported unwrapped method', () => {
+    const content = `
+      export default withAuth(handler);
+      export const POST = handler;
+    `;
+    expect(extractMiddlewareChain(content, 'POST')).toBeUndefined();
+    expect(extractMiddlewareChain(content, 'GET')).toEqual({
+      chain: ['withAuth'],
+      method: 'default',
+    });
+  });
+
+  it('can disable default fallback for method-specific non-file routes', () => {
+    expect(extractMiddlewareChain('export default withAuth(handler);', 'GET', false)).toBeUndefined();
+  });
+
   it('stops at async keyword (arrow function body)', () => {
     const content = `export const POST = withAuth(async (req) => { return res.json({}); });`;
     expect(extractMiddlewareChain(content)).toEqual({ chain: ['withAuth'], method: 'POST' });
@@ -357,12 +388,29 @@ describe('middleware chain extraction', () => {
     expect(extractMiddlewareChain(content)).toBeUndefined();
   });
 
-  it('handles multiple HTTP methods — uses first match', () => {
+  it('uses the first wrapped method when no method is requested', () => {
     const content = `
       export const GET = withCache(handler);
       export const POST = withAuth(withCSRF(handler));
     `;
     expect(extractMiddlewareChain(content)).toEqual({ chain: ['withCache'], method: 'GET' });
+  });
+
+  it('selects the middleware chain for the requested HTTP method', () => {
+    const content = `
+      export const GET = withCache(handler);
+      export const POST = withAuth(withCSRF(handler));
+    `;
+    expect(extractMiddlewareChain(content, 'POST')).toEqual({
+      chain: ['withAuth', 'withCSRF'],
+      method: 'POST',
+    });
+    expect(extractMiddlewareChain(content, 'GET')).toEqual({ chain: ['withCache'], method: 'GET' });
+  });
+
+  it('does not reuse a wrapped method chain for a different HTTP method', () => {
+    const content = `export const GET = withAuth(handler); export const POST = handler;`;
+    expect(extractMiddlewareChain(content, 'POST')).toBeUndefined();
   });
 
   it('handles whitespace and newlines in chain', () => {

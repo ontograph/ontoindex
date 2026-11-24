@@ -13,6 +13,8 @@ vi.mock('../../src/core/lbug/pool-adapter.js', () => ({
 vi.mock('../../src/mcp/core/embedder.js', () => ({
   embedQuery: vi.fn(),
   getEmbeddingDims: vi.fn(),
+  getMcpEmbeddingModelId: vi.fn(() => process.env.ONTOINDEX_EMBEDDING_MODEL ?? 'test-model'),
+  isMcpEmbeddingModelSelected: vi.fn(() => false),
   isEmbedderReady: vi.fn(),
 }));
 
@@ -21,7 +23,12 @@ import {
   executeQuery,
   isLbugReady,
 } from '../../src/core/lbug/pool-adapter.js';
-import { embedQuery, getEmbeddingDims, isEmbedderReady } from '../../src/mcp/core/embedder.js';
+import {
+  embedQuery,
+  getEmbeddingDims,
+  isEmbedderReady,
+  isMcpEmbeddingModelSelected,
+} from '../../src/mcp/core/embedder.js';
 import { semanticSearch } from '../../src/mcp/local/backend-query.js';
 import { EmbeddingRevisionMismatchError } from '../../src/core/embeddings/embedding-revision.js';
 import {
@@ -43,6 +50,7 @@ const mockIsLbugReady = vi.mocked(isLbugReady);
 const mockEmbedQuery = vi.mocked(embedQuery);
 const mockGetEmbeddingDims = vi.mocked(getEmbeddingDims);
 const mockIsEmbedderReady = vi.mocked(isEmbedderReady);
+const mockIsMcpEmbeddingModelSelected = vi.mocked(isMcpEmbeddingModelSelected);
 
 const repo = {
   id: 'repo-1',
@@ -96,16 +104,26 @@ const freshFreshness = evaluateZvecMirrorFreshness({
 });
 
 describe('zvec semantic backend routing', () => {
-  beforeEach(() => {
+  let defaultStoragePath: string | undefined;
+
+  beforeEach(async () => {
+    defaultStoragePath = await fs.mkdtemp(path.join(os.tmpdir(), 'ontoindex-semantic-meta-'));
+    await fs.writeFile(
+      path.join(defaultStoragePath, 'meta.json'),
+      JSON.stringify({ model_hash: 'test-model' }),
+    );
+    repo.storagePath = defaultStoragePath;
     vi.clearAllMocks();
     delete process.env.ONTOINDEX_VECTOR_BACKEND;
     delete process.env.ONTOINDEX_EMBEDDING_REVISION;
     delete process.env.ONTOINDEX_EMBEDDING_URL;
     delete process.env.ONTOINDEX_EMBEDDING_MODEL;
+    process.env.ONTOINDEX_EMBEDDING_MODEL = 'test-model';
     mockIsLbugReady.mockReturnValue(true);
     mockEmbedQuery.mockResolvedValue([0.11, 0.22, 0.33]);
     mockGetEmbeddingDims.mockReturnValue(3);
     mockIsEmbedderReady.mockReturnValue(true);
+    mockIsMcpEmbeddingModelSelected.mockReturnValue(false);
     mockExecuteQuery.mockImplementation(async (_repoId, statement) => {
       const sql = String(statement);
       if (sql.includes('MATCH (e:CodeEmbedding) RETURN e.nodeId AS nodeId LIMIT 1')) {
@@ -138,11 +156,14 @@ describe('zvec semantic backend routing', () => {
     setZvecSemanticSearchDriverForTests(undefined);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     resetZvecSemanticSearchCircuitBreakerForTests();
     setZvecSemanticSearchDriverForTests(undefined);
     delete process.env.ONTOINDEX_VECTOR_BACKEND;
     delete process.env.ONTOINDEX_EMBEDDING_REVISION;
+    delete process.env.ONTOINDEX_EMBEDDING_MODEL;
+    if (defaultStoragePath) await fs.rm(defaultStoragePath, { recursive: true, force: true });
+    defaultStoragePath = undefined;
   });
 
   it('keeps the LadybugDB vector path when zvec is not requested', async () => {
@@ -186,6 +207,115 @@ describe('zvec semantic backend routing', () => {
     } finally {
       await fs.rm(storagePath, { recursive: true, force: true });
     }
+  });
+
+  it('does not leak a rejected intent model override into the next search', async () => {
+    const storagePath = await fs.mkdtemp(path.join(os.tmpdir(), 'ontoindex-intent-model-'));
+    process.env.ONTOINDEX_EMBEDDING_MODEL = 'configured-model';
+    process.env.ONTOINDEX_EMBEDDING_REVISION = 'revision-a';
+    mockIsEmbedderReady.mockReturnValue(false);
+    try {
+      await fs.writeFile(
+        path.join(storagePath, 'meta.json'),
+        JSON.stringify({
+          embedding_revision: 'revision-a',
+          model_hash: 'configured-model@revision-a',
+          stats: { embeddings: 1 },
+        }),
+      );
+
+      await expect(
+        semanticSearch({ ...repo, storagePath }, 'cache store', 5, 'incompatible-model'),
+      ).rejects.toBeInstanceOf(EmbeddingRevisionMismatchError);
+
+      expect(process.env.ONTOINDEX_EMBEDDING_MODEL).toBe('configured-model');
+      expect(mockEmbedQuery).not.toHaveBeenCalled();
+
+      const result = await semanticSearch({ ...repo, storagePath }, 'cache store', 5);
+
+      expect(result[0]?.name).toBe('CacheStore');
+      expect(process.env.ONTOINDEX_EMBEDDING_MODEL).toBe('configured-model');
+      expect(mockEmbedQuery).toHaveBeenCalledWith('cache store', undefined);
+    } finally {
+      await fs.rm(storagePath, { recursive: true, force: true });
+    }
+  });
+
+  it('propagates a concurrent embedder model mismatch instead of returning empty results', async () => {
+    const storagePath = await fs.mkdtemp(path.join(os.tmpdir(), 'ontoindex-concurrent-model-'));
+    process.env.ONTOINDEX_EMBEDDING_MODEL = 'model-a';
+    process.env.ONTOINDEX_EMBEDDING_REVISION = 'revision-a';
+    mockIsEmbedderReady.mockReturnValue(false);
+    mockIsMcpEmbeddingModelSelected.mockReturnValue(true);
+    try {
+      await fs.writeFile(
+        path.join(storagePath, 'meta.json'),
+        JSON.stringify({
+          embedding_revision: 'revision-a',
+          model_hash: 'model-a@revision-a',
+          stats: { embeddings: 1 },
+        }),
+      );
+      mockEmbedQuery.mockRejectedValueOnce(
+        new EmbeddingRevisionMismatchError(
+          'Embedding model mismatch: the singleton uses "model-a" but this request requires "model-b".',
+        ),
+      );
+
+      await expect(
+        semanticSearch({ ...repo, storagePath }, 'cache store', 5, 'model-b'),
+      ).rejects.toBeInstanceOf(EmbeddingRevisionMismatchError);
+
+      expect(mockExecuteQuery).not.toHaveBeenCalledWith(
+        repo.id,
+        expect.stringContaining('QUERY_VECTOR_INDEX'),
+      );
+    } finally {
+      await fs.rm(storagePath, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects vectors with an explicit revision but no indexed model identity', async () => {
+    const storagePath = await fs.mkdtemp(path.join(os.tmpdir(), 'ontoindex-missing-model-hash-'));
+    process.env.ONTOINDEX_EMBEDDING_REVISION = 'revision-a';
+    try {
+      await fs.writeFile(
+        path.join(storagePath, 'meta.json'),
+        JSON.stringify({
+          embedding_revision: 'revision-a',
+          stats: { embeddings: 1 },
+        }),
+      );
+
+      await expect(
+        semanticSearch({ ...repo, storagePath }, 'cache store', 5),
+      ).rejects.toThrow('Embedding model identity is missing from index metadata');
+
+      expect(mockEmbedQuery).not.toHaveBeenCalled();
+      expect(mockExecuteQuery).not.toHaveBeenCalledWith(
+        repo.id,
+        expect.stringContaining('QUERY_VECTOR_INDEX'),
+      );
+    } finally {
+      await fs.rm(storagePath, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects vectors without either indexed identity field but permits an empty vector table', async () => {
+    const storagePath = defaultStoragePath!;
+    delete process.env.ONTOINDEX_EMBEDDING_REVISION;
+    await fs.writeFile(
+      path.join(storagePath, 'meta.json'),
+      JSON.stringify({ stats: { embeddings: 1 } }),
+    );
+
+    await expect(semanticSearch({ ...repo, storagePath }, 'cache store', 5)).rejects.toThrow(
+      'Embedding model identity is missing from index metadata',
+    );
+    expect(mockEmbedQuery).not.toHaveBeenCalled();
+
+    mockExecuteQuery.mockResolvedValueOnce([]);
+    await expect(semanticSearch({ ...repo, storagePath }, 'cache store', 5)).resolves.toEqual([]);
   });
 
   it('falls back to LadybugDB when a requested zvec mirror is stale', async () => {

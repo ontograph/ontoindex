@@ -57,6 +57,8 @@ import {
 } from '../mcp/local/workspace-build-supervisor.js';
 import { parseManagedAnalysisContextFromEnv } from '../core/analysis/analysis-publication-receipt.js';
 import { acquireNativeFileLock } from '../native/file-lock.js';
+import { readRuntimeHealth } from '../core/runtime/runtime-health.js';
+import type { GeneratedSkillInfo } from './skill-gen.js';
 
 const HEAP_MB = 8192;
 const HEAP_FLAG = `--max-old-space-size=${HEAP_MB}`;
@@ -891,37 +893,38 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
     const profile = experimentalFileDeltaPlan?.safeToBound
       ? 'symbols'
       : resolveAnalyzePipelineProfile(options);
-    const result = await runFullAnalysis(
-      repoPath,
-      {
-        // Pipeline re-index — OR'd with --skills because skill generation
-        // needs a fresh pipelineResult.
-        force:
-          managedAnalysis !== undefined ||
-          options?.force ||
-          options?.skills ||
-          experimentalFileDeltaPlan?.forceFullAnalyze,
-        embeddings: options?.embeddings,
-        annNeighbors: options?.annNeighbors,
-        skipGit: options?.skipGit,
-        markdownSidecar: options?.markdownSidecar,
-        ...(profile ? { profile } : {}),
-        ...(includePaths ? { includePaths } : {}),
-        skipAgentsMd: experimentalFileDeltaPlan?.safeToBound ? true : options?.skipAgentsMd,
-        skipAiContext: options?.skipAiContext,
-        noStats: experimentalFileDeltaPlan?.safeToBound ? true : options?.noStats,
-        skipNativeClose: process.env.ONTOINDEX_ANALYZE_NATIVE_CLOSE !== '1',
-        registryName: options?.name,
-        ...(options?.dirtyOverlay ? { dirtyOverlay: true, overlayPaths } : {}),
-        ...(managedAnalysis ? { managedAnalysis } : {}),
+    const analysisOptions = {
+      // Pipeline re-index — OR'd with --skills because skill generation
+      // needs a fresh pipelineResult.
+      force:
+        managedAnalysis !== undefined ||
+        options?.force ||
+        options?.skills ||
+        experimentalFileDeltaPlan?.forceFullAnalyze,
+      embeddings: options?.embeddings,
+      annNeighbors: options?.annNeighbors,
+      skipGit: options?.skipGit,
+      markdownSidecar: options?.markdownSidecar,
+      ...(profile ? { profile } : {}),
+      ...(includePaths ? { includePaths } : {}),
+      skipAgentsMd: experimentalFileDeltaPlan?.safeToBound ? true : options?.skipAgentsMd,
+      // `--skills` updates these files after the first graph. Keep the prior
+      // context intact until generation, then index that final content below.
+      skipAiContext:
+        options?.skills && !managedAnalysis ? true : options?.skipAiContext,
+      noStats: experimentalFileDeltaPlan?.safeToBound ? true : options?.noStats,
+      skipNativeClose: process.env.ONTOINDEX_ANALYZE_NATIVE_CLOSE !== '1',
+      registryName: options?.name,
+      ...(options?.dirtyOverlay ? { dirtyOverlay: true, overlayPaths } : {}),
+      ...(managedAnalysis ? { managedAnalysis } : {}),
+    };
+    const analysisCallbacks = {
+      onProgress: (_phase: string, percent: number, message: string) => {
+        updateBar(percent, message);
       },
-      {
-        onProgress: (_phase, percent, message) => {
-          updateBar(percent, message);
-        },
-        onLog: barLog,
-      },
-    );
+      onLog: barLog,
+    };
+    let result = await runFullAnalysis(repoPath, analysisOptions, analysisCallbacks);
 
     if (options?.dirtyOverlay) {
       clearInterval(elapsedTimer);
@@ -990,52 +993,85 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
     }
 
     // Skill generation (CLI-only, uses pipeline result from analysis)
-    if (options?.skills && !options.skipAiContext && result.pipelineResult) {
+    if (options?.skills && !options.skipAiContext && !managedAnalysis && result.pipelineResult) {
       updateBar(99, 'Generating skill files...');
+      const generatedSkills: GeneratedSkillInfo[] = [];
       try {
         const { generateSkillFiles, parseSkillTargets } = await import('./skill-gen.js');
-        const { generateAIContextFiles } = await import('./ai-context.js');
         const skillResult = await generateSkillFiles(
           repoPath,
           result.repoName,
           result.pipelineResult,
           { targets: parseSkillTargets(options?.skillsTarget) },
         );
-        if (skillResult.skills.length > 0) {
-          barLog(`  Generated ${skillResult.skills.length} skill files`);
-          // Re-generate AI context files now that we have skill info
-          const s = result.stats;
-          const communityResult = result.pipelineResult?.communityResult;
-          let aggregatedClusterCount = 0;
-          if (communityResult?.communities) {
-            const groups = new Map<string, number>();
-            for (const c of communityResult.communities) {
-              const label = c.heuristicLabel || c.label || 'Unknown';
-              groups.set(label, (groups.get(label) || 0) + c.symbolCount);
-            }
-            aggregatedClusterCount = Array.from(groups.values()).filter(
-              (count: number) => count >= 5,
-            ).length;
-          }
-          const { storagePath: sp } = getStoragePaths(repoPath);
-          await generateAIContextFiles(
-            repoPath,
-            sp,
-            result.repoName,
-            {
-              files: s.files ?? 0,
-              nodes: s.nodes ?? 0,
-              edges: s.edges ?? 0,
-              communities: s.communities,
-              clusters: aggregatedClusterCount,
-              processes: s.processes,
-            },
-            skillResult.skills,
-            { skipAgentsMd: options?.skipAgentsMd, noStats: options?.noStats },
-          );
+        generatedSkills.push(...skillResult.skills);
+        if (generatedSkills.length > 0) {
+          barLog(`  Generated ${generatedSkills.length} skill files`);
         }
       } catch {
         /* best-effort */
+      }
+
+      // Keep AI guidance in its prior state during graph construction. Now
+      // publish the current generated skills (or base guidance when none were
+      // produced) before capturing the final source manifest.
+      try {
+        const { generateAIContextFiles } = await import('./ai-context.js');
+        const s = result.stats;
+        const communityResult = result.pipelineResult.communityResult;
+        let aggregatedClusterCount = 0;
+        if (communityResult?.communities) {
+          const groups = new Map<string, number>();
+          for (const c of communityResult.communities) {
+            const label = c.heuristicLabel || c.label || 'Unknown';
+            groups.set(label, (groups.get(label) || 0) + c.symbolCount);
+          }
+          aggregatedClusterCount = Array.from(groups.values()).filter((count) => count >= 5).length;
+        }
+        const { storagePath: sp } = getStoragePaths(repoPath);
+        await generateAIContextFiles(
+          repoPath,
+          sp,
+          result.repoName,
+          {
+            files: s.files ?? 0,
+            nodes: s.nodes ?? 0,
+            edges: s.edges ?? 0,
+            communities: s.communities,
+            clusters: aggregatedClusterCount,
+            processes: s.processes,
+          },
+          generatedSkills,
+          { skipAgentsMd: options?.skipAgentsMd, noStats: options?.noStats },
+        );
+      } catch {
+        /* best-effort */
+      }
+
+      // Skills are derived from the first graph, then written into the repo.
+      // Re-index that final workspace once, without re-entering this CLI skill
+      // path, so success means the graph and source manifest include the files.
+      updateBar(99, 'Indexing generated skills...');
+      result = await runFullAnalysis(
+        repoPath,
+        {
+          ...analysisOptions,
+          force: false,
+          skipAiContext: true,
+          markdownSidecar: undefined,
+        },
+        analysisCallbacks,
+      );
+      // Runtime health treats a live analyze lock as untrusted. The second
+      // pass is complete, so release our lock before checking the published
+      // manifest; any concurrent writer is still detected by the health gate.
+      await analyzeLock?.release();
+      analyzeLock = null;
+      const finalHealth = await readRuntimeHealth(repoPath);
+      if (finalHealth.freshnessState !== 'clean') {
+        throw new Error(
+          `Generated skill graph is not confirmed against the current sources: ${finalHealth.degradedReason ?? finalHealth.freshnessState}.`,
+        );
       }
     }
 

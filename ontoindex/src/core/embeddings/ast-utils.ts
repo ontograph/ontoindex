@@ -12,7 +12,7 @@ import {
   isLanguageAvailable,
   resolveLanguageKey,
 } from '../tree-sitter/parser-loader.js';
-import { hasPhpOpenTag } from '../tree-sitter/php-grammar.js';
+import { classifyPhpSource } from '../tree-sitter/php-grammar.js';
 
 const parserCache = new Map<string, Parser>();
 
@@ -30,7 +30,7 @@ export const ensureAndParse = async (
 
   const parserKey =
     language === SupportedLanguages.PHP
-      ? `${language}:${hasPhpOpenTag(content) ? 'mixed' : 'tagless'}`
+      ? `${language}:${classifyPhpSource(content)}`
       : resolveLanguageKey(language, filePath);
   let parserInstance = parserCache.get(parserKey);
   if (!parserInstance) {

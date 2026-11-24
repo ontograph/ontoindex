@@ -157,6 +157,10 @@ it('publishes a partial captured workspace graph with parse-error paths without 
       "import { retained } from './moved';\nexport function importer() { return retained(); }\n",
     );
     await fs.writeFile(path.join(repo, 'src/broken.ts'), 'export function broken( {\n');
+    await fs.writeFile(
+      path.join(repo, 'src/new-untracked.ts'),
+      'export function untrackedMarker() { return 7; }\n',
+    );
     await fs.mkdir(copy);
     await fs.cp(path.join(repo, 'src'), path.join(copy, 'src'), { recursive: true });
     await fs.copyFile(path.join(repo, '.gitignore'), path.join(copy, '.gitignore'));
@@ -201,6 +205,7 @@ it('publishes a partial captured workspace graph with parse-error paths without 
     const published = path.join(overlay, current.trim());
     const graph = await readGraph(path.join(published, 'lbug'));
     expect(graph.nodes).toContain('Function:src/callee.ts:newSymbol');
+    expect(graph.nodes).toContain('Function:src/new-untracked.ts:untrackedMarker');
     expect(graph.nodes.some((id) => id.includes('deleted'))).toBe(false);
     expect(graph.nodes.some((id) => id.includes('src/renamed.ts'))).toBe(false);
     expect(graph.edges).toContain(
@@ -234,6 +239,7 @@ it('publishes a partial captured workspace graph with parse-error paths without 
         'src/deleted.ts',
         'src/importer.ts',
         'src/moved.ts',
+        'src/new-untracked.ts',
         'src/renamed.ts',
       ],
       tombstones: ['src/deleted.ts', 'src/renamed.ts'],
@@ -767,10 +773,22 @@ it('marks the graph degraded when parse-error paths exceed the recorded list', a
     const analyzeRepo = vi.fn(async ({ repoPath, onProgress, options }) => {
       // 1,500 failing files reported in 100-path chunks: only the first 1,000 paths fit the record.
       for (let chunk = 0; chunk < 15; chunk++) {
+        const parseErrorFiles = Array.from(
+          { length: 100 },
+          (_, i) => `src/c${chunk}-${i}.ts`,
+        );
+        for (const filePath of parseErrorFiles) {
+          options.onFileDiagnostic?.({
+            kind: 'parse-error',
+            filePath,
+            reason: 'tree-sitter parse error',
+            phase: 'parse',
+          });
+        }
         options.onTelemetry?.({
           event: 'parse-error-files',
           parseErrorCount: 100,
-          parseErrorFiles: Array.from({ length: 100 }, (_, i) => `src/c${chunk}-${i}.ts`),
+          parseErrorFiles,
         });
       }
       return runPipelineFromRepo(repoPath, onProgress, { ...options, skipWorkers: true });

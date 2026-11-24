@@ -7,6 +7,7 @@ vi.mock('../../../src/core/analysis/analysis-coordinator.js', () => ({
 }));
 vi.mock('../../../src/core/analysis/analysis-publication-receipt.js', () => ({
   readAnalysisPublicationReceipt: vi.fn(),
+  worktreeSourceIdentity: (digest: string) => `worktree:${digest}`,
   isValidSourceIdentity: (value: unknown, targetHead: string, digest: string) =>
     value === `commit:${targetHead}` || value === `worktree:${digest}`,
 }));
@@ -327,7 +328,100 @@ describe('gnAnalyzeJob', () => {
     expect(targetContext).toHaveBeenCalledWith({
       repo: repoPath,
       verifyGraphAuthority: true,
+      ignorePinnedGraphContext: true,
       requiredGraphCapabilities: ['symbols'],
+    });
+  });
+
+  it('confirms an exact managed working-tree manifest with tracked and untracked changes', async () => {
+    const sourceIdentity = `worktree:${manifestDigest}`;
+    const job = makeJob({ sourceIdentity });
+    getJob.mockResolvedValue(job);
+    readReceipt.mockResolvedValue(makeReceipt({ sourceIdentity }) as any);
+    ensureFresh.mockResolvedValue(
+      makeFreshness({
+        dirtyFileCount: 2,
+        dirtyWorktreeBreakdown: { trackedChangedCount: 1, untrackedCount: 1 },
+      }) as any,
+    );
+    targetContext.mockResolvedValue(
+      makeTargetContext({
+        dirtyWorktree: true,
+        dirtyFileCount: 2,
+        changedSinceIndex: true,
+        snapshotMode: 'dirty-worktree-overlay',
+        dirtyWorkspace: {
+          state: 'dirty-file',
+          fileCount: 2,
+          sourceFileCount: 2,
+          stagedSourceFileCount: 0,
+          unstagedSourceFileCount: 1,
+          untrackedSourceFileCount: 1,
+          unknownGraphCoverageCount: 0,
+          dirtyPaths: ['src/tracked.ts', 'src/new-untracked.ts'],
+        },
+      }) as any,
+    );
+
+    const result: any = await gnAnalyzeJob('repo', { jobId });
+
+    expect(result.recovery).toMatchObject({
+      disposition: 'REFRESHED',
+      reasonCode: 'PUBLICATION_VERIFIED',
+      receipt: { sourceIdentity, sourceManifestDigest: manifestDigest },
+    });
+    expect(ensureFresh).toHaveBeenCalledTimes(4);
+    expect(targetContext).toHaveBeenCalledTimes(3);
+  });
+
+  it('fails closed when a dirty source changes after publication', async () => {
+    const sourceIdentity = `worktree:${manifestDigest}`;
+    getJob.mockResolvedValue(makeJob({ sourceIdentity }));
+    readReceipt.mockResolvedValue(makeReceipt({ sourceIdentity }) as any);
+    ensureFresh.mockResolvedValue(makeFreshness({ dirtyFileCount: 2 }) as any);
+    targetContext.mockResolvedValue(
+      makeTargetContext({
+        dirtyWorktree: true,
+        dirtyFileCount: 2,
+        changedSinceIndex: true,
+        snapshotMode: 'dirty-worktree-overlay',
+        graphAuthority: {
+          state: 'review',
+          reason: 'current source manifest does not match indexed manifest',
+          generationId,
+          manifestDigest: 'e'.repeat(64),
+          coverage: 'complete',
+        },
+      }) as any,
+    );
+
+    const result: any = await gnAnalyzeJob('repo', { jobId });
+
+    expect(result.recovery).toMatchObject({
+      disposition: 'FRESHNESS_UNCONFIRMED',
+      reasonCode: 'GRAPH_AUTHORITY_UNCONFIRMED',
+    });
+  });
+
+  it('fails closed when freshness and target-context probes disagree about dirty files', async () => {
+    const sourceIdentity = `worktree:${manifestDigest}`;
+    getJob.mockResolvedValue(makeJob({ sourceIdentity }));
+    readReceipt.mockResolvedValue(makeReceipt({ sourceIdentity }) as any);
+    ensureFresh.mockResolvedValue(makeFreshness({ dirtyFileCount: 2 }) as any);
+    targetContext.mockResolvedValue(
+      makeTargetContext({
+        dirtyWorktree: true,
+        dirtyFileCount: 1,
+        changedSinceIndex: true,
+        snapshotMode: 'dirty-worktree-overlay',
+      }) as any,
+    );
+
+    const result: any = await gnAnalyzeJob('repo', { jobId });
+
+    expect(result.recovery).toMatchObject({
+      disposition: 'FRESHNESS_UNCONFIRMED',
+      reasonCode: 'POSTCHECK_WORKTREE_STATE_MISMATCH',
     });
   });
 

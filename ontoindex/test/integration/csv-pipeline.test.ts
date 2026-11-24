@@ -557,8 +557,9 @@ describe('streamAllCSVsToDisk', () => {
     expect(commCsv!.rows).toBe(1);
 
     const content = await fs.readFile(commCsv!.csvPath, 'utf-8');
-    // Keywords with commas should be escaped with \,
-    expect(content).toContain('pass\\,word');
+    // Typed list values are restored after COPY because list literal escaping is ambiguous.
+    expect(content).toContain(',[],');
+    expect(content).not.toContain('pass,word');
   });
 
   it('handles process nodes', async () => {
@@ -641,8 +642,7 @@ describe('streamAllCSVsToDisk', () => {
       'id,name,filePath,aliases,sourceDocuments,sourceFactKeys,resolutionKeys,authority,confidence,evidenceClass,freshness',
     );
     expect(lines[1]).toContain('"Native Concepts"');
-    expect(lines[1]).toContain("['Concept nodes']");
-    expect(lines[1]).toContain("['docs/adr.md']");
+    expect(lines[1]).toContain('"[]"');
 
     const relContent = await fs.readFile(result.relCsvPath, 'utf-8');
     expect(relContent).toContain('"EXPLAINED_BY",1,"docs-concept-grounding"');
@@ -955,7 +955,7 @@ describe('streamAllCSVsToDisk', () => {
       await fs.readFile(canonical.nodeFiles.get('Concept')!.csvPath, 'utf8'),
     );
     expect(concepts[1].slice(7)).toEqual(['', '', '', '']);
-    expect(concepts[1][6]).toBe("['']");
+    expect(concepts[1][6]).toBe('[]');
     expect(concepts[2].slice(7)).toEqual(['advisory', 'low', 'docs_evidence', 'unknown']);
     const functions = decodeCsv(
       await fs.readFile(canonical.nodeFiles.get('Function')!.csvPath, 'utf8'),

@@ -1,8 +1,64 @@
 import { describe, it, expect } from 'vitest';
-import { loadParser, loadLanguage } from '../../src/core/tree-sitter/parser-loader.js';
+import {
+  createParserForLanguage,
+  loadParser,
+  loadLanguage,
+} from '../../src/core/tree-sitter/parser-loader.js';
 import { SupportedLanguages } from '../../src/config/supported-languages.js';
+import { classifyPhpSource } from '../../src/core/tree-sitter/php-grammar.js';
 
 describe('parser-loader', () => {
+  describe('PHP grammar selection', () => {
+    const plainHtml = '<!-- view fragment -->\n<div class="report"><table></table></div>';
+    const plainJavaScript =
+      "if (typeof window.ndsAssessmentTestState !== 'function') { window.ndsAssessmentTestState = function () {}; }";
+    const taglessPhp = 'function php_fragment(): int { return 42; }';
+    const invalidTaglessPhp = 'function broken_fragment( { return $value; }';
+    const invalidTaglessPhpMissingSemicolon = '$x = foo()';
+    const taglessPhpWithJavaScriptString = '$x = "typeof window"';
+    const taglessPhpWithJavaScriptComment = '$x = 1; // window.foo\n$x = foo()';
+    const taglessPhpWithJavaScriptTypeof = '$x = typeof window';
+    const taglessPhpWithJavaScriptMember = '$x = window.foo';
+    const plainJavaScriptOptionalChain = 'window?.ndsAssessmentTestState?.()';
+    const taggedPhp = '<?php function tagged_fragment(): int { return 42; } ?>';
+    const mixedHtmlPhp = '<!-- fragment --><div><?= htmlspecialchars($title) ?></div>';
+
+    it.each([
+      [plainHtml, 'inline'],
+      [plainJavaScript, 'inline'],
+      [plainJavaScriptOptionalChain, 'inline'],
+      [taglessPhp, 'tagless'],
+      [invalidTaglessPhp, 'tagless'],
+      [invalidTaglessPhpMissingSemicolon, 'tagless'],
+      [taglessPhpWithJavaScriptString, 'tagless'],
+      [taglessPhpWithJavaScriptComment, 'tagless'],
+      [taglessPhpWithJavaScriptTypeof, 'tagless'],
+      [taglessPhpWithJavaScriptMember, 'tagless'],
+      [taggedPhp, 'tagged'],
+      [mixedHtmlPhp, 'tagged'],
+    ] as const)('classifies %s as %s', (source, kind) => {
+      expect(classifyPhpSource(source)).toBe(kind);
+    });
+
+    it.each([
+      [plainHtml, false],
+      [plainJavaScript, false],
+      [plainJavaScriptOptionalChain, false],
+      [taglessPhp, false],
+      [invalidTaglessPhp, true],
+      [invalidTaglessPhpMissingSemicolon, true],
+      [taglessPhpWithJavaScriptString, true],
+      [taglessPhpWithJavaScriptComment, true],
+      [taglessPhpWithJavaScriptTypeof, true],
+      [taglessPhpWithJavaScriptMember, true],
+      [taggedPhp, false],
+      [mixedHtmlPhp, false],
+    ] as const)('selects a grammar with expected diagnostics for %s', async (source, hasError) => {
+      const parser = await createParserForLanguage(SupportedLanguages.PHP, 'view.php', source);
+      expect(parser.parse(source).rootNode.hasError).toBe(hasError);
+    });
+  });
+
   describe('loadParser', () => {
     it('returns a Parser instance', async () => {
       const parser = await loadParser();

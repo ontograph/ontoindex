@@ -51,6 +51,18 @@ describe('deep flow detection pipeline', () => {
     expect(grants!.properties.errorKeys).toEqual(expect.arrayContaining(['error', 'message']));
   });
 
+  it('extracts the wrapped GET shape without leaking the neighboring POST shape', () => {
+    const routes = getNodesByLabelFull(result, 'Route').filter((route) => route.name === '/api/secure');
+    const getRoute = routes.find((route) => route.properties.httpMethod === 'GET');
+    const postRoute = routes.find((route) => route.properties.httpMethod === 'POST');
+    expect(getRoute?.properties.responseKeys).toEqual(['items', 'count']);
+    expect(postRoute?.properties.responseKeys).toEqual(['id', 'created']);
+    expect(getRoute?.properties.responseKeys).not.toContain('id');
+    expect(getRoute?.properties.responseKeys).not.toContain('created');
+    expect(postRoute?.properties.responseKeys).not.toContain('items');
+    expect(postRoute?.properties.responseKeys).not.toContain('count');
+  });
+
   it('keeps success and error keys separate (no cross-contamination)', () => {
     const routes = getNodesByLabelFull(result, 'Route');
     const grants = routes.find((r) => r.name === '/api/grants');
@@ -71,16 +83,19 @@ describe('deep flow detection pipeline', () => {
 
   it('extracts middleware chain for withAuth(withRateLimit(...)) wrapper', () => {
     const routes = getNodesByLabelFull(result, 'Route');
-    const secure = routes.find((r) => r.name === '/api/secure');
+    const secure = routes.find((r) => r.name === '/api/secure' && r.properties.httpMethod === 'GET');
     expect(secure).toBeDefined();
-    expect(secure!.properties.middleware).toBeDefined();
-    expect(secure!.properties.middleware).toContain('withAuth');
-    expect(secure!.properties.middleware).toContain('withRateLimit');
+    expect(secure!.properties.middleware).toEqual(['withAuth', 'withRateLimit']);
+    const unwrappedPost = routes.find(
+      (r) => r.name === '/api/secure' && r.properties.httpMethod === 'POST',
+    );
+    expect(unwrappedPost).toBeDefined();
+    expect(unwrappedPost!.properties.middleware).toBeUndefined();
   });
 
   it('stores middleware in outermost-first order', () => {
     const routes = getNodesByLabelFull(result, 'Route');
-    const secure = routes.find((r) => r.name === '/api/secure');
+    const secure = routes.find((r) => r.name === '/api/secure' && r.properties.httpMethod === 'GET');
     expect(secure).toBeDefined();
     const mw = secure!.properties.middleware ?? [];
     const authIdx = mw.indexOf('withAuth');

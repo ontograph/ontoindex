@@ -12,7 +12,7 @@ import {
 
 const { embeddingPipelineMocks } = vi.hoisted(() => ({
   embeddingPipelineMocks: {
-    runEmbeddingPipeline: vi.fn().mockResolvedValue(undefined),
+    runEmbeddingPipeline: vi.fn().mockResolvedValue({ vectorIndexReady: true }),
     batchInsertEmbeddings: vi.fn().mockResolvedValue(undefined),
     createVectorIndex: vi.fn().mockResolvedValue(true),
     EMBEDDING_TEXT_VERSION: 'v2',
@@ -51,6 +51,8 @@ vi.mock('../../src/core/lbug/lbug-adapter.js', () => ({
   getLbugStats: vi.fn().mockResolvedValue({ nodes: 3, edges: 2 }),
   executeQuery: vi.fn().mockResolvedValue([]),
   executeWithReusedStatement: vi.fn(),
+  countCachedEmbeddings: vi.fn().mockResolvedValue(0),
+  streamCachedEmbeddings: vi.fn().mockResolvedValue(0),
   createFTSIndex: vi.fn().mockResolvedValue(undefined),
   closeLbug: vi.fn().mockResolvedValue(undefined),
   fetchExistingEmbeddingHashes: vi
@@ -119,6 +121,8 @@ import {
   createFTSIndex,
   executeQuery,
   executeWithReusedStatement,
+  countCachedEmbeddings,
+  streamCachedEmbeddings,
   getLbugStats,
   initLbug,
   loadGraphToLbug,
@@ -159,6 +163,8 @@ const executeQueryMock = executeQuery as unknown as ReturnType<typeof vi.fn>;
 const executeWithReusedStatementMock = executeWithReusedStatement as unknown as ReturnType<
   typeof vi.fn
 >;
+const countCachedEmbeddingsMock = countCachedEmbeddings as unknown as ReturnType<typeof vi.fn>;
+const streamCachedEmbeddingsMock = streamCachedEmbeddings as unknown as ReturnType<typeof vi.fn>;
 const getLbugStatsMock = getLbugStats as unknown as ReturnType<typeof vi.fn>;
 const loadGraphToLbugMock = loadGraphToLbug as unknown as ReturnType<typeof vi.fn>;
 const fetchExistingEmbeddingHashesMock = fetchExistingEmbeddingHashes as unknown as ReturnType<
@@ -230,13 +236,60 @@ async function managedAnalysisContext(
   };
 }
 
+async function prepareActiveVectorGeneration(repoDir: string) {
+  const storagePath = path.join(repoDir, '.ontoindex');
+  const previous = await createIndexGeneration(storagePath, 'existing-vector-generation');
+  await fs.writeFile(previous.lbugPath, 'existing vector database');
+  const previousMeta = {
+    generationId: previous.generationId,
+    lastCommit: 'previous-commit',
+    model_hash: 'managed-test-model',
+    pipelineProfile: 'full',
+    includePaths: [],
+    stats: { embeddings: 1 },
+  };
+  await fs.writeFile(previous.metaPath, JSON.stringify(previousMeta));
+  await fs.writeFile(previous.snapshotPath, '{}');
+  await activateIndexGeneration(storagePath, previous);
+  loadMetaMock.mockResolvedValue(previousMeta as any);
+  vi.mocked(createIndexGeneration).mockClear();
+  return {
+    storagePath,
+    previous,
+    currentPath: path.join(storagePath, 'current'),
+    previousTarget: await fs.readlink(path.join(storagePath, 'current')),
+  };
+}
+
+function useMatchingEmbeddingIdentity(identity: string): () => void {
+  const keys = [
+    'ONTOINDEX_EMBEDDING_MODEL_HASH',
+    'ONTOINDEX_EMBEDDING_REVISION',
+    'ONTOINDEX_EMBEDDING_URL',
+    'ONTOINDEX_EMBEDDING_MODEL',
+  ];
+  const previous = new Map(keys.map((key) => [key, process.env[key]]));
+  process.env.ONTOINDEX_EMBEDDING_MODEL_HASH = identity;
+  delete process.env.ONTOINDEX_EMBEDDING_REVISION;
+  delete process.env.ONTOINDEX_EMBEDDING_URL;
+  delete process.env.ONTOINDEX_EMBEDDING_MODEL;
+  return () => {
+    for (const [key, value] of previous) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  };
+}
+
 describe('runFullAnalysis snapshot persistence', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     repoManagerGenerationMockState.canonicalGenerationId = null;
     vi.mocked(initLbug).mockReset().mockResolvedValue(undefined);
+    countCachedEmbeddingsMock.mockReset().mockResolvedValue(0);
+    streamCachedEmbeddingsMock.mockReset().mockResolvedValue(0);
     createFTSIndexMock.mockReset().mockResolvedValue(undefined);
-    embeddingPipelineMocks.runEmbeddingPipeline.mockResolvedValue(undefined);
+    embeddingPipelineMocks.runEmbeddingPipeline.mockResolvedValue({ vectorIndexReady: true });
     embeddingPipelineMocks.batchInsertEmbeddings.mockResolvedValue(undefined);
     embeddingPipelineMocks.createVectorIndex.mockReset().mockResolvedValue(true);
     loadCachedEmbeddingsMock.mockReset().mockResolvedValue({
@@ -465,6 +518,176 @@ describe('runFullAnalysis snapshot persistence', () => {
       expect(embeddingPipelineMocks.runEmbeddingPipeline).toHaveBeenCalledTimes(1);
       expect(managedStatusCalls()).toHaveLength(1);
     } finally {
+      await fs.rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed on cached-vector read errors before changing the active generation', async () => {
+    const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-analyze-cache-read-'));
+    const restoreEnv = useMatchingEmbeddingIdentity('managed-test-model');
+    const createdSpools: string[] = [];
+    const realMkdtemp = fs.mkdtemp.bind(fs) as (...args: any[]) => Promise<string>;
+    const mkdtempSpy = vi.spyOn(fs, 'mkdtemp').mockImplementation(
+      (async (prefix: any, options?: any) => {
+        const directory = await realMkdtemp(prefix, options);
+        if (String(prefix).includes('ontoindex-embedding-cache-')) createdSpools.push(directory);
+        return directory;
+      }) as typeof fs.mkdtemp,
+    );
+    try {
+      await fs.writeFile(path.join(repoDir, 'fixture.ts'), 'export const value = 1;\n');
+      getCurrentCommitMock.mockReturnValue(MANAGED_TARGET_HEAD);
+      const active = await prepareActiveVectorGeneration(repoDir);
+      countCachedEmbeddingsMock.mockResolvedValueOnce(1);
+      streamCachedEmbeddingsMock.mockRejectedValueOnce(new Error('cache stream failed'));
+
+      await expect(
+        runFullAnalysis(
+          repoDir,
+          {
+            force: true,
+            embeddings: true,
+            managedAnalysis: await managedAnalysisContext(repoDir, 'managed-cache-read', true),
+          },
+          { onProgress: vi.fn() },
+        ),
+      ).rejects.toThrow('cache stream failed');
+
+      expect(runPipelineMock).not.toHaveBeenCalled();
+      expect(await fs.readlink(active.currentPath)).toBe(active.previousTarget);
+      expect(await fs.readdir(path.join(active.storagePath, 'generations'))).toEqual([
+        active.previous.generationId,
+      ]);
+      expect(createdSpools).toHaveLength(1);
+      await expect(fs.stat(createdSpools[0])).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      mkdtempSpy.mockRestore();
+      restoreEnv();
+      await fs.rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed on cached-vector insert errors and discards the staged generation', async () => {
+    const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-analyze-cache-insert-'));
+    const restoreEnv = useMatchingEmbeddingIdentity('managed-test-model');
+    try {
+      await fs.writeFile(path.join(repoDir, 'fixture.ts'), 'export const value = 1;\n');
+      getCurrentCommitMock.mockReturnValue(MANAGED_TARGET_HEAD);
+      const active = await prepareActiveVectorGeneration(repoDir);
+      const { EMBEDDING_DIMS } = await import('../../src/core/lbug/schema.js');
+      const graph = createKnowledgeGraph();
+      graph.addNode({
+        id: 'Function:cached',
+        label: 'Function',
+        properties: { name: 'cached', filePath: 'fixture.ts', content: 'return 1;' } as any,
+      });
+      runPipelineMock.mockResolvedValue({
+        graph,
+        repoPath: repoDir,
+        totalFileCount: 1,
+        usedWorkerPool: false,
+      });
+      countCachedEmbeddingsMock.mockResolvedValueOnce(1);
+      streamCachedEmbeddingsMock.mockImplementationOnce(async (visit: (row: unknown) => unknown) => {
+        await visit({
+          nodeId: 'Function:cached',
+          chunkIndex: 0,
+          startLine: 1,
+          endLine: 1,
+          embedding: Array(EMBEDDING_DIMS).fill(0.25),
+          contentHash: 'same-content',
+        });
+        return 1;
+      });
+      embeddingPipelineMocks.batchInsertEmbeddings.mockRejectedValueOnce(
+        new Error('cached embedding insert failed'),
+      );
+
+      await expect(
+        runFullAnalysis(
+          repoDir,
+          {
+            force: true,
+            embeddings: true,
+            managedAnalysis: await managedAnalysisContext(repoDir, 'managed-cache-insert', true),
+          },
+          { onProgress: vi.fn() },
+        ),
+      ).rejects.toThrow('cached embedding insert failed');
+
+      expect(createIndexGeneration).toHaveBeenCalledTimes(1);
+      const staged = await vi.mocked(createIndexGeneration).mock.results[0].value;
+      await expect(fs.stat(staged.generationPath)).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(await fs.readlink(active.currentPath)).toBe(active.previousTarget);
+      expect(await fs.readdir(path.join(active.storagePath, 'generations'))).toEqual([
+        active.previous.generationId,
+      ]);
+      expect(saveMetaMock).not.toHaveBeenCalled();
+      expect(registerRepo).not.toHaveBeenCalled();
+    } finally {
+      restoreEnv();
+      await fs.rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed when vector-index creation fails and keeps the active generation', async () => {
+    const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-analyze-vector-index-'));
+    const restoreEnv = useMatchingEmbeddingIdentity('managed-test-model');
+    try {
+      await fs.writeFile(path.join(repoDir, 'fixture.ts'), 'export const value = 1;\n');
+      getCurrentCommitMock.mockReturnValue(MANAGED_TARGET_HEAD);
+      const active = await prepareActiveVectorGeneration(repoDir);
+      const { EMBEDDING_DIMS } = await import('../../src/core/lbug/schema.js');
+      const graph = createKnowledgeGraph();
+      graph.addNode({
+        id: 'Function:cached',
+        label: 'Function',
+        properties: { name: 'cached', filePath: 'fixture.ts', content: 'return 1;' } as any,
+      });
+      runPipelineMock.mockResolvedValue({
+        graph,
+        repoPath: repoDir,
+        totalFileCount: 1,
+        usedWorkerPool: false,
+      });
+      countCachedEmbeddingsMock.mockResolvedValueOnce(1).mockResolvedValueOnce(1);
+      streamCachedEmbeddingsMock.mockImplementationOnce(async (visit: (row: unknown) => unknown) => {
+        await visit({
+          nodeId: 'Function:cached',
+          chunkIndex: 0,
+          startLine: 1,
+          endLine: 1,
+          embedding: Array(EMBEDDING_DIMS).fill(0.25),
+          contentHash: 'same-content',
+        });
+        return 1;
+      });
+      executeQueryMock.mockImplementation(async (cypher: string) =>
+        cypher.includes('RETURN count(n) AS cnt') ? [{ cnt: 50_001 }] : [],
+      );
+      embeddingPipelineMocks.createVectorIndex.mockResolvedValueOnce(false);
+
+      await expect(
+        runFullAnalysis(
+          repoDir,
+          {
+            force: true,
+            embeddings: true,
+            managedAnalysis: await managedAnalysisContext(repoDir, 'managed-vector-index', true),
+          },
+          { onProgress: vi.fn() },
+        ),
+      ).rejects.toThrow('Could not create vector index for restored embeddings');
+
+      expect(embeddingPipelineMocks.createVectorIndex).toHaveBeenCalledTimes(1);
+      expect(await fs.readlink(active.currentPath)).toBe(active.previousTarget);
+      expect(await fs.readdir(path.join(active.storagePath, 'generations'))).toEqual([
+        active.previous.generationId,
+      ]);
+      expect(saveMetaMock).not.toHaveBeenCalled();
+      expect(registerRepo).not.toHaveBeenCalled();
+    } finally {
+      restoreEnv();
       await fs.rm(repoDir, { recursive: true, force: true });
     }
   });
@@ -940,11 +1163,9 @@ describe('runFullAnalysis snapshot persistence', () => {
 
   it('passes embedding checkpoint options and incremental hash source to pipeline', async () => {
     const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-analyze-'));
+    const restoreEnv = useMatchingEmbeddingIdentity('managed-test-model');
     try {
-      loadMetaMock.mockResolvedValue({
-        lastCommit: 'previous-commit',
-        model_hash: '',
-      });
+      await prepareActiveVectorGeneration(repoDir);
       runPipelineMock.mockResolvedValue({
         graph: createKnowledgeGraph(),
         repoPath: repoDir,
@@ -954,6 +1175,19 @@ describe('runFullAnalysis snapshot persistence', () => {
         usedWorkerPool: false,
       });
       executeQueryMock.mockImplementation(async () => []);
+      const { EMBEDDING_DIMS } = await import('../../src/core/lbug/schema.js');
+      countCachedEmbeddingsMock.mockResolvedValueOnce(1).mockResolvedValueOnce(0);
+      streamCachedEmbeddingsMock.mockImplementationOnce(async (visit: (row: unknown) => unknown) => {
+        await visit({
+          nodeId: 'Function:cached',
+          chunkIndex: 0,
+          startLine: 1,
+          endLine: 1,
+          embedding: Array(EMBEDDING_DIMS).fill(0.25),
+          contentHash: 'same-content',
+        });
+        return 1;
+      });
 
       await runFullAnalysis(
         repoDir,
@@ -971,10 +1205,11 @@ describe('runFullAnalysis snapshot persistence', () => {
       expect(embeddingCall?.[9]).toEqual({
         path: expect.stringContaining(path.join(repoDir, '.ontoindex', 'generations', '.staging-')),
         embeddingTextVersion: 'v2',
-        modelHash: '',
+        modelHash: 'managed-test-model',
         headCommit: 'abc123',
       });
     } finally {
+      restoreEnv();
       await fs.rm(repoDir, { recursive: true, force: true });
     }
   });
@@ -1007,6 +1242,240 @@ describe('runFullAnalysis snapshot persistence', () => {
       else process.env.ONTOINDEX_EMBEDDING_URL = previousUrl;
       if (previousModel === undefined) delete process.env.ONTOINDEX_EMBEDDING_MODEL;
       else process.env.ONTOINDEX_EMBEDDING_MODEL = previousModel;
+      await fs.rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('checks embedding identity before returning a current index with vectors', async () => {
+    const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-analyze-current-embedding-revision-'));
+    const restoreEnv = useMatchingEmbeddingIdentity('managed-test-model');
+    try {
+      await fs.writeFile(path.join(repoDir, 'fixture.ts'), 'export const value = 1;\n');
+      process.env.ONTOINDEX_EMBEDDING_REVISION = 'revision-b';
+      const sourceManifest = await computeSourceManifest(repoDir, {
+        includePaths: [],
+        pipelineProfile: 'full',
+      });
+      loadMetaMock.mockResolvedValue({
+        repoPath: repoDir,
+        lastCommit: 'abc123',
+        pipelineProfile: 'full',
+        includePaths: [],
+        sourceManifest,
+        parserEvidence: {
+          version: 1,
+          parseErrorCount: 0,
+          parseErrorFiles: [],
+          truncated: false,
+        },
+        embedding_revision: 'revision-a',
+        stats: { embeddings: 1 },
+      } as any);
+
+      await expect(
+        runFullAnalysis(repoDir, { embeddings: true }, { onProgress: vi.fn() }),
+      ).rejects.toThrow('Embedding revision mismatch');
+
+      expect(runPipelineMock).not.toHaveBeenCalled();
+      expect(registerRepo).not.toHaveBeenCalled();
+    } finally {
+      restoreEnv();
+      await fs.rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects current vectors with a revision but no indexed model identity', async () => {
+    const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-analyze-missing-model-hash-'));
+    const restoreEnv = useMatchingEmbeddingIdentity('managed-test-model');
+    try {
+      await fs.writeFile(path.join(repoDir, 'fixture.ts'), 'export const value = 1;\n');
+      process.env.ONTOINDEX_EMBEDDING_REVISION = 'revision-a';
+      const sourceManifest = await computeSourceManifest(repoDir, {
+        includePaths: [],
+        pipelineProfile: 'full',
+      });
+      loadMetaMock.mockResolvedValue({
+        repoPath: repoDir,
+        lastCommit: 'abc123',
+        pipelineProfile: 'full',
+        includePaths: [],
+        sourceManifest,
+        parserEvidence: {
+          version: 1,
+          parseErrorCount: 0,
+          parseErrorFiles: [],
+          truncated: false,
+        },
+        embedding_revision: 'revision-a',
+        stats: { embeddings: 1 },
+      } as any);
+
+      await expect(
+        runFullAnalysis(repoDir, { embeddings: true }, { onProgress: vi.fn() }),
+      ).rejects.toThrow('Embedding model identity is missing from index metadata');
+
+      expect(runPipelineMock).not.toHaveBeenCalled();
+      expect(registerRepo).not.toHaveBeenCalled();
+    } finally {
+      restoreEnv();
+      await fs.rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('checks actual vector rows before reusing metadata that reports zero embeddings', async () => {
+    const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-analyze-zero-count-with-vectors-'));
+    const restoreEnv = useMatchingEmbeddingIdentity('managed-test-model');
+    try {
+      await fs.writeFile(path.join(repoDir, 'fixture.ts'), 'export const value = 1;\n');
+      await prepareActiveVectorGeneration(repoDir);
+      process.env.ONTOINDEX_EMBEDDING_REVISION = 'revision-a';
+      const sourceManifest = await computeSourceManifest(repoDir, {
+        includePaths: [],
+        pipelineProfile: 'full',
+      });
+      loadMetaMock.mockResolvedValue({
+        repoPath: repoDir,
+        lastCommit: 'abc123',
+        pipelineProfile: 'full',
+        includePaths: [],
+        sourceManifest,
+        parserEvidence: {
+          version: 1,
+          parseErrorCount: 0,
+          parseErrorFiles: [],
+          truncated: false,
+        },
+        embedding_revision: 'revision-a',
+        stats: { embeddings: 0 },
+      } as any);
+      countCachedEmbeddingsMock.mockResolvedValueOnce(1);
+
+      await expect(
+        runFullAnalysis(repoDir, { embeddings: true }, { onProgress: vi.fn() }),
+      ).rejects.toThrow('metadata records zero embeddings but the active vector table contains 1');
+
+      expect(countCachedEmbeddingsMock).toHaveBeenCalledTimes(1);
+      expect(registerRepo).not.toHaveBeenCalled();
+      expect(runPipelineMock).not.toHaveBeenCalled();
+    } finally {
+      restoreEnv();
+      await fs.rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('allows explicit embedding generation for a confirmed-empty index with a different model hash', async () => {
+    const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-analyze-empty-model-change-'));
+    const restoreEnv = useMatchingEmbeddingIdentity('new-model-hash');
+    try {
+      await fs.writeFile(path.join(repoDir, 'fixture.ts'), 'export const value = 1;\n');
+      await prepareActiveVectorGeneration(repoDir);
+      loadMetaMock.mockResolvedValue({
+        repoPath: repoDir,
+        lastCommit: 'previous-commit',
+        model_hash: 'old-model-hash',
+        pipelineProfile: 'full',
+        includePaths: [],
+        stats: { embeddings: 0 },
+      } as any);
+      countCachedEmbeddingsMock.mockResolvedValue(0);
+
+      const graph = createKnowledgeGraph();
+      graph.addNode({
+        id: 'section:docs',
+        label: 'Section',
+        properties: { name: 'Docs', filePath: 'fixture.ts', content: '# Docs' } as any,
+      });
+      runPipelineMock.mockResolvedValue({
+        graph,
+        repoPath: repoDir,
+        totalFileCount: 1,
+        communityResult: undefined,
+        processResult: undefined,
+        usedWorkerPool: false,
+      });
+      executeQueryMock.mockImplementation(async (query: string) => {
+        if (query.includes('RETURN count(n) AS cnt')) return [{ cnt: 1 }];
+        if (query.includes('RETURN count(e) AS cnt')) return [{ cnt: 1 }];
+        return [];
+      });
+
+      await runFullAnalysis(repoDir, { force: true, embeddings: true }, { onProgress: vi.fn() });
+
+      expect(countCachedEmbeddingsMock).toHaveBeenCalledTimes(2);
+      expect(streamCachedEmbeddingsMock).not.toHaveBeenCalled();
+      expect(embeddingPipelineMocks.runEmbeddingPipeline).toHaveBeenCalledTimes(1);
+    } finally {
+      restoreEnv();
+      await fs.rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed when zero-count metadata hides actual rows before changing model', async () => {
+    const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-analyze-zero-count-hidden-vectors-'));
+    const restoreEnv = useMatchingEmbeddingIdentity('new-model-hash');
+    try {
+      await fs.writeFile(path.join(repoDir, 'fixture.ts'), 'export const value = 1;\n');
+      await prepareActiveVectorGeneration(repoDir);
+      loadMetaMock.mockResolvedValue({
+        repoPath: repoDir,
+        lastCommit: 'previous-commit',
+        model_hash: 'old-model-hash',
+        pipelineProfile: 'full',
+        includePaths: [],
+        stats: { embeddings: 0 },
+      } as any);
+      countCachedEmbeddingsMock.mockResolvedValueOnce(1);
+
+      await expect(
+        runFullAnalysis(repoDir, { force: true, embeddings: true }, { onProgress: vi.fn() }),
+      ).rejects.toThrow('metadata records zero embeddings but the active vector table contains 1');
+
+      expect(countCachedEmbeddingsMock).toHaveBeenCalledTimes(1);
+      expect(runPipelineMock).not.toHaveBeenCalled();
+      expect(embeddingPipelineMocks.runEmbeddingPipeline).not.toHaveBeenCalled();
+    } finally {
+      restoreEnv();
+      await fs.rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not reject an empty current index for an unrelated configured revision', async () => {
+    const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-analyze-empty-embedding-revision-'));
+    const restoreEnv = useMatchingEmbeddingIdentity('managed-test-model');
+    try {
+      await fs.writeFile(path.join(repoDir, 'fixture.ts'), 'export const value = 1;\n');
+      await prepareActiveVectorGeneration(repoDir);
+      process.env.ONTOINDEX_EMBEDDING_REVISION = 'revision-b';
+      const sourceManifest = await computeSourceManifest(repoDir, {
+        includePaths: [],
+        pipelineProfile: 'full',
+      });
+      loadMetaMock.mockResolvedValue({
+        repoPath: repoDir,
+        lastCommit: 'abc123',
+        pipelineProfile: 'full',
+        includePaths: [],
+        sourceManifest,
+        parserEvidence: {
+          version: 1,
+          parseErrorCount: 0,
+          parseErrorFiles: [],
+          truncated: false,
+        },
+        embedding_revision: 'revision-b',
+        stats: { embeddings: 0 },
+      } as any);
+
+      const result = await runFullAnalysis(
+        repoDir,
+        { embeddings: true },
+        { onProgress: vi.fn() },
+      );
+
+      expect(result.alreadyUpToDate).toBe(true);
+      expect(runPipelineMock).not.toHaveBeenCalled();
+    } finally {
+      restoreEnv();
       await fs.rm(repoDir, { recursive: true, force: true });
     }
   });
@@ -1915,7 +2384,9 @@ describe('runFullAnalysis snapshot persistence', () => {
         usedWorkerPool: false,
       });
       const initializationError = new Error('database initialization failed');
-      vi.mocked(initLbug).mockRejectedValueOnce(initializationError);
+      vi.mocked(initLbug)
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce(initializationError);
 
       await expect(runFullAnalysis(repoDir, {}, { onProgress: vi.fn() })).rejects.toBe(
         initializationError,
@@ -2018,7 +2489,9 @@ describe('runFullAnalysis snapshot persistence', () => {
           };
         },
       );
-      if (outcome === 'database failure') vi.mocked(initLbug).mockRejectedValueOnce(failure);
+      if (outcome === 'database failure') {
+        vi.mocked(initLbug).mockResolvedValueOnce(undefined).mockRejectedValueOnce(failure);
+      }
       if (outcome === 'writer cleanup failure') {
         const writeFile = fs.writeFile.bind(fs);
         const rm = fs.rm.bind(fs);
@@ -2241,26 +2714,32 @@ describe('runFullAnalysis snapshot persistence', () => {
 
   it('recreates the vector index when cached embeddings are restored and generation is skipped', async () => {
     const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-analyze-cached-vector-index-'));
+    const restoreEnv = useMatchingEmbeddingIdentity('managed-test-model');
     const previousNodeLimit = process.env.ONTOINDEX_EMBEDDING_NODE_LIMIT;
     process.env.ONTOINDEX_EMBEDDING_NODE_LIMIT = '1';
     try {
       const { EMBEDDING_DIMS } = await import('../../src/core/lbug/schema.js');
-      loadMetaMock.mockResolvedValue({ lastCommit: 'previous-commit', model_hash: '' });
-      loadCachedEmbeddingsMock.mockResolvedValue({
-        embeddingNodeIds: new Set(['Function:cached']),
-        embeddings: [
-          {
-            nodeId: 'Function:cached',
-            chunkIndex: 0,
-            startLine: 1,
-            endLine: 2,
-            embedding: new Array(EMBEDDING_DIMS).fill(0.25),
-            contentHash: 'cached-content-hash',
-          },
-        ],
+      await prepareActiveVectorGeneration(repoDir);
+      const graph = createKnowledgeGraph();
+      graph.addNode({
+        id: 'Function:cached',
+        label: 'Function',
+        properties: { name: 'cached', filePath: 'cached.php', content: 'return 1;' } as any,
+      });
+      countCachedEmbeddingsMock.mockResolvedValueOnce(1).mockResolvedValueOnce(1);
+      streamCachedEmbeddingsMock.mockImplementationOnce(async (visit: (row: unknown) => unknown) => {
+        await visit({
+          nodeId: 'Function:cached',
+          chunkIndex: 0,
+          startLine: 1,
+          endLine: 2,
+          embedding: new Array(EMBEDDING_DIMS).fill(0.25),
+          contentHash: 'cached-content-hash',
+        });
+        return 1;
       });
       runPipelineMock.mockResolvedValue({
-        graph: createKnowledgeGraph(),
+        graph,
         repoPath: repoDir,
         totalFileCount: 0,
         communityResult: undefined,
@@ -2275,12 +2754,14 @@ describe('runFullAnalysis snapshot persistence', () => {
 
       await runFullAnalysis(repoDir, { embeddings: true }, { onProgress: vi.fn() });
 
-      expect(loadCachedEmbeddingsMock).toHaveBeenCalledTimes(1);
+      expect(streamCachedEmbeddingsMock).toHaveBeenCalledTimes(1);
+      expect(countCachedEmbeddingsMock).toHaveBeenCalledTimes(2);
       expect(embeddingPipelineMocks.batchInsertEmbeddings).toHaveBeenCalledTimes(1);
       expect(embeddingPipelineMocks.createVectorIndex).toHaveBeenCalledTimes(1);
       expect(embeddingPipelineMocks.createVectorIndex).toHaveBeenCalledWith(executeQueryMock);
       expect(embeddingPipelineMocks.runEmbeddingPipeline).not.toHaveBeenCalled();
     } finally {
+      restoreEnv();
       if (previousNodeLimit === undefined) delete process.env.ONTOINDEX_EMBEDDING_NODE_LIMIT;
       else process.env.ONTOINDEX_EMBEDDING_NODE_LIMIT = previousNodeLimit;
       await fs.rm(repoDir, { recursive: true, force: true });
