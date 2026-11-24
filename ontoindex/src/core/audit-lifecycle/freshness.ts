@@ -217,17 +217,89 @@ async function countCommitsAfterTarget(gitRoot: string, targetCommit: string): P
 }
 
 function parsePorcelainStatus(output: string): AuditDirtyFile[] {
-  return output
-    .split('\n')
-    .map((line) => line.trimEnd())
-    .filter(Boolean)
-    .map((line) => {
-      const indexStatus = line[0] ?? ' ';
-      const worktreeStatus = line[1] ?? ' ';
-      const rawPath = line.slice(3);
-      const path = rawPath.includes(' -> ') ? rawPath.split(' -> ').at(-1) || rawPath : rawPath;
-      return { path, indexStatus, worktreeStatus };
+  const files: AuditDirtyFile[] = [];
+  for (const line of output.split('\n')) {
+    if (line.length < 4) continue;
+
+    const indexStatus = line[0] ?? ' ';
+    const worktreeStatus = line[1] ?? ' ';
+    const rawPath = line.slice(3);
+    const isRename = indexStatus === 'R' || indexStatus === 'C' || worktreeStatus === 'R' || worktreeStatus === 'C';
+    const destination = isRename ? renameDestination(rawPath) : rawPath;
+    files.push({
+      path: decodeGitQuotedPath(destination),
+      indexStatus,
+      worktreeStatus,
     });
+  }
+  return files;
+}
+
+function renameDestination(rawPath: string): string {
+  let quoted = false;
+  let escaped = false;
+  for (let index = 0; index < rawPath.length - 3; index += 1) {
+    const char = rawPath[index]!;
+    if (escaped) {
+      escaped = false;
+    } else if (quoted && char === '\\') {
+      escaped = true;
+    } else if (char === '"') {
+      quoted = !quoted;
+    } else if (!quoted && rawPath.startsWith(' -> ', index)) {
+      return rawPath.slice(index + 4);
+    }
+  }
+  return rawPath;
+}
+
+function decodeGitQuotedPath(rawPath: string): string {
+  if (rawPath.length < 2 || !rawPath.startsWith('"') || !rawPath.endsWith('"')) {
+    return rawPath;
+  }
+
+  const bytes: number[] = [];
+  for (let index = 1; index < rawPath.length - 1; index += 1) {
+    const char = rawPath[index]!;
+    if (char !== '\\') {
+      const codePoint = rawPath.codePointAt(index)!;
+      const value = String.fromCodePoint(codePoint);
+      bytes.push(...Buffer.from(value, 'utf8'));
+      index += value.length - 1;
+      continue;
+    }
+
+    const escaped = rawPath[++index];
+    if (!escaped) {
+      bytes.push(0x5c);
+      break;
+    }
+
+    const namedEscapes: Record<string, number> = {
+      a: 0x07,
+      b: 0x08,
+      t: 0x09,
+      n: 0x0a,
+      v: 0x0b,
+      f: 0x0c,
+      r: 0x0d,
+      '\\': 0x5c,
+      '"': 0x22,
+    };
+    if (escaped in namedEscapes) {
+      bytes.push(namedEscapes[escaped]!);
+    } else if (/[0-7]/.test(escaped)) {
+      let octal = escaped;
+      while (octal.length < 3 && /[0-7]/.test(rawPath[index + 1] ?? '')) {
+        octal += rawPath[++index];
+      }
+      bytes.push(Number.parseInt(octal, 8));
+    } else {
+      // Preserve unknown escapes as literal path characters rather than silently dropping data.
+      bytes.push(0x5c, ...Buffer.from(escaped, 'utf8'));
+    }
+  }
+  return Buffer.from(bytes).toString('utf8');
 }
 
 function isSourceFilePath(filePath: string): boolean {

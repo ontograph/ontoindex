@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   computeAuditFreshness,
   projectAuditStatusForFreshness,
+  summarizeGitPorcelainStatus,
 } from '../../src/core/audit-lifecycle/freshness.js';
 import { evaluateFreshnessGatePolicy } from '../../src/core/audit-lifecycle/freshness-policy.js';
 import { resolveTargetHead } from '../../src/core/audit-lifecycle/target-head.js';
@@ -61,6 +62,63 @@ describe('audit freshness utilities', () => {
       'Dirty checkout has 2 changed file(s) after target HEAD lock.',
     );
     expect(projectAuditStatusForFreshness('OPEN', freshness)).toBe('NEEDS-REVERIFY');
+  });
+
+  it('counts nested untracked files and decodes quoted Unicode and rename paths', async () => {
+    const repo = initRepo();
+    fs.writeFileSync(path.join(repo, 'tracked file with spaces.ts'), 'before\n');
+    const renameSource = 'rename source -> naïve.ts';
+    const renameDestination = 'rename destination -> café.ts';
+    fs.writeFileSync(path.join(repo, renameSource), 'same payload\n');
+    git(repo, 'add', 'tracked file with spaces.ts', renameSource);
+    git(repo, 'commit', '-m', 'add worktree count fixtures');
+
+    fs.writeFileSync(path.join(repo, 'tracked file with spaces.ts'), 'after\n');
+    git(repo, 'mv', renameSource, renameDestination);
+    const untrackedDir = path.join(repo, 'ontoindex', 'undefined');
+    fs.mkdirSync(path.join(untrackedDir, 'nested dir', 'deeper'), { recursive: true });
+    fs.writeFileSync(path.join(untrackedDir, 'one.ts'), 'one\n');
+    fs.writeFileSync(path.join(untrackedDir, 'nested dir', 'two file.ts'), 'two\n');
+    const unicodeUntrackedPath = 'nested dir/deeper/three file -> über.ts';
+    fs.writeFileSync(path.join(untrackedDir, unicodeUntrackedPath), 'three\n');
+
+    const compactStatus = git(repo, 'status', '--porcelain=v1');
+    const expandedStatus = git(
+      repo,
+      '-c',
+      'core.quotePath=true',
+      'status',
+      '--porcelain=v1',
+      '--untracked-files=all',
+    );
+    const compactSummary = summarizeGitPorcelainStatus(compactStatus);
+    const expandedSummary = summarizeGitPorcelainStatus(expandedStatus);
+    const freshness = await computeAuditFreshness(repo);
+
+    expect(compactSummary?.dirtyFileCount).toBe(3);
+    expect(expandedSummary?.dirtyFileCount).toBe(5);
+    expect(expandedSummary?.sourceFileCount).toBe(5);
+    expect(expandedStatus).toMatch(/\\[0-7]{3}/);
+    expect(
+      expandedSummary?.dirtyFiles.filter(
+        (file) => file.indexStatus === '?' && file.worktreeStatus === '?',
+      ),
+    ).toHaveLength(3);
+    expect(expandedSummary?.dirtyFiles.map((file) => file.path)).toContain(renameDestination);
+    expect(expandedSummary?.dirtyFiles.map((file) => file.path)).toContain(
+      `ontoindex/undefined/${unicodeUntrackedPath}`,
+    );
+    expect(freshness.changedFiles).toEqual([
+      `ontoindex/undefined/${unicodeUntrackedPath}`,
+      'ontoindex/undefined/nested dir/two file.ts',
+      'ontoindex/undefined/one.ts',
+      renameDestination,
+      'tracked file with spaces.ts',
+    ]);
+
+    expect(summarizeGitPorcelainStatus('?? plain name -> destination.ts')?.dirtyFiles[0]?.path).toBe(
+      'plain name -> destination.ts',
+    );
   });
 
   it('reports stale freshness when checkout HEAD advances after target lock', async () => {

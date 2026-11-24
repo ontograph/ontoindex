@@ -226,7 +226,7 @@ function setupExecFile(
       callback(null, currentCommit + '\n', '');
       return {} as any;
     }
-    if (args.includes('status') && args.includes('--porcelain')) {
+    if (args.includes('status') && args.some((arg) => arg.startsWith('--porcelain'))) {
       callback(null, statusOutput, '');
       return {} as any;
     }
@@ -1224,7 +1224,7 @@ describe('gnEnsureFresh', () => {
         callback(null, CURRENT_COMMIT + '\n', '');
         return {} as any;
       }
-      if (args.includes('status') && args.includes('--porcelain')) {
+      if (args.includes('status') && args.some((arg) => arg.startsWith('--porcelain'))) {
         callback(new Error('status unavailable'), '', '');
         return {} as any;
       }
@@ -1721,6 +1721,35 @@ describe('gnEnsureFresh', () => {
       untrackedCount: 2,
     });
     expect(report.warnings.some((w) => w.includes('coverage is unconfirmed'))).toBe(true);
+  });
+
+  it('counts every nested untracked file with the shared porcelain status mode', async () => {
+    setupExecFile({
+      currentCommit: CURRENT_COMMIT,
+      statusOutput: [
+        ' M src/modified file.ts',
+        'R  src/rename source.ts -> src/rename destination.ts',
+        '?? ontoindex/undefined/one.ts',
+        '?? ontoindex/undefined/nested dir/two file.ts',
+        '?? ontoindex/undefined/nested dir/deeper/three.ts',
+        '',
+      ].join('\n'),
+    });
+    mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: CURRENT_COMMIT }) as any);
+
+    const report = await gnEnsureFresh(REPO_ID, {});
+
+    expect(report.dirtyFileCount).toBe(5);
+    expect(report.dirtyWorktreeBreakdown).toEqual({
+      trackedChangedCount: 2,
+      untrackedCount: 3,
+    });
+    expect(mockExecFile.mock.calls).toContainEqual(
+      expect.arrayContaining([
+        'git',
+        ['status', '--porcelain=v1', '--untracked-files=all'],
+      ]),
+    );
   });
 
   it('does not claim partial working-tree changes are absent from a dirty indexed graph', async () => {

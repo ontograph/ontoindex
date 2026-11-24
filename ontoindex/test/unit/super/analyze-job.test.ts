@@ -374,6 +374,48 @@ describe('gnAnalyzeJob', () => {
     expect(targetContext).toHaveBeenCalledTimes(3);
   });
 
+  it('confirms the per-file count for nested untracked source files', async () => {
+    const sourceIdentity = `worktree:${manifestDigest}`;
+    getJob.mockResolvedValue(makeJob({ sourceIdentity }));
+    readReceipt.mockResolvedValue(makeReceipt({ sourceIdentity }) as any);
+    ensureFresh.mockResolvedValue(
+      makeFreshness({
+        dirtyFileCount: 3,
+        dirtyWorktreeBreakdown: { trackedChangedCount: 0, untrackedCount: 3 },
+      }) as any,
+    );
+    targetContext.mockResolvedValue(
+      makeTargetContext({
+        dirtyWorktree: true,
+        dirtyFileCount: 3,
+        changedSinceIndex: true,
+        snapshotMode: 'dirty-worktree-overlay',
+        dirtyWorkspace: {
+          state: 'unknown-untracked',
+          fileCount: 3,
+          sourceFileCount: 3,
+          stagedSourceFileCount: 0,
+          unstagedSourceFileCount: 0,
+          untrackedSourceFileCount: 3,
+          unknownGraphCoverageCount: 3,
+          dirtyPaths: [
+            'ontoindex/undefined/one.ts',
+            'ontoindex/undefined/nested/two file.ts',
+            'ontoindex/undefined/nested/deeper/three.ts',
+          ],
+        },
+      }) as any,
+    );
+
+    const result: any = await gnAnalyzeJob('repo', { jobId });
+
+    expect(result.recovery).toMatchObject({
+      disposition: 'REFRESHED',
+      reasonCode: 'PUBLICATION_VERIFIED',
+      receipt: { sourceIdentity, sourceManifestDigest: manifestDigest },
+    });
+  });
+
   it('fails closed when a dirty source changes after publication', async () => {
     const sourceIdentity = `worktree:${manifestDigest}`;
     getJob.mockResolvedValue(makeJob({ sourceIdentity }));

@@ -27,6 +27,7 @@ import {
   computeSourceManifest,
   sourceManifestDigest,
 } from '../../core/indexing/source-manifest.js';
+import { summarizeGitPorcelainStatus } from '../../core/audit-lifecycle/freshness.js';
 import {
   readRuntimeHealth,
   type RuntimeHealthSnapshot,
@@ -342,21 +343,28 @@ interface DirtyWorktreeSummary {
 
 async function summarizeDirtyWorktree(repoRoot: string): Promise<DirtyWorktreeSummary> {
   try {
-    const output = (
-      await execFileText('git', ['status', '--porcelain'], {
+    const output = await execFileText(
+      'git',
+      ['status', '--porcelain=v1', '--untracked-files=all'],
+      {
         cwd: repoRoot,
         timeoutMs: GIT_PROBE_TIMEOUT_MS,
         maxBuffer: GIT_PROBE_MAX_BUFFER,
-      })
-    ).trim();
-    if (output.length === 0) {
+      },
+    );
+    const summary = summarizeGitPorcelainStatus(output);
+    if (!summary) {
+      return { dirtyFileCount: null, trackedChangedCount: null, untrackedCount: null };
+    }
+    if (summary.dirtyFileCount === 0) {
       return { dirtyFileCount: 0, trackedChangedCount: 0, untrackedCount: 0 };
     }
-    const lines = output.split('\n').filter(Boolean);
-    const untrackedCount = lines.filter((line) => line.startsWith('??')).length;
+    const untrackedCount = summary.dirtyFiles.filter(
+      (file) => file.indexStatus === '?' && file.worktreeStatus === '?',
+    ).length;
     return {
-      dirtyFileCount: lines.length,
-      trackedChangedCount: lines.length - untrackedCount,
+      dirtyFileCount: summary.dirtyFileCount,
+      trackedChangedCount: summary.dirtyFileCount - untrackedCount,
       untrackedCount,
     };
   } catch {
