@@ -2,11 +2,18 @@ name: Build Bun tree-sitter prebuilds
 
 on:
   push:
+    branches:
+      - '**'
   pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
+
+# Concurrency convention: see CONTRIBUTING.md → "GitHub Actions — Concurrency Convention".
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
@@ -54,7 +61,7 @@ jobs:
         shell: bash
         run: >-
           npm exec --yes --package=bun@1.4.5 -- node scripts/build-bun-prebuild.cjs
-          --prebuild-root "$RUNNER_TEMP/prebuilds"
+          --target=${{ matrix.bunTarget }} --prebuild-root "$RUNNER_TEMP/prebuilds"
         working-directory: ontoindex
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

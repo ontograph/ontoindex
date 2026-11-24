@@ -10,11 +10,26 @@ const VENDOR = path.join(ROOT, 'vendor');
 const RUNTIME_ROOT = path.join(VENDOR, 'tree-sitter');
 const PHP_ROOT = path.join(VENDOR, 'tree-sitter-php');
 const TARGETS = [
-  { key: 'darwin-arm64', platform: 'darwin', arch: 'arm64', bun: 'bun-darwin-arm64' },
+  {
+    key: 'darwin-arm64',
+    platform: 'darwin',
+    arch: 'arm64',
+    bun: 'bun-darwin-arm64',
+  },
   { key: 'darwin-x64', platform: 'darwin', arch: 'x64', bun: 'bun-darwin-x64' },
-  { key: 'linux-arm64', platform: 'linux', arch: 'arm64', bun: 'bun-linux-arm64' },
+  {
+    key: 'linux-arm64',
+    platform: 'linux',
+    arch: 'arm64',
+    bun: 'bun-linux-arm64',
+  },
   { key: 'linux-x64', platform: 'linux', arch: 'x64', bun: 'bun-linux-x64' },
-  { key: 'win32-arm64', platform: 'win32', arch: 'arm64', bun: 'bun-windows-arm64' },
+  {
+    key: 'win32-arm64',
+    platform: 'win32',
+    arch: 'arm64',
+    bun: 'bun-windows-arm64',
+  },
   { key: 'win32-x64', platform: 'win32', arch: 'x64', bun: 'bun-windows-x64' },
 ];
 const INCLUDE_CASES = [
@@ -135,7 +150,9 @@ function resolveBunBinary() {
       if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) return candidate;
     }
   }
-  throw new Error('Bun executable not found. Put bun on PATH or set BUN_BINARY to its executable path.');
+  throw new Error(
+    'Bun executable not found. Put bun on PATH or set BUN_BINARY to its executable path.',
+  );
 }
 
 function prebuildPaths(root, target) {
@@ -214,12 +231,21 @@ function runNodeSmoke(tempRoot) {
 
 function runBunSmoke(target, paths, outputPath, keepOutput) {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ontoindex-bun-prebuild-'));
+  const outputRoot = outputPath
+    ? path.dirname(path.resolve(ROOT, outputPath))
+    : fs.mkdtempSync(path.join(os.tmpdir(), 'ontoindex-bun-executable-'));
+  const compiledPath = outputPath
+    ? path.resolve(ROOT, outputPath)
+    : path.join(outputRoot, target.platform === 'win32' ? 'smoke.exe' : 'smoke');
   try {
     const stagedRuntime = path.join(tempRoot, 'vendor', 'tree-sitter');
     const stagedPhp = path.join(tempRoot, 'vendor', 'tree-sitter-php');
     fs.cpSync(RUNTIME_ROOT, stagedRuntime, { recursive: true });
     fs.cpSync(PHP_ROOT, stagedPhp, { recursive: true });
-    fs.rmSync(path.join(stagedRuntime, 'build'), { recursive: true, force: true });
+    fs.rmSync(path.join(stagedRuntime, 'build'), {
+      recursive: true,
+      force: true,
+    });
     fs.rmSync(path.join(stagedPhp, 'build'), { recursive: true, force: true });
 
     const stagedRuntimePrebuild = path.join(
@@ -236,9 +262,6 @@ function runBunSmoke(target, paths, outputPath, keepOutput) {
 
     const smokePath = path.join(tempRoot, 'bun-smoke.cjs');
     fs.writeFileSync(smokePath, smokeSource('./vendor/tree-sitter', './vendor/tree-sitter-php'));
-    const compiledPath = outputPath
-      ? path.resolve(ROOT, outputPath)
-      : path.join(tempRoot, target.platform === 'win32' ? 'smoke.exe' : 'smoke');
     fs.mkdirSync(path.dirname(compiledPath), { recursive: true });
     const bun = resolveBunBinary();
     const isHostTarget = target.platform === process.platform && target.arch === process.arch;
@@ -256,14 +279,18 @@ function runBunSmoke(target, paths, outputPath, keepOutput) {
     ]);
 
     if (isHostTarget) {
-      run(compiledPath, [], { cwd: tempRoot });
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+      run(compiledPath, [], { cwd: outputRoot });
       console.log(`[prebuild] Bun compiled smoke passed for ${target.key}`);
     } else {
-      console.log(`[prebuild] Bun cross-target compile passed for ${target.key}; executable not run`);
+      console.log(
+        `[prebuild] Bun cross-target compile passed for ${target.key}; executable not run`,
+      );
     }
     if (keepOutput) console.log(`[prebuild] compiled smoke executable: ${compiledPath}`);
   } finally {
-    if (!keepOutput) fs.rmSync(tempRoot, { recursive: true, force: true });
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+    if (!keepOutput) fs.rmSync(outputRoot, { recursive: true, force: true });
   }
 }
 
